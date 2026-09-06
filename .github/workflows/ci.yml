@@ -62,6 +62,16 @@ jobs:
             target: x86_64-unknown-linux-gnu
             task: test
             command: sudo sysctl -w kernel.perf_event_paranoid=-1 && cargo test --workspace --all-targets
+          # Event tables are compiled in per host architecture, so a test that
+          # asserts an invariant across every shipped table sees only the
+          # runner's own tables and passes without checking anything. The
+          # sampling-group invariants are exactly that kind of test, and the
+          # RISC-V tables are where they last broke.
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            task: test-event-tables
+            command: cargo test -p libprof --lib --features events-x86-64,events-aarch64,events-riscv64
           - platform: linux-x86_64
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu

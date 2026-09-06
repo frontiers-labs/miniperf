@@ -18,6 +18,15 @@ pub struct CPUFamily {
 
 include!(concat!(env!("OUT_DIR"), "/events.rs"));
 
+/// Every event table shipped with the profiler, for invariants that must hold
+/// across all of them rather than only the host's.
+#[cfg(test)]
+pub fn families() -> impl Iterator<Item = (&'static str, &'static CPUFamily)> {
+    CPU_FAMILIES
+        .iter()
+        .map(|(id, family)| (id.as_str(), family))
+}
+
 pub fn find_cpu_family(id: &str) -> Option<&CPUFamily> {
     CPU_FAMILIES.get(id)
 }
