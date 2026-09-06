@@ -40,10 +40,11 @@ Then:
 ```sh
 git clone https://github.com/frontiers-labs/miniperf.git
 cd miniperf
+utils/deps/setup-duckdb.sh
 cargo build --release -p mperf
 ```
 
-The binary is `target/release/mperf`. The first build downloads a pinned DuckDB library into `deps/cache`.
+The binary is `target/release/mperf`. The setup script downloads a pinned DuckDB library into `deps/cache`. It has to run before cargo, and re-running it is a no-op; skipping it fails with `could not find native static library duckdb_static`.
 
 Build the other pieces as you need them:
 

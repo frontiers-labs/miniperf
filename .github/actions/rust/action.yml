@@ -49,3 +49,11 @@ runs:
       if: inputs.cache != 'false'
       with:
         shared-key: ${{ inputs.cache-key }}
+
+    # Must precede cargo: rustc bundles DuckDB's static archive into the
+    # libduckdb-sys rlib as it compiles it, long before any build script of
+    # ours could fetch it.
+    - name: Install the pinned DuckDB
+      if: inputs.cache != 'false'
+      shell: bash
+      run: utils/deps/setup-duckdb.sh "${{ inputs.target }}"
