@@ -26,28 +26,43 @@ jobs:
         include:
           - task: fmt
             command: cargo fmt --all -- --check
+            cache: 'false'
           - task: check
             command: cargo check --workspace --all-targets
+            # `cargo check` emits .rmeta and no .rlib, so this entry cannot
+            # serve the build and test jobs; it keeps its own.
+            cache-key: check-x86_64-unknown-linux-gnu
           # A hand-edited or half-published manifest would only surface at
           # packaging time, on one platform, hours later.
           - task: deps-manifest
             command: python3 utils/deps/manifest.py check
+            cache: 'false'
           # Platform breakage is otherwise found by a different CI leg, hours
           # later; this makes it a red build on every target in seconds.
           - task: platform-cfg
             command: python3 utils/platform-cfg-guard.py
+            cache: 'false'
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: ./.github/actions/rust
         with:
           target: x86_64-unknown-linux-gnu
           components: clippy, rustfmt
-          cache-key: quick-${{ matrix.task }}
+          cache-key: ${{ matrix.cache-key }}
+          cache: ${{ matrix.cache || 'true' }}
       - run: ${{ matrix.command }}
 
   verify:
     name: ${{ matrix.task }} (${{ matrix.platform }})
     needs: quick
+    # `cache-key` is cache identity, not job identity: jobs that compile the
+    # same artifacts for the same target share one entry. build and test share
+    # `dev-<target>` because `--all-targets` makes them compile the identical
+    # set. clippy keeps its own, because RUSTC_WORKSPACE_WRAPPER=clippy-driver
+    # gives every workspace crate a different fingerprint; so do the libprof
+    # feature and doc jobs, which build other feature sets and rustdoc output.
+    # Whichever job of a pair finishes first stores the entry and the other
+    # skips storing, so only ever share a key between interchangeable outputs.
     strategy:
       fail-fast: false
       matrix:
@@ -56,51 +71,61 @@ jobs:
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             task: build
+            cache-key: dev-x86_64-unknown-linux-gnu
             command: cargo build --workspace --all-targets
           - platform: linux-x86_64
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             task: test
+            cache-key: dev-x86_64-unknown-linux-gnu
             command: sudo sysctl -w kernel.perf_event_paranoid=-1 && cargo test --workspace --all-targets
           - platform: linux-x86_64
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             task: clippy
+            cache-key: clippy-x86_64-unknown-linux-gnu
             command: cargo clippy --workspace --all-targets -- -D warnings
           - platform: linux-x86_64
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             task: libprof-features
+            cache-key: libprof-x86_64-unknown-linux-gnu
             command: cargo check -p libprof --no-default-features && cargo clippy -p libprof --all-features --all-targets -- -D warnings
           - platform: linux-x86_64
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             task: libprof-docs
+            cache-key: docs-x86_64-unknown-linux-gnu
             command: RUSTDOCFLAGS="-D warnings" cargo doc -p libprof -p miniperf-pmu-data --all-features --no-deps
           - platform: linux-aarch64
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             task: clippy
+            cache-key: clippy-aarch64-unknown-linux-gnu
             command: cargo clippy --workspace --all-targets -- -D warnings
           - platform: linux-riscv64
             runner: ubuntu-24.04
             target: riscv64gc-unknown-linux-gnu
             task: build
+            cache-key: dev-riscv64gc-unknown-linux-gnu
             command: cargo build -p mperf -p miniperf-collector-core -p miniperf-shim-libc --target riscv64gc-unknown-linux-gnu
           - platform: macos-aarch64
             runner: macos-14
             target: aarch64-apple-darwin
             task: build
+            cache-key: dev-aarch64-apple-darwin
             command: cargo build --workspace --all-targets
           - platform: macos-aarch64
             runner: macos-14
             target: aarch64-apple-darwin
             task: test
+            cache-key: dev-aarch64-apple-darwin
             command: MPERF_NO_PMU=1 cargo test --workspace --all-targets
           - platform: macos-aarch64
             runner: macos-14
             target: aarch64-apple-darwin
             task: clippy
+            cache-key: clippy-aarch64-apple-darwin
             command: cargo clippy --workspace --all-targets -- -D warnings
           # Windows ships the GUI only, so it builds the viewer and what it
           # needs rather than the whole workspace.
@@ -108,11 +133,13 @@ jobs:
             runner: windows-2022
             target: x86_64-pc-windows-msvc
             task: build
+            cache-key: dev-x86_64-pc-windows-msvc
             command: cargo build -p mperf-gui -p miniperf-store
           - platform: windows-x86_64
             runner: windows-2022
             target: x86_64-pc-windows-msvc
             task: clippy
+            cache-key: clippy-x86_64-pc-windows-msvc
             command: cargo clippy -p mperf-gui -p miniperf-store --all-targets -- -D warnings
     runs-on: ${{ matrix.runner }}
     defaults:
@@ -124,7 +151,7 @@ jobs:
         with:
           target: ${{ matrix.target }}
           components: clippy, rustfmt
-          cache-key: verify-${{ matrix.platform }}-${{ matrix.task }}
+          cache-key: ${{ matrix.cache-key }}
       - name: Run ${{ matrix.task }}
         env:
           CC_riscv64gc_unknown_linux_gnu: riscv64-linux-gnu-gcc

@@ -26,6 +26,7 @@ fn main() {
         .to_path_buf();
     let manifest_path = workspace.join("deps/manifest.toml");
     println!("cargo:rerun-if-changed={}", manifest_path.display());
+    link_cxx_runtime();
 
     let manifest = fs::read_to_string(&manifest_path)
         .unwrap_or_else(|error| fail(&format!("cannot read {}: {error}", manifest_path.display())));
@@ -63,6 +64,21 @@ fn main() {
     File::create(&stamp)
         .and_then(|mut handle| handle.write_all(want.as_bytes()))
         .unwrap_or_else(|error| fail(&format!("cannot write stamp: {error}")));
+}
+
+/// DuckDB is C++, and `libduckdb-sys` only emits the C++ runtime from its
+/// `bundled` path -- the one that compiles the amalgamation itself. Linking the
+/// pinned library instead means naming that runtime here.
+fn link_cxx_runtime() {
+    let runtime = match env::var("CARGO_CFG_TARGET_OS")
+        .expect("Cargo sets it")
+        .as_str()
+    {
+        "macos" => "c++",
+        "windows" => return,
+        _ => "stdc++",
+    };
+    println!("cargo:rustc-link-lib=dylib={runtime}");
 }
 
 fn target_platform() -> String {

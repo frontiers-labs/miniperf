@@ -8,9 +8,14 @@ name = "store"
 
 [dependencies]
 anyhow = "1.0"
-arrow = "59.2"
-parquet = "59.2"
-duckdb = { version = "1.10505.0", features = ["parquet"], optional = true }
+# Pinned to the arrow major the `duckdb` crate depends on; a mismatch compiles a
+# second copy of every arrow crate. `duckdb`'s own `parquet` feature is
+# deliberately absent: it implies `bundled`, which compiles the DuckDB
+# amalgamation from source and bypasses the library pinned in
+# deps/manifest.toml, which is already built with the parquet extension.
+arrow = { version = "58", default-features = false }
+parquet = { version = "58", default-features = false, features = ["arrow", "zstd"] }
+duckdb = { version = "1.10505.0", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 xxhash-rust = { version = "0.8.18", features = ["xxh3"] }
