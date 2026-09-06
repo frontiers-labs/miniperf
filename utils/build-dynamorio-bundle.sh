@@ -17,7 +17,19 @@ output_directory="${2:-dist}"
 repository="${DYNAMORIO_REPOSITORY:-$(deps_manifest_get upstream.dynamorio.repository)}"
 revision="${DYNAMORIO_REVISION:-$(deps_manifest_get upstream.dynamorio.revision)}"
 repository_root="${deps_repository_root}"
-bundle_name="miniperf-dynamorio-${revision:0:12}-${platform}"
+patch_directory="${repository_root}/deps/patches/dynamorio"
+# The bundle is the pinned revision plus the patches in deps/patches, so its
+# name has to change when either does. Without the patch fingerprint an
+# artifact built from edited patches would reuse the name of one built from
+# the old ones.
+if compgen -G "${patch_directory}/*.patch" >/dev/null; then
+    patch_id="$(cat "${patch_directory}"/*.patch | sha256sum | cut -c1-8)"
+    bundle_name="miniperf-dynamorio-${revision:0:12}-p${patch_id}-${platform}"
+    bundle_version="${revision:0:12}-p${patch_id}"
+else
+    bundle_name="miniperf-dynamorio-${revision:0:12}-${platform}"
+    bundle_version="${revision:0:12}"
+fi
 
 case "${platform}" in
     linux-x86_64) rust_target=x86_64-unknown-linux-gnu ;;
@@ -50,6 +62,17 @@ bundle_directory="${build_root}/${bundle_name}"
 git clone "${repository}" "${source_directory}"
 git -C "${source_directory}" checkout --quiet "${revision}"
 git -C "${source_directory}" submodule update --init
+
+# Patches carried against the pinned revision. Each one is upstreamable on its
+# own; they are applied in filename order and the build fails loudly if one
+# stops applying, because a silently skipped patch produces a bundle that looks
+# right and behaves like the unpatched build.
+if compgen -G "${patch_directory}/*.patch" >/dev/null; then
+    for patch in "${patch_directory}"/*.patch; do
+        printf 'Applying %s\n' "$(basename "${patch}")"
+        git -C "${source_directory}" apply --whitespace=nowarn "${patch}"
+    done
+fi
 
 cmake="${DYNAMORIO_CMAKE:-cmake}"
 # ZLIB_ROOT keeps non-system cmake installations (e.g. nix) finding the
@@ -107,6 +130,11 @@ cp "${source_directory}/License.txt" "${bundle_directory}/DYNAMORIO_LICENSE.txt"
 {
     printf 'dynamorio_revision=%s\n' "${revision}"
     printf 'platform=%s\n' "${platform}"
+    if compgen -G "${patch_directory}/*.patch" >/dev/null; then
+        for patch in "${patch_directory}"/*.patch; do
+            printf 'patch=%s\n' "$(basename "${patch}")"
+        done
+    fi
 } >"${bundle_directory}/MANIFEST.txt"
 
 if [[ "${platform}" == linux-riscv64 ]]; then
@@ -126,5 +154,5 @@ else
     grep -q '^instructions=' "${smoke_output}"
 fi
 
-deps_publish dynamorio "${platform}" "${revision:0:12}" \
+deps_publish dynamorio "${platform}" "${bundle_version}" \
     "${build_root}" "${bundle_name}" "${output_directory}"

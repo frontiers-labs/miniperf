@@ -18,6 +18,14 @@ on:
         description: Open a pull request repinning deps/manifest.toml
         type: boolean
         default: true
+  # Editing a patch changes what the bundle contains, and the pinned artifact
+  # stays stale until something rebuilds it. Publishing from a pull request is
+  # not safe, so this only validates that the patches still apply; rerun the
+  # workflow by hand to publish a bundle carrying them.
+  pull_request:
+    paths:
+      - deps/patches/**
+      - utils/build-dynamorio-bundle.sh
   schedule:
     # Monthly, on the 1st.
     - cron: '0 3 1 * *'
@@ -31,8 +39,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  patches:
+    name: DynamoRIO patches apply
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Check every patch applies to the pinned revision
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          patches=(deps/patches/dynamorio/*.patch)
+          if [ ${#patches[@]} -eq 0 ]; then
+            echo "no DynamoRIO patches to check"
+            exit 0
+          fi
+          repository="$(python3 utils/deps/manifest.py get upstream.dynamorio.repository)"
+          revision="$(python3 utils/deps/manifest.py get upstream.dynamorio.revision)"
+          git init --quiet source
+          git -C source remote add origin "${repository}"
+          git -C source fetch --quiet --depth 1 origin "${revision}"
+          git -C source checkout --quiet FETCH_HEAD
+          for patch in "${patches[@]}"; do
+            printf 'checking %s\n' "$(basename "${patch}")"
+            git -C source apply --check "../${patch}"
+            git -C source apply "../${patch}"
+          done
+          echo "all patches apply to ${revision}"
+
   plan:
     name: Resolve versions
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
@@ -164,6 +201,32 @@ jobs:
             qemu) utils/build-qemu-user-bundle.sh "${{ matrix.platform }}" dist ;;
           esac
 
+      # `build-dynamorio-bundle.sh` fails when a patch stops applying, but an
+      # empty or mislaid patch directory would quietly produce a stock upstream
+      # build that behaves like the one this repo cannot use on RISC-V. Assert
+      # the bundle records every patch that was meant to go into it.
+      - name: Verify the DynamoRIO bundle is patched
+        if: matrix.dependency == 'dynamorio'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          expected=(deps/patches/dynamorio/*.patch)
+          if [ ${#expected[@]} -eq 0 ]; then
+            echo "no DynamoRIO patches in this checkout; nothing to verify"
+            exit 0
+          fi
+          archive=(dist/miniperf-dynamorio-*.tar.zst)
+          manifest="$(tar --extract --zstd --to-stdout --file "${archive[0]}" \
+            --wildcards '*/MANIFEST.txt')"
+          printf '%s\n' "${manifest}"
+          for patch in "${expected[@]}"; do
+            name="$(basename "${patch}")"
+            grep -qxF "patch=${name}" <<<"${manifest}" || {
+              echo "bundle does not record ${name}" >&2
+              exit 1
+            }
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: dep-${{ matrix.dependency }}-${{ matrix.platform }}
@@ -210,6 +273,17 @@ jobs:
             printf '| DuckDB | %s |\n' "${{ needs.plan.outputs.duckdb_version }}"
             printf '| DynamoRIO | %s |\n' "${{ needs.plan.outputs.dynamorio_revision }}"
             printf '| qemu-user | %s |\n' "${{ needs.plan.outputs.qemu_version }}"
+            # The DynamoRIO bundle is the pinned revision plus these patches, so
+            # a reviewer reading only the revision would have the wrong idea of
+            # what shipped.
+            shopt -s nullglob
+            patches=(deps/patches/dynamorio/*.patch)
+            if [ ${#patches[@]} -gt 0 ]; then
+              printf '\nDynamoRIO patches applied on top of the pinned revision:\n\n'
+              for patch in "${patches[@]}"; do
+                printf -- '- `%s`\n' "$(basename "${patch}")"
+              done
+            fi
           } >summary.md
 
       - name: Publish the release

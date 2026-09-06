@@ -1,0 +1,426 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: miniperf <miniperf@localhost>
+Date: Sun, 6 Sep 2026 20:53:33 +0300
+Subject: [PATCH 2/3] i#3544 RISC-V: decode the Zcb compressed instructions
+
+An instruction the decoder does not know makes DynamoRIO deliver SIGILL to
+the application at that address, so a userspace built for a profile that
+includes Zcb dies under DR at its first c.lbu. Ubuntu's riscv64 glibc hits
+one in __tunables_init, which kills every process before main.
+
+Add the Zcb listing and the four compressed memory-operand fields it needs
+(c.lbu and c.sb swap the two immediate bits with respect to every other
+compressed access, and c.lh/c.lhu/c.sh carry only imm[1]), route quadrant 0
+funct3=0b100 and the quadrant 1 100111 block in get_rvc_instr_info(), and
+teach the compressed LOAD/STORE fixup that funct3=0b100 is no longer
+reserved.
+
+Modelling the accesses as base+disp memory operands rather than as opaque
+arithmetic is what lets a client instrument them: a tool counting memory
+traffic would otherwise silently miss every Zcb load and store.
+---
+ core/ir/riscv64/codec.c            | 165 +++++++++++++++++++++++++++--
+ core/ir/riscv64/codec.h            |   7 ++
+ core/ir/riscv64/codec.py           |  48 ++++++++-
+ core/ir/riscv64/isl/README.md      |   4 +
+ core/ir/riscv64/isl/rv64zcb.txt    |   4 +
+ core/ir/riscv64/isl/zcb.txt        |  14 +++
+ make/CMake_riscv64_gen_codec.cmake |   2 +
+ 7 files changed, 236 insertions(+), 8 deletions(-)
+ create mode 100644 core/ir/riscv64/isl/rv64zcb.txt
+ create mode 100644 core/ir/riscv64/isl/zcb.txt
+
+diff --git a/core/ir/riscv64/codec.c b/core/ir/riscv64/codec.c
+index 29f18a695..f9bf31796 100644
+--- a/core/ir/riscv64/codec.c
++++ b/core/ir/riscv64/codec.c
+@@ -1353,6 +1353,71 @@ decode_simm5_opnd(dcontext_t *dc, uint32_t inst, int op_sz, byte *pc, byte *orig
+     return true;
+ }
+ 
++/* Decode the base register and offset immediate of the c.lbu and c.sb
++ * instructions:
++ * |15 13|12 10|9    7|6      5|4   2|1      0|
++ * | ... | ... | rs1' | imm[0] | ... | opcode |
++ *                     | imm[1] |
++ *              ^----^ ^-------^
++ * Note that the immediate bits are swapped with respect to every other
++ * compressed memory access: inst[6] is imm[0] and inst[5] is imm[1].
++ */
++static bool
++decode_clb_imm_opnd(dcontext_t *dc, uint32_t inst, int op_sz, byte *pc, byte *orig_pc,
++                    int idx, instr_t *out)
++{
++    reg_t reg = DR_REG_X8 + GET_FIELD(inst, 9, 7);
++    int32_t imm = (BIT(inst, 5) << 1) | BIT(inst, 6);
++    opnd_t opnd = opnd_add_flags(opnd_create_base_disp(reg, DR_REG_NULL, 0, imm, OPSZ_1),
++                                 DR_OPND_IMM_PRINT_DECIMAL);
++    instr_set_src(out, idx, opnd);
++    return true;
++}
++
++/* Decode the base register and offset immediate of the c.lh, c.lhu and c.sh
++ * instructions:
++ * |15 13|12 10|9    7|6|5      |4   2|1      0|
++ * | ... | ... | rs1' | | imm[1] | ... | opcode |
++ *              ^----^   ^-------^
++ */
++static bool
++decode_clh_imm_opnd(dcontext_t *dc, uint32_t inst, int op_sz, byte *pc, byte *orig_pc,
++                    int idx, instr_t *out)
++{
++    reg_t reg = DR_REG_X8 + GET_FIELD(inst, 9, 7);
++    int32_t imm = BIT(inst, 5) << 1;
++    opnd_t opnd = opnd_add_flags(opnd_create_base_disp(reg, DR_REG_NULL, 0, imm, OPSZ_2),
++                                 DR_OPND_IMM_PRINT_DECIMAL);
++    instr_set_src(out, idx, opnd);
++    return true;
++}
++
++/* Same as decode_clb_imm_opnd(), but the memory location is a destination. */
++static bool
++decode_csb_imm_opnd(dcontext_t *dc, uint32_t inst, int op_sz, byte *pc, byte *orig_pc,
++                    int idx, instr_t *out)
++{
++    reg_t reg = DR_REG_X8 + GET_FIELD(inst, 9, 7);
++    int32_t imm = (BIT(inst, 5) << 1) | BIT(inst, 6);
++    opnd_t opnd = opnd_add_flags(opnd_create_base_disp(reg, DR_REG_NULL, 0, imm, OPSZ_1),
++                                 DR_OPND_IMM_PRINT_DECIMAL);
++    instr_set_dst(out, idx, opnd);
++    return true;
++}
++
++/* Same as decode_clh_imm_opnd(), but the memory location is a destination. */
++static bool
++decode_csh_imm_opnd(dcontext_t *dc, uint32_t inst, int op_sz, byte *pc, byte *orig_pc,
++                    int idx, instr_t *out)
++{
++    reg_t reg = DR_REG_X8 + GET_FIELD(inst, 9, 7);
++    int32_t imm = BIT(inst, 5) << 1;
++    opnd_t opnd = opnd_add_flags(opnd_create_base_disp(reg, DR_REG_NULL, 0, imm, OPSZ_2),
++                                 DR_OPND_IMM_PRINT_DECIMAL);
++    instr_set_dst(out, idx, opnd);
++    return true;
++}
++
+ /* Array of operand decode functions indexed by riscv64_fld_t.
+  *
+  * NOTE: After benchmarking, perhaps this could be placed in the same section as
+@@ -1431,6 +1496,10 @@ opnd_dec_func_t opnd_decoders[] = {
+     [RISCV64_FLD_VS1] = decode_vs1_opnd,
+     [RISCV64_FLD_VS2] = decode_vs2_opnd,
+     [RISCV64_FLD_VS3] = decode_vs3_opnd,
++    [RISCV64_FLD_CLB_IMM] = decode_clb_imm_opnd,
++    [RISCV64_FLD_CLH_IMM] = decode_clh_imm_opnd,
++    [RISCV64_FLD_CSB_IMM] = decode_csb_imm_opnd,
++    [RISCV64_FLD_CSH_IMM] = decode_csh_imm_opnd,
+     [RISCV64_FLD_I_S_RS1_DISP] = decode_v_s_rs1_disp_opnd,
+ };
+ 
+@@ -1440,7 +1509,7 @@ opnd_dec_func_t opnd_decoders[] = {
+  * Volume I: Unprivileged ISA (ver. 20191213).
+  */
+ static inline rv_instr_info_t *
+-match_op_0(int funct, bool rv32, bool rv64)
++match_op_0(int funct, int bit12, int funct2, int bit6, bool rv32, bool rv64)
+ {
+     switch (funct) {
+     case 0: return &instr_infos[OP_c_addi4spn];
+@@ -1452,7 +1521,18 @@ match_op_0(int funct, bool rv32, bool rv64)
+         if (rv64)
+             return &instr_infos[OP_c_ld];
+         return NULL;
+-    // 4 is reserved.
++    case 4:
++        /* Zcb loads and stores, keyed on inst[12:10] (table 34.3 in the
++         * RISC-V Instruction Set Manual Volume I, ver. 20240411).
++         */
++        switch ((bit12 << 2) | funct2) {
++        case 0: return &instr_infos[OP_c_lbu];
++        case 1: return bit6 == 0 ? &instr_infos[OP_c_lhu] : &instr_infos[OP_c_lh];
++        case 2: return &instr_infos[OP_c_sb];
++        case 3: return bit6 == 0 ? &instr_infos[OP_c_sh] : NULL;
++        // 4 to 7 are reserved.
++        default: return NULL;
++        }
+     case 5: return &instr_infos[OP_c_fsd];
+     case 6: return &instr_infos[OP_c_sw];
+     case 7:
+@@ -1472,8 +1552,8 @@ match_op_0(int funct, bool rv32, bool rv64)
+  * Volume I: Unprivileged ISA (ver. 20191213).
+  */
+ static inline rv_instr_info_t *
+-match_op_1(int funct, int funct2, int funct3, int bit11to7, int bit12, bool rv32,
+-           bool rv64)
++match_op_1(int funct, int funct2, int funct3, int bit4to2, int bit11to7, int bit12,
++           bool rv32, bool rv64)
+ {
+     switch (funct) {
+     case 0:
+@@ -1513,7 +1593,21 @@ match_op_1(int funct, int funct2, int funct3, int bit11to7, int bit12, bool rv32
+                 switch (funct3) {
+                 case 0: return &instr_infos[OP_c_subw];
+                 case 1: return &instr_infos[OP_c_addw];
+-                // 2 and 3 are reserved.
++                /* Zcb, keyed on inst[4:2] (table 34.4 in the RISC-V
++                 * Instruction Set Manual Volume I, ver. 20240411).
++                 */
++                case 2: return &instr_infos[OP_c_mul];
++                case 3:
++                    switch (bit4to2) {
++                    case 0: return &instr_infos[OP_c_zext_b];
++                    case 1: return &instr_infos[OP_c_sext_b];
++                    case 2: return &instr_infos[OP_c_zext_h];
++                    case 3: return &instr_infos[OP_c_sext_h];
++                    case 4: return rv64 ? &instr_infos[OP_c_zext_w] : NULL;
++                    case 5: return &instr_infos[OP_c_not];
++                    // 6 and 7 are reserved.
++                    default: return NULL;
++                    }
+                 default: return NULL;
+                 }
+             default: return NULL;
+@@ -1588,6 +1682,7 @@ get_rvc_instr_info(uint32_t inst, int xlen)
+     int funct2 = GET_FIELD(inst, 11, 10);
+     int bit12 = BIT(inst, 12);
+     int funct3 = GET_FIELD(inst, 6, 5);
++    int bit4to2 = GET_FIELD(inst, 4, 2);
+     int bit6to2 = GET_FIELD(inst, 6, 2);
+     bool rv32 = xlen == 32;
+     bool rv64 = xlen == 64;
+@@ -1595,8 +1690,12 @@ get_rvc_instr_info(uint32_t inst, int xlen)
+     uint32_t mask, match;
+ 
+     switch (op) {
+-    case 0: info = match_op_0(funct, rv32, rv64); break;
+-    case 1: info = match_op_1(funct, funct2, funct3, bit11to7, bit12, rv32, rv64); break;
++    case 0:
++        info = match_op_0(funct, bit12, funct2, BIT(inst, 6), rv32, rv64);
++        break;
++    case 1:
++        info = match_op_1(funct, funct2, funct3, bit4to2, bit11to7, bit12, rv32, rv64);
++        break;
+     case 2: info = match_op_2(funct, bit11to7, bit6to2, bit12, rv32, rv64); break;
+     }
+ 
+@@ -2842,6 +2941,54 @@ encode_simm5_opnd(instr_t *instr, byte *pc, int idx, uint32_t *out, decode_info_
+     return true;
+ }
+ 
++/* Encode the base register and offset immediate of the c.lbu and c.sb
++ * instructions. See decode_clb_imm_opnd() for the field layout.
++ */
++static bool
++encode_clb_imm_opnd(instr_t *instr, byte *pc, int idx, uint32_t *out, decode_info_t *di)
++{
++    opnd_t opnd = instr_get_src(instr, idx);
++    uint32_t reg = opnd_get_base(opnd) - DR_REG_X8;
++    int32_t imm = opnd_get_disp(opnd);
++    *out |= SET_FIELD(reg, 9, 7) | SET_FIELD(imm >> 1, 5, 5) | SET_FIELD(imm, 6, 6);
++    return true;
++}
++
++/* Encode the base register and offset immediate of the c.lh, c.lhu and c.sh
++ * instructions. See decode_clh_imm_opnd() for the field layout.
++ */
++static bool
++encode_clh_imm_opnd(instr_t *instr, byte *pc, int idx, uint32_t *out, decode_info_t *di)
++{
++    opnd_t opnd = instr_get_src(instr, idx);
++    uint32_t reg = opnd_get_base(opnd) - DR_REG_X8;
++    int32_t imm = opnd_get_disp(opnd);
++    *out |= SET_FIELD(reg, 9, 7) | SET_FIELD(imm >> 1, 5, 5);
++    return true;
++}
++
++/* Same as encode_clb_imm_opnd(), but the memory location is a destination. */
++static bool
++encode_csb_imm_opnd(instr_t *instr, byte *pc, int idx, uint32_t *out, decode_info_t *di)
++{
++    opnd_t opnd = instr_get_dst(instr, idx);
++    uint32_t reg = opnd_get_base(opnd) - DR_REG_X8;
++    int32_t imm = opnd_get_disp(opnd);
++    *out |= SET_FIELD(reg, 9, 7) | SET_FIELD(imm >> 1, 5, 5) | SET_FIELD(imm, 6, 6);
++    return true;
++}
++
++/* Same as encode_clh_imm_opnd(), but the memory location is a destination. */
++static bool
++encode_csh_imm_opnd(instr_t *instr, byte *pc, int idx, uint32_t *out, decode_info_t *di)
++{
++    opnd_t opnd = instr_get_dst(instr, idx);
++    uint32_t reg = opnd_get_base(opnd) - DR_REG_X8;
++    int32_t imm = opnd_get_disp(opnd);
++    *out |= SET_FIELD(reg, 9, 7) | SET_FIELD(imm >> 1, 5, 5);
++    return true;
++}
++
+ /* Array of operand encode functions indexed by riscv64_fld_t. */
+ opnd_enc_func_t opnd_encoders[] = {
+     [RISCV64_FLD_NONE] = encode_none_opnd,
+@@ -2916,6 +3063,10 @@ opnd_enc_func_t opnd_encoders[] = {
+     [RISCV64_FLD_VS1] = encode_vs1_opnd,
+     [RISCV64_FLD_VS2] = encode_vs2_opnd,
+     [RISCV64_FLD_VS3] = encode_vs3_opnd,
++    [RISCV64_FLD_CLB_IMM] = encode_clb_imm_opnd,
++    [RISCV64_FLD_CLH_IMM] = encode_clh_imm_opnd,
++    [RISCV64_FLD_CSB_IMM] = encode_csb_imm_opnd,
++    [RISCV64_FLD_CSH_IMM] = encode_csh_imm_opnd,
+     [RISCV64_FLD_I_S_RS1_DISP] = encode_implicit_opnd,
+ };
+ 
+diff --git a/core/ir/riscv64/codec.h b/core/ir/riscv64/codec.h
+index 1cff29be0..da21fbef4 100644
+--- a/core/ir/riscv64/codec.h
++++ b/core/ir/riscv64/codec.h
+@@ -73,9 +73,11 @@ typedef enum {
+     RISCV64_ISA_EXT_RV64Q,
+     RISCV64_ISA_EXT_RV64ZBA,
+     RISCV64_ISA_EXT_RV64ZBB,
++    RISCV64_ISA_EXT_RV64ZCB,
+     RISCV64_ISA_EXT_RVC,
+     RISCV64_ISA_EXT_SVINVAL,
+     RISCV64_ISA_EXT_SYSTEM,
++    RISCV64_ISA_EXT_ZCB,
+     RISCV64_ISA_EXT_ZICBOM,
+     RISCV64_ISA_EXT_ZICBOP,
+     RISCV64_ISA_EXT_ZICBOZ,
+@@ -268,6 +270,11 @@ typedef enum {
+     RISCV64_FLD_VS1,
+     RISCV64_FLD_VS2,
+     RISCV64_FLD_VS3,
++    /* Zcb extension fields. */
++    RISCV64_FLD_CLB_IMM,
++    RISCV64_FLD_CLH_IMM,
++    RISCV64_FLD_CSB_IMM,
++    RISCV64_FLD_CSH_IMM,
+     RISCV64_FLD_CNT, /* Keep this last */
+ } riscv64_fld_t;
+ 
+diff --git a/core/ir/riscv64/codec.py b/core/ir/riscv64/codec.py
+index d1e54953a..d43645236 100755
+--- a/core/ir/riscv64/codec.py
++++ b/core/ir/riscv64/codec.py
+@@ -810,6 +810,45 @@ class Field(str, Enum):
+            '',
+            'The third input vector register (inst[11:7]).'
+            )
++    # Zcb extension fields.
++    CLB_IMM = (74,
++               'mem',
++               False,
++               False,
++               True,
++               'OPSZ_2b',
++               'imm(rs1)',
++               'The register-relative memory location of a 1-byte access (reg+imm).'
++               )
++    CLH_IMM = (75,
++               'mem',
++               False,
++               False,
++               True,
++               'OPSZ_2b',
++               'imm(rs1)',
++               'The register-relative memory location of a 2-byte access '
++               '(reg+imm: imm & 0x1 == 0).'
++               )
++    CSB_IMM = (76,
++               'mem',
++               True,
++               False,
++               True,
++               'OPSZ_2b',
++               'imm(rs1)',
++               'The register-relative memory location of a 1-byte access (reg+imm).'
++               )
++    CSH_IMM = (77,
++               'mem',
++               True,
++               False,
++               True,
++               'OPSZ_2b',
++               'imm(rs1)',
++               'The register-relative memory location of a 2-byte access '
++               '(reg+imm: imm & 0x1 == 0).'
++               )
+ 
+     def __str__(self) -> str:
+         return self.name.lower().replace("fp", "(fp)")
+@@ -925,7 +964,14 @@ class IslGenerator:
+     def __fixup_compressed_inst(self, inst: Instruction):
+         opc = (inst.match & inst.mask) & 0x3
+         funct3 = (inst.match & inst.mask) >> 13
+-        if (opc == 0b00 or opc == 0b10) and funct3 not in [0, 0b100]:  # LOAD/STORE instructions
++        if opc == 0b00 and funct3 == 0b100:  # Zcb LOAD/STORE instructions
++            dbg(f'fixup: {inst.name} {[f.name for f in inst.flds]}')
++            # Immediate argument will handle the base+disp.
++            inst.flds.pop(1)
++            if inst.name in ['c.sb', 'c.sh']:
++                inst.flds.reverse()
++            dbg(f'    -> {" " * len(inst.name)} {[f.name for f in inst.flds]}')
++        elif (opc == 0b00 or opc == 0b10) and funct3 not in [0, 0b100]:  # LOAD/STORE instructions
+             dbg(f'fixup: {inst.name} {[f.name for f in inst.flds]}')
+             # Immediate argument will handle the base+disp.
+             if opc == 0b00:  # non-SP LOAD/STORE instructions
+diff --git a/core/ir/riscv64/isl/README.md b/core/ir/riscv64/isl/README.md
+index 527081c11..e5edcdadb 100644
+--- a/core/ir/riscv64/isl/README.md
++++ b/core/ir/riscv64/isl/README.md
+@@ -107,6 +107,10 @@ For compressed instructions:
+ - cld_imm
+ - csw_imm
+ - csd_imm
++- clb_imm
++- clh_imm
++- csb_imm
++- csh_imm
+ - cimm5
+ - cb_imm
+ - cj_imm
+diff --git a/core/ir/riscv64/isl/rv64zcb.txt b/core/ir/riscv64/isl/rv64zcb.txt
+new file mode 100644
+index 000000000..ddb6b6fcd
+--- /dev/null
++++ b/core/ir/riscv64/isl/rv64zcb.txt
+@@ -0,0 +1,4 @@
++# "Zcb" Standard Extension for Code Size Reduction.
++# Version 1.0
++
++c.zext.w | ca | icrs1__ crd__ | 100111...1110001
+diff --git a/core/ir/riscv64/isl/zcb.txt b/core/ir/riscv64/isl/zcb.txt
+new file mode 100644
+index 000000000..5d4851d46
+--- /dev/null
++++ b/core/ir/riscv64/isl/zcb.txt
+@@ -0,0 +1,14 @@
++# "Zcb" Standard Extension for Code Size Reduction.
++# Version 1.0
++
++c.lbu    | cl | clb_imm crs1_ crd_  | 100000........00
++c.lhu    | cl | clh_imm crs1_ crd_  | 100001...0....00
++c.lh     | cl | clh_imm crs1_ crd_  | 100001...1....00
++c.sb     | cs | csb_imm crs1_ crs2_ | 100010........00
++c.sh     | cs | csh_imm crs1_ crs2_ | 100011...0....00
++c.zext.b | ca | icrs1__ crd__       | 100111...1100001
++c.sext.b | ca | icrs1__ crd__       | 100111...1100101
++c.zext.h | ca | icrs1__ crd__       | 100111...1101001
++c.sext.h | ca | icrs1__ crd__       | 100111...1101101
++c.not    | ca | icrs1__ crd__       | 100111...1110101
++c.mul    | ca | crs2_ icrs1__ crd__ | 100111...10...01
+diff --git a/make/CMake_riscv64_gen_codec.cmake b/make/CMake_riscv64_gen_codec.cmake
+index 6cc374298..77f2138e5 100644
+--- a/make/CMake_riscv64_gen_codec.cmake
++++ b/make/CMake_riscv64_gen_codec.cmake
+@@ -65,9 +65,11 @@ add_custom_command(
+           ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/rv64q.txt
+           ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/rv64zba.txt
+           ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/rv64zbb.txt
++          ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/rv64zcb.txt
+           ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/rvc.txt
+           ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/svinval.txt
+           ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/system.txt
++          ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/zcb.txt
+           ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/v.txt
+           ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/xtheadcmo.txt
+           ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/xtheadsync.txt
