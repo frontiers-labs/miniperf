@@ -17,6 +17,7 @@ pub struct PmuSamplingSource {
     stack_dump_size: Option<u32>,
     drivers: Vec<Box<dyn SamplingDriver>>,
     recorded: Vec<Counter>,
+    sample_rate: Option<(u64, u64)>,
 }
 
 impl PmuSamplingSource {
@@ -28,6 +29,7 @@ impl PmuSamplingSource {
             stack_dump_size: None,
             drivers: Vec::new(),
             recorded: Vec::new(),
+            sample_rate: None,
         }
     }
 
@@ -46,6 +48,13 @@ impl PmuSamplingSource {
     /// Counters the drivers actually opened, after capability fallbacks.
     pub fn recorded_counters(&self) -> &[Counter] {
         &self.recorded
+    }
+
+    /// The sampling frequency in use and the one requested, when the host
+    /// ceiling forced them apart.
+    pub fn lowered_sample_rate(&self) -> Option<(u64, u64)> {
+        self.sample_rate
+            .filter(|(effective, requested)| effective < requested)
     }
 }
 
@@ -95,6 +104,7 @@ impl Source for PmuSamplingSource {
         }
         if let Some(driver) = self.drivers.first() {
             self.recorded = driver.counters();
+            self.sample_rate = driver.sample_rate();
         }
         for driver in &mut self.drivers {
             driver.start(context.sink.clone())?;
@@ -114,6 +124,18 @@ impl Source for PmuSamplingSource {
             }
         }
         self.drivers.clear();
+        if let (true, Some((effective, requested))) =
+            (status == "available", self.lowered_sample_rate())
+        {
+            status = "degraded";
+            quality = "best_effort";
+            message = format!(
+                "sampled at {effective} Hz instead of {requested} Hz: this host's \
+                 perf_event_max_sample_rate is shared between the groups this scenario opens, \
+                 and asking for more makes the kernel throttle the groups, which guts the \
+                 counters rather than only thinning the samples"
+            );
+        }
         if status == "available" && crate::inherited_sampling_supported() == Some(false) {
             status = "degraded";
             quality = "best_effort";

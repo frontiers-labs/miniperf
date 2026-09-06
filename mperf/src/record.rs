@@ -9,6 +9,24 @@ use crate::{
     postprocess::perform_postprocessing, roofline, source::Pass,
 };
 
+/// Tells the user when the host's sampling ceiling forced the rate down, before
+/// the run rather than after it: a recording made at a fraction of the
+/// requested rate is thinner than the caller asked for, and saying so only in
+/// the collector status at the end is too late to act on.
+fn warn_if_sample_rate_lowered(pass: &crate::source::ResolvedPass) {
+    if let Some((effective, requested)) = pass.lowered_sample_rate() {
+        eprintln!(
+            "Warning: sampling at {effective} Hz, not the requested {requested} Hz: this host's \
+             perf_event_max_sample_rate is {} Hz and the scenario's counters need more than one \
+             group, which share it. Raise it with `sudo sysctl -w kernel.perf_event_max_sample_rate=<n>` \
+             for a denser profile.",
+            std::fs::read_to_string("/proc/sys/kernel/perf_event_max_sample_rate")
+                .map(|value| value.trim().to_owned())
+                .unwrap_or_else(|_| "unknown".to_owned())
+        );
+    }
+}
+
 pub async fn do_record(
     scenario: Scenario,
     output_directory: &Path,
@@ -231,6 +249,7 @@ fn snapshot(
     pass.start(&context)?;
     let stop_reason = wait_for_target(&dispatcher, process.as_deref(), recorded_pid, duration)?;
     let statuses = pass.stop(&context);
+    warn_if_sample_rate_lowered(&pass);
     let recorded_counters = pass.recorded_counters();
     let collectors: Vec<mperf_data::SnapshotCollectorStatus> = statuses
         .into_iter()
@@ -430,6 +449,7 @@ fn topdown(
     }
 
     pass.start(&context)?;
+    warn_if_sample_rate_lowered(&pass);
     let recorded_counters = pass.recorded_counters();
     let missing = scenario
         .events
