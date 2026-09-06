@@ -1,0 +1,8 @@
+[package]
+name = "miniperf-duckdb-prefetch"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# No dependencies: this is a build-dependency of the vendored libduckdb-sys and
+# must not drag anything into the graph ahead of it.
