@@ -15,8 +15,8 @@ mod host_telemetry;
 mod platform;
 mod platform_memory;
 mod process;
-mod sampling_probe;
 mod quick;
+mod sampling_probe;
 mod sink;
 mod source;
 mod topdown;
@@ -48,10 +48,10 @@ pub use platform_memory::{
 };
 pub use pmu_data::{Metric, MetricError, MetricExpression};
 pub use process::Process;
-pub use sampling_probe::{probe_sampling_group, SamplingProbe};
 #[cfg(feature = "symbolize")]
 pub use quick::{top_symbols, SymbolCount};
 pub use quick::{QuickSampler, SampleBatch};
+pub use sampling_probe::{probe_sampling_group, SamplingProbe};
 pub use sink::{
     MemSample, ProcAddr, ProcessInfo, Record, ResourceSample, Sample, Sink, SourceStatus, UserRegs,
 };

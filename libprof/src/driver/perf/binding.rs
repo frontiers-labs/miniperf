@@ -166,7 +166,10 @@ pub fn grouped_on_cpu(
         group_plan.len(),
         host_max_sample_rate(),
     );
-    LAST_SAMPLE_FREQ_REQUESTED.store(cycles_attrs.sample_freq, std::sync::atomic::Ordering::Relaxed);
+    LAST_SAMPLE_FREQ_REQUESTED.store(
+        cycles_attrs.sample_freq,
+        std::sync::atomic::Ordering::Relaxed,
+    );
     LAST_SAMPLE_FREQ.store(sample_freq, std::sync::atomic::Ordering::Relaxed);
     cycles_attrs.sample_freq = sample_freq;
     if let Some(attrs) = leader_attrs.as_mut() {
@@ -219,13 +222,7 @@ pub fn grouped_on_cpu(
             cycles_fd
         };
 
-        push_handle(
-            &mut handles,
-            cycles_fd,
-            Counter::Cycles,
-            !has_leader,
-            cpu,
-        )?;
+        push_handle(&mut handles, cycles_fd, Counter::Cycles, !has_leader, cpu)?;
 
         let instr_fd = unsafe { sys::perf_event_open(&mut instr_attrs, pid, cpu, leader_fd, 0) };
 

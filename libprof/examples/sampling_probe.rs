@@ -16,18 +16,18 @@ fn main() -> anyhow::Result<()> {
         vec![Counter::Cycles, Counter::Instructions, Counter::CpuClock]
     } else {
         vec![
-        Counter::Cycles,
-        Counter::Instructions,
-        Counter::LLCReferences,
-        Counter::LLCMisses,
-        Counter::BranchMisses,
-        Counter::BranchInstructions,
-        Counter::StalledCyclesBackend,
-        Counter::StalledCyclesFrontend,
-        Counter::CpuClock,
-        Counter::CpuMigrations,
-        Counter::PageFaults,
-        Counter::ContextSwitches,
+            Counter::Cycles,
+            Counter::Instructions,
+            Counter::LLCReferences,
+            Counter::LLCMisses,
+            Counter::BranchMisses,
+            Counter::BranchInstructions,
+            Counter::StalledCyclesBackend,
+            Counter::StalledCyclesFrontend,
+            Counter::CpuClock,
+            Counter::CpuMigrations,
+            Counter::PageFaults,
+            Counter::ContextSwitches,
         ]
     };
 
@@ -52,7 +52,10 @@ fn main() -> anyhow::Result<()> {
         println!("dropped: {}", dropped.join(", "));
     }
     println!("samples: {}", probe.samples);
-    println!("collapsed to software only: {}", probe.collapsed_to_software());
+    println!(
+        "collapsed to software only: {}",
+        probe.collapsed_to_software()
+    );
     println!("healthy: {}", probe.is_healthy());
 
     // Cross-check against a counting driver on an identical workload: the

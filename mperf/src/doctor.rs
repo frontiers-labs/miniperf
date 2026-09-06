@@ -1,6 +1,6 @@
 use anyhow::Result;
 use comfy_table::{Cell, Color, ContentArrangement, Table};
-use libprof::{probe_sampling_group, Capabilities, Mechanism};
+use libprof::{Capabilities, Mechanism, probe_sampling_group};
 use mperf_data::Scenario;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -158,7 +158,9 @@ fn sample_rate_ceiling_check() -> Check {
     }
     check(
         "sampling rate ceiling",
-        format!("{rate} Hz shared between a scenario's groups, so a multi-group scenario samples at about {per_group} Hz"),
+        format!(
+            "{rate} Hz shared between a scenario's groups, so a multi-group scenario samples at about {per_group} Hz"
+        ),
         Severity::Degraded,
         "sudo sysctl -w kernel.perf_event_max_sample_rate=10000 (persist by adding `kernel.perf_event_max_sample_rate = 10000` to /etc/sysctl.d/99-mperf.conf)",
     )
@@ -182,7 +184,7 @@ fn sampling_group_check(scenario: Scenario) -> Check {
                 format!("group could not be opened: {error}"),
                 Severity::Blocker,
                 "run `mperf doctor` with the workload's permissions, or report this host",
-            )
+            );
         }
     };
 
@@ -223,7 +225,10 @@ fn sampling_group_check(scenario: Scenario) -> Check {
     }
     check(
         &name,
-        format!("{} samples across {opened} hardware counters", probe.samples),
+        format!(
+            "{} samples across {opened} hardware counters",
+            probe.samples
+        ),
         Severity::Ok,
         "-",
     )

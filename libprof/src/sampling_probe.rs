@@ -77,7 +77,9 @@ pub fn probe_sampling_group(counters: &[Counter], millis: u64) -> Result<Samplin
         "while :; do :; done".to_owned(),
     ];
     let process = Process::new(&command, &[]).map_err(|error| {
-        Error::InvalidConfiguration(format!("sampling probe could not start a workload: {error}"))
+        Error::InvalidConfiguration(format!(
+            "sampling probe could not start a workload: {error}"
+        ))
     })?;
 
     let mut driver = SamplingDriverBuilder::new()
