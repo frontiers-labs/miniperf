@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use mperf_data::{RooflineCalibration, RooflineMethodInfo};
+use mperf_data::{MemoryLevelCalibration, RooflineCalibration, RooflineMethodInfo};
 
 use crate::sql::{Connection, Value, as_f64, as_i64, as_text, row_values, table_columns};
 
@@ -54,6 +54,9 @@ pub struct RooflineLoop {
     pub timing_quality: Option<String>,
     pub module_offset: Option<String>,
     pub trip_count: Option<u64>,
+    pub thread_count: Option<u32>,
+    pub duration_ns: Option<u64>,
+    pub cpu_time_ns: Option<u64>,
 }
 
 impl RooflineData {
@@ -69,24 +72,44 @@ impl RooflineData {
         }
     }
 
-    /// Calibrated bandwidth roofs that match this recording's intensity axis.
-    /// Architectural traffic uses the complete cache-aware hierarchy, while
-    /// DRAM traffic uses only the DRAM-sized streaming roof.
+    /// Calibrated all-core bandwidth roofs that match this recording's
+    /// intensity axis. Architectural traffic uses the complete cache-aware
+    /// hierarchy, while DRAM traffic uses only the DRAM-sized streaming roof.
     pub fn bandwidth_roofs(&self) -> Vec<(&str, f64)> {
         let Some(calibration) = self.calibration.as_ref() else {
             return Vec::new();
         };
+        self.select_roofs(
+            &calibration.memory_levels,
+            calibration.memory_gbytes_per_second,
+        )
+    }
+
+    /// The single-thread ceilings, when the calibration measured them: FP64
+    /// peak and the bandwidth roofs on this recording's intensity axis.
+    pub fn single_thread_roofs(&self) -> Option<(f64, Vec<(&str, f64)>)> {
+        let single = self.calibration.as_ref()?.single_thread.as_ref()?;
+        let compute = finite_positive(single.fp64_gflops)?;
+        Some((
+            compute,
+            self.select_roofs(&single.memory_levels, single.memory_gbytes_per_second),
+        ))
+    }
+
+    fn select_roofs<'a>(
+        &self,
+        levels: &'a [MemoryLevelCalibration],
+        dram: f64,
+    ) -> Vec<(&'a str, f64)> {
         let Some(method) = self.method.as_ref() else {
             return Vec::new();
         };
-
         let mut roofs = match method.traffic.as_str() {
-            "architectural" => calibration
-                .memory_levels
+            "architectural" => levels
                 .iter()
                 .map(|level| (level.level.as_str(), level.gbytes_per_second))
                 .collect::<Vec<_>>(),
-            "dram" | "dram-model" => vec![("DRAM", calibration.memory_gbytes_per_second)],
+            "dram" | "dram-model" => vec![("DRAM", dram)],
             _ => Vec::new(),
         };
         roofs.retain(|(_, bandwidth)| bandwidth.is_finite() && *bandwidth > 0.0);
@@ -94,16 +117,28 @@ impl RooflineData {
         roofs
     }
 
+    /// Whether a loop is rated against the single-thread ceilings: it ran on
+    /// one thread and the calibration measured them.
+    pub fn uses_single_thread_roofs(&self, loop_data: &RooflineLoop) -> bool {
+        loop_data.thread_count == Some(1) && self.single_thread_roofs().is_some()
+    }
+
     pub fn efficiency(&self, loop_data: &RooflineLoop) -> Option<f64> {
-        let calibration = self.calibration.as_ref()?;
-        let bandwidth = self
-            .bandwidth_roofs()
+        let (compute, roofs) = if self.uses_single_thread_roofs(loop_data) {
+            self.single_thread_roofs()?
+        } else {
+            (
+                self.calibration.as_ref()?.fp64_gflops,
+                self.bandwidth_roofs(),
+            )
+        };
+        let bandwidth = roofs
             .into_iter()
             .map(|(_, bandwidth)| bandwidth)
             .max_by(f64::total_cmp)?;
         let observed = loop_data.fp64_gflops()?;
         let intensity = loop_data.fp64_arithmetic_intensity()?;
-        let roof = finite_positive(calibration.fp64_gflops.min(bandwidth * intensity))?;
+        let roof = finite_positive(compute.min(bandwidth * intensity))?;
         (observed / roof).is_finite().then_some(observed / roof)
     }
 }
@@ -125,10 +160,16 @@ fn load_loops(connection: &Connection) -> Result<Vec<RooflineLoop>> {
     if columns.is_empty() {
         bail!("Roofline data is unavailable: table `roofline` does not exist");
     }
-    let confidence_columns = if columns.iter().any(|column| column.name == "timing_quality") {
+    let has = |name: &str| columns.iter().any(|column| column.name == name);
+    let confidence_columns = if has("timing_quality") {
         "timing_samples, timing_relative_error, timing_quality, module_offset, trip_count"
     } else {
         "NULL AS timing_samples, NULL AS timing_relative_error, NULL AS timing_quality, NULL AS module_offset, NULL AS trip_count"
+    };
+    let thread_columns = if has("thread_count") {
+        "thread_count, duration_ns, cpu_time_ns"
+    } else {
+        "NULL AS thread_count, NULL AS duration_ns, NULL AS cpu_time_ns"
     };
     let query = format!(
         "
@@ -148,7 +189,8 @@ fn load_loops(connection: &Connection) -> Result<Vec<RooflineLoop>> {
             vector_float_ai,
             vector_double_ops,
             vector_double_ai,
-            {confidence_columns}
+            {confidence_columns},
+            {thread_columns}
         FROM roofline
         ORDER BY
             COALESCE(scalar_double_ops, 0) + COALESCE(vector_double_ops, 0) DESC,
@@ -168,7 +210,7 @@ fn load_loops(connection: &Connection) -> Result<Vec<RooflineLoop>> {
         .next()
         .context("failed to read a row from view `roofline`")?
     {
-        let row = row_values(row, 20).context("failed to read a row from view `roofline`")?;
+        let row = row_values(row, 23).context("failed to read a row from view `roofline`")?;
         loops.push(RooflineLoop {
             function_name: string_value(&row[0]).unwrap_or_else(|| "[unknown loop]".to_string()),
             file_name: string_value(&row[1]).unwrap_or_default(),
@@ -190,6 +232,9 @@ fn load_loops(connection: &Connection) -> Result<Vec<RooflineLoop>> {
             timing_quality: string_value(&row[17]),
             module_offset: string_value(&row[18]),
             trip_count: as_i64(&row[19]).and_then(|value| u64::try_from(value).ok()),
+            thread_count: as_i64(&row[20]).and_then(|value| u32::try_from(value).ok()),
+            duration_ns: as_i64(&row[21]).and_then(|value| u64::try_from(value).ok()),
+            cpu_time_ns: as_i64(&row[22]).and_then(|value| u64::try_from(value).ok()),
         });
     }
     Ok(loops)
@@ -218,7 +263,7 @@ fn sum_optional(left: Option<f64>, right: Option<f64>) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mperf_data::MemoryLevelCalibration;
+    use mperf_data::RooflineCeilings;
 
     fn calibration() -> RooflineCalibration {
         RooflineCalibration {
@@ -250,6 +295,7 @@ mod tests {
                     shared_by: 4,
                 },
             ],
+            single_thread: None,
         }
     }
 
@@ -330,6 +376,9 @@ mod tests {
             timing_quality: None,
             module_offset: None,
             trip_count: None,
+            thread_count: None,
+            duration_ns: None,
+            cpu_time_ns: None,
         };
         let architectural = RooflineData {
             loops: Vec::new(),
@@ -349,6 +398,67 @@ mod tests {
         loop_data.scalar_double_ai = Some(8.0);
         assert_eq!(architectural.efficiency(&loop_data), Some(0.5));
         assert_eq!(dram.efficiency(&loop_data), Some(0.5));
+    }
+
+    #[test]
+    fn single_thread_loops_are_rated_against_the_single_thread_roof() {
+        let mut calibration = calibration();
+        calibration.single_thread = Some(RooflineCeilings {
+            threads: 1,
+            fp64_gflops: 50.0,
+            fp64_gflops_samples: vec![50.0],
+            memory_gbytes_per_second: 20.0,
+            memory_gbytes_per_second_samples: vec![20.0],
+            ridge_point_flops_per_byte: 2.5,
+            memory_levels: vec![MemoryLevelCalibration {
+                level: "DRAM".to_string(),
+                gbytes_per_second: 20.0,
+                gbytes_per_second_samples: vec![20.0],
+                working_set_bytes: 1024,
+                capacity_bytes: 0,
+                shared_by: 1,
+            }],
+        });
+        let data = RooflineData {
+            loops: Vec::new(),
+            calibration: Some(calibration),
+            method: Some(method("dram")),
+        };
+        let mut loop_data = RooflineLoop {
+            function_name: "loop".to_string(),
+            file_name: String::new(),
+            line: 0,
+            scalar_int_ops: None,
+            scalar_int_ai: None,
+            scalar_float_ops: None,
+            scalar_float_ai: None,
+            scalar_double_ops: Some(25_000_000_000.0),
+            scalar_double_ai: Some(8.0),
+            vector_int_ops: None,
+            vector_int_ai: None,
+            vector_float_ops: None,
+            vector_float_ai: None,
+            vector_double_ops: None,
+            vector_double_ai: None,
+            timing_samples: None,
+            timing_relative_error: None,
+            timing_quality: None,
+            module_offset: None,
+            trip_count: None,
+            thread_count: Some(1),
+            duration_ns: Some(1_000),
+            cpu_time_ns: Some(1_000),
+        };
+        assert_eq!(
+            data.single_thread_roofs(),
+            Some((50.0, vec![("DRAM", 20.0)]))
+        );
+        assert!(data.uses_single_thread_roofs(&loop_data));
+        assert_eq!(data.efficiency(&loop_data), Some(0.5));
+
+        loop_data.thread_count = Some(4);
+        assert!(!data.uses_single_thread_roofs(&loop_data));
+        assert_eq!(data.efficiency(&loop_data), Some(0.125));
     }
 
     #[test]

@@ -351,6 +351,15 @@ impl Widget for SummaryTab {
                     calibration.threads
                 ),
             ]));
+            if let Some(single) = &calibration.single_thread {
+                rows.push(Row::new([
+                    "Single-thread ceilings".to_string(),
+                    format!(
+                        "{:.2} GFLOP/s · {:.2} GB/s",
+                        single.fp64_gflops, single.memory_gbytes_per_second
+                    ),
+                ]));
+            }
         }
         let widths = [Constraint::Percentage(20), Constraint::Percentage(80)];
 

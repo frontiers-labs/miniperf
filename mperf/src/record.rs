@@ -53,6 +53,12 @@ pub async fn do_record(
             "Host ceilings: {:.2} GFLOP/s FP64, {:.2} GB/s memory ({} Rayon threads)",
             calibration.fp64_gflops, calibration.memory_gbytes_per_second, calibration.threads
         );
+        if let Some(single) = &calibration.single_thread {
+            println!(
+                "Single-thread ceilings: {:.2} GFLOP/s FP64, {:.2} GB/s memory",
+                single.fp64_gflops, single.memory_gbytes_per_second
+            );
+        }
         mperf_data::CpuInfo {
             memory_calibration: Some(Box::new((&calibration).into())),
             roofline_calibration: Some(Box::new(calibration)),

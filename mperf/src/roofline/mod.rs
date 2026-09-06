@@ -636,6 +636,11 @@ async fn profile_command(
         eprintln!("Warning: pmu_sampling: {error}");
         warnings.push(format!("pmu_sampling: {error}"));
     }
+    if libprof::inherited_sampling_supported() == Some(false) {
+        let warning = "this kernel rejects inherited sampling groups (Linux < 6.12), so threads created after exec were not sampled and loop timing covers the main thread only".to_string();
+        eprintln!("Warning: {warning}");
+        warnings.push(warning);
+    }
 
     if let Some((source, context)) = precise_memory.as_mut() {
         for status in libprof::Source::stop(source.as_mut(), context)

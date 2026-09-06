@@ -5,7 +5,9 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use mperf_data::{MemoryBandwidthCalibration, MemoryLevelCalibration, RooflineCalibration};
+use mperf_data::{
+    MemoryBandwidthCalibration, MemoryLevelCalibration, RooflineCalibration, RooflineCeilings,
+};
 use rayon::prelude::*;
 
 const SAMPLES: usize = 5;
@@ -15,6 +17,35 @@ const MEMORY_REPETITIONS: usize = 8;
 const MEMORY_CHUNK_ELEMENTS: usize = 16 * 1024;
 
 pub(super) fn measure() -> Result<RooflineCalibration> {
+    let (all, memory) = measure_ceilings()?;
+    let single_thread = (all.threads > 1)
+        .then(|| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(1)
+                .build()
+                .context("build the single-thread calibration pool")?
+                .install(measure_ceilings)
+                .map(|(ceilings, _)| ceilings)
+        })
+        .transpose()?;
+    Ok(RooflineCalibration {
+        threads: all.threads,
+        cpu_affinity: memory.cpu_affinity,
+        samples: SAMPLES,
+        compute_kernel: compute_kernel().name.to_string(),
+        fp64_gflops: all.fp64_gflops,
+        fp64_gflops_samples: all.fp64_gflops_samples,
+        memory_gbytes_per_second: all.memory_gbytes_per_second,
+        memory_gbytes_per_second_samples: all.memory_gbytes_per_second_samples,
+        ridge_point_flops_per_byte: all.ridge_point_flops_per_byte,
+        memory_working_set_bytes: memory.working_set_bytes,
+        memory_levels: all.memory_levels,
+        single_thread,
+    })
+}
+
+/// Measures every ceiling on the current Rayon pool.
+fn measure_ceilings() -> Result<(RooflineCeilings, MemoryBandwidthCalibration)> {
     let threads = rayon::current_num_threads();
     let kernel = compute_kernel();
 
@@ -34,19 +65,16 @@ pub(super) fn measure() -> Result<RooflineCalibration> {
 
     let memory_levels = measure_memory_levels(threads, &memory);
 
-    Ok(RooflineCalibration {
+    let ceilings = RooflineCeilings {
         threads,
-        cpu_affinity: memory.cpu_affinity,
-        samples: SAMPLES,
-        compute_kernel: kernel.name.to_string(),
         fp64_gflops,
         fp64_gflops_samples: compute_samples,
         memory_gbytes_per_second: memory.gbytes_per_second,
-        memory_gbytes_per_second_samples: memory.gbytes_per_second_samples,
+        memory_gbytes_per_second_samples: memory.gbytes_per_second_samples.clone(),
         ridge_point_flops_per_byte: fp64_gflops / memory.gbytes_per_second,
-        memory_working_set_bytes: memory.working_set_bytes,
         memory_levels,
-    })
+    };
+    Ok((ceilings, memory))
 }
 
 /// Per-thread fraction of a cache level the triad's three buffers are sized to
