@@ -27,3 +27,4 @@ qemu-roofline.counts
 # Roofline backends drop these next to the working directory.
 /dr-roofline.*
 /qemu-roofline.*
+docs/book/
