@@ -1,6 +1,7 @@
 use anyhow::Result;
 use comfy_table::{Cell, Color, ContentArrangement, Table};
-use libprof::{Capabilities, Mechanism};
+use libprof::{probe_sampling_group, Capabilities, Mechanism};
+use mperf_data::Scenario;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Severity {
@@ -113,6 +114,119 @@ fn paranoid_check(caps: &Capabilities) -> Check {
             "-",
         ),
     }
+}
+
+/// Whether a scenario's sampling group is schedulable here, tested the way a
+/// recording does it: build the group, sample a live child, count what comes
+/// back.
+///
+/// `cpu-cycles opens` is not that test. A group the PMU cannot host is still
+/// accepted by `perf_event_open` and then never scheduled, which produces a
+/// recording with no `pmu_*` columns and no error, so this check has to run
+/// the real thing and insist on real samples.
+/// The host's ceiling on samples per second, which every sampling group on a
+/// CPU shares.
+///
+/// A scenario whose counters need more than one group splits that ceiling
+/// between them, and asking for more than it allows makes the kernel throttle:
+/// throttling stops a group while its running time keeps accruing, so the
+/// counters come back orders of magnitude low rather than merely sparse. The
+/// profiler lowers its own rate to stay under the ceiling, so this reports what
+/// that costs rather than a failure.
+fn sample_rate_ceiling_check() -> Check {
+    let Some(rate) = std::fs::read_to_string("/proc/sys/kernel/perf_event_max_sample_rate")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+    else {
+        return check(
+            "sampling rate ceiling",
+            "perf_event_max_sample_rate is unreadable",
+            Severity::Info,
+            "-",
+        );
+    };
+
+    // What a two-group scenario (TMA on a small PMU) would be held to.
+    let per_group = (rate * 4 / 5 / 2).max(1);
+    if rate >= 10_000 {
+        return check(
+            "sampling rate ceiling",
+            format!("{rate} Hz, enough for every scenario"),
+            Severity::Ok,
+            "-",
+        );
+    }
+    check(
+        "sampling rate ceiling",
+        format!("{rate} Hz shared between a scenario's groups, so a multi-group scenario samples at about {per_group} Hz"),
+        Severity::Degraded,
+        "sudo sysctl -w kernel.perf_event_max_sample_rate=10000 (persist by adding `kernel.perf_event_max_sample_rate = 10000` to /etc/sysctl.d/99-mperf.conf)",
+    )
+}
+
+fn sampling_group_check(scenario: Scenario) -> Check {
+    let label = match scenario {
+        Scenario::Snapshot => "snapshot",
+        Scenario::Mem => "mem",
+        Scenario::Roofline => "roofline",
+        Scenario::TMA => "tma",
+    };
+    let name = format!("sampling group ({label})");
+    let counters = crate::source::scenario_counters(scenario);
+    let counters = counters.as_slice();
+    let probe = match probe_sampling_group(counters, 200) {
+        Ok(probe) => probe,
+        Err(error) => {
+            return check(
+                &name,
+                format!("group could not be opened: {error}"),
+                Severity::Blocker,
+                "run `mperf doctor` with the workload's permissions, or report this host",
+            )
+        }
+    };
+
+    let opened = probe.hardware_opened().len();
+    let dropped = probe
+        .hardware_dropped()
+        .iter()
+        .map(|counter| counter.name().to_owned())
+        .collect::<Vec<_>>();
+
+    if probe.collapsed_to_software() {
+        return check(
+            &name,
+            "no hardware counter survived; samples would carry software events only",
+            Severity::Blocker,
+            "recordings on this host have no pmu_* data; report the host and its event table",
+        );
+    }
+    if probe.samples == 0 {
+        return check(
+            &name,
+            format!("{opened} hardware counters opened but no samples arrived"),
+            Severity::Blocker,
+            "the group is accepted and never scheduled; report the host and its event table",
+        );
+    }
+    if !dropped.is_empty() {
+        return check(
+            &name,
+            format!(
+                "{} samples, {opened} hardware counters; dropped {}",
+                probe.samples,
+                dropped.join(", ")
+            ),
+            Severity::Degraded,
+            "these counters are missing from recordings on this host",
+        );
+    }
+    check(
+        &name,
+        format!("{} samples across {opened} hardware counters", probe.samples),
+        Severity::Ok,
+        "-",
+    )
 }
 
 fn hardware_counter_check(caps: &Capabilities) -> Check {
@@ -305,6 +419,9 @@ fn checks(caps: &Capabilities, tooling: &Tooling) -> Vec<Check> {
     let mut checks = vec![
         paranoid_check(caps),
         hardware_counter_check(caps),
+        sample_rate_ceiling_check(),
+        sampling_group_check(Scenario::Snapshot),
+        sampling_group_check(Scenario::TMA),
         kernel_symbol_check(caps),
         nmi_watchdog_check(caps),
     ];
