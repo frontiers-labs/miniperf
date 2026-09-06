@@ -32,7 +32,8 @@ taskset -c 0-3 mperf record -s roofline -o roofline-avx2 -- examples/spmv-crs/bu
 Record profile with Roofline scenario
 Capture fidelity: roofline at 'counter_only' (uncore bandwidth: system-wide events need CAP_PERFMON or perf_event_paranoid <= 0 (currently 2))
 Calibrating host Roofline ceilings...
-Host ceilings: 123.67 GFLOP/s FP64, 19.76 GB/s memory (4 Rayon threads)
+Host ceilings: 112.89 GFLOP/s FP64, 16.64 GB/s memory (4 Rayon threads)
+Single-thread ceilings: 29.80 GFLOP/s FP64, 8.00 GB/s memory
 Roofline method: native timing with DynamoRIO binary accounting
 Warning: per-loop throughput is published only when native timing has at most 10% estimated 95% sampling error; lower-confidence loops retain accounting but are not plotted
 Warning: native timing and DynamoRIO accounting come from separate executions
@@ -77,61 +78,65 @@ taskset -c 0-3 mperf record -s roofline -o roofline-avx2 -- examples/spmv-crs/bu
 ## Read the loops
 
 ```sh
-mperf query roofline-avx2 'SELECT function_name, line, vector_double_ops / 1e9 AS gflops, vector_double_ai AS ai, timing_relative_error AS err, timing_quality, traffic_source FROM roofline ORDER BY vector_double_ops DESC NULLS LAST LIMIT 3'
+mperf query roofline-avx2 'SELECT function_name, line, vector_double_ops / 1e9 AS gflops, vector_double_ai AS ai, thread_count, timing_relative_error AS err, timing_quality FROM roofline ORDER BY vector_double_ops DESC NULLS LAST LIMIT 3'
 ```
 
 ```
-┌────────────────┬──────┬──────────┬──────────┬──────────┬──────────────────────┬────────────────┐
-│  function_name ┆ line ┆  gflops  ┆    ai    ┆    err   ┆    timing_quality    ┆ traffic_source │
-╞════════════════╪══════╪══════════╪══════════╪══════════╪══════════════════════╪════════════════╡
-│ spmv._omp_fn.0 ┆  174 ┆ 3.516646 ┆ 0.125000 ┆ 0.021817 ┆ high-confidence      ┆ architectural  │
-│ spmv._omp_fn.0 ┆  707 ┆ 2.615918 ┆ 0.142857 ┆ 0.022867 ┆ high-confidence      ┆ architectural  │
-│ main           ┆   88 ┆ NULL     ┆ 0.000000 ┆ 0.800167 ┆ insufficient-samples ┆ architectural  │
-└────────────────┴──────┴──────────┴──────────┴──────────┴──────────────────────┴────────────────┘
+┌────────────────┬──────┬──────────┬──────────┬──────────────┬──────────┬──────────────────────┐
+│  function_name ┆ line ┆  gflops  ┆    ai    ┆ thread_count ┆    err   ┆    timing_quality    │
+╞════════════════╪══════╪══════════╪══════════╪══════════════╪══════════╪══════════════════════╡
+│ spmv._omp_fn.0 ┆  174 ┆ 3.301652 ┆ 0.125000 ┆            4 ┆ 0.026655 ┆ high-confidence      │
+│ spmv._omp_fn.0 ┆  707 ┆ 2.473423 ┆ 0.142857 ┆            4 ┆ 0.027462 ┆ high-confidence      │
+│ main           ┆   93 ┆ NULL     ┆ 0.000000 ┆            0 ┆ NULL     ┆ insufficient-samples │
+└────────────────┴──────┴──────────┴──────────┴──────────────┴──────────┴──────────────────────┘
 ```
 
-Now the two OpenMP kernel loops have about 8000 samples each and a 2 % timing error. Line 174 is the gather-and-FMA loop over the nonzeros of a row. Line 707 is the horizontal reduction and store. Together they account for the kernel's FP64 work.
+Now the two OpenMP kernel loops have about 8000 samples each, a 3 % timing error, and all four threads were seen inside them. Line 174 is the gather-and-FMA loop over the nonzeros of a row. Line 707 is the horizontal reduction and store. Together they account for the kernel's FP64 work.
 
-Throughput is in GFLOP/s. Intensity is in FLOP per byte. `traffic_source` says `architectural`: the bytes are what the loads and stores asked for, counted by DynamoRIO. That word matters in the next step.
+Throughput is in GFLOP/s, summed over the four threads. Intensity is in FLOP per byte. The `traffic_source` column, not shown here, says `architectural`: the bytes are what the loads and stores asked for, counted by DynamoRIO. That word matters in the next step.
 
-The raw accounting is in `roofline_binary_loops`:
+The raw accounting is in `roofline_loops`:
 
 ```sh
-mperf query roofline-avx2 "SELECT line, trip_count, duration_ns, timing_samples, vector_double_ops FROM roofline_binary_loops WHERE function_name LIKE 'spmv%'"
+mperf query roofline-avx2 "SELECT line, trip_count, duration_ns, cpu_time_ns, timing_samples, vector_double_ops FROM roofline_loops WHERE function_name LIKE 'spmv%'"
 ```
 
 ```
-┌──────┬───────────────┬───────────────┬────────────────┬───────────────────┐
-│ line ┆   trip_count  ┆  duration_ns  ┆ timing_samples ┆ vector_double_ops │
-╞══════╪═══════════════╪═══════════════╪════════════════╪═══════════════════╡
-│  174 ┆   525,066,420 ┆ 5,076,579,545 ┆          8,071 ┆    17,852,530,688 │
-│  707 ┆ 1,575,223,295 ┆ 4,817,347,292 ┆          7,347 ┆    12,601,786,368 │
-└──────┴───────────────┴───────────────┴────────────────┴───────────────────┘
+┌──────┬───────────────┬───────────────┬───────────────┬────────────────┬───────────────────┐
+│ line ┆   trip_count  ┆  duration_ns  ┆  cpu_time_ns  ┆ timing_samples ┆ vector_double_ops │
+╞══════╪═══════════════╪═══════════════╪═══════════════╪════════════════╪═══════════════════╡
+│  174 ┆   525,066,420 ┆ 5,407,151,749 ┆ 8,130,338,446 ┆          8,157 ┆    17,852,530,688 │
+│  707 ┆ 1,575,223,295 ┆ 5,094,876,324 ┆ 7,398,179,143 ┆          7,420 ┆    12,601,786,368 │
+└──────┴───────────────┴───────────────┴───────────────┴────────────────┴───────────────────┘
 ```
 
-525 million trips of the inner loop, 17.9 billion vector FP64 operations, 5.08 seconds of sampled time. Divide and you get the 3.5 GFLOP/s above.
+525 million trips of the inner loop, 17.9 billion vector FP64 operations, and 5.41 seconds during which at least one thread was inside the loop. Divide and you get the 3.3 GFLOP/s above. `cpu_time_ns` adds up the four threads' own time in the loop, 8.13 seconds, so each thread spent about 2 seconds there and the rest of the 10-second run in the OpenMP runtime between parallel regions. A loop that keeps all four threads busy the whole time would show a CPU time near four times its duration.
 
 ## Read the ceilings
 
 ```sh
-jq '.cpu_info.roofline_calibration | {fp64_gflops, memory_gbytes_per_second, ridge_point_flops_per_byte, threads, cpu_affinity}' roofline-avx2/info.json
+jq '.cpu_info.roofline_calibration | {fp64_gflops, memory_gbytes_per_second, ridge_point_flops_per_byte, threads, cpu_affinity, single_thread: (.single_thread | {fp64_gflops, memory_gbytes_per_second})}' roofline-avx2/info.json
 ```
 
 ```json
 {
-  "fp64_gflops": 123.26,
-  "memory_gbytes_per_second": 19.35,
-  "ridge_point_flops_per_byte": 6.37,
+  "fp64_gflops": 112.89,
+  "memory_gbytes_per_second": 16.64,
+  "ridge_point_flops_per_byte": 6.78,
   "threads": 4,
-  "cpu_affinity": "0-3"
+  "cpu_affinity": "0-3",
+  "single_thread": {
+    "fp64_gflops": 29.80,
+    "memory_gbytes_per_second": 8.00
+  }
 }
 ```
 
-Four cores sustain 123 GFLOP/s of FP64 FMA and 19.4 GB/s from DRAM. The ridge is at 6.4 FLOP/byte. Our loops sit at 0.125 and 0.143, fifty times to the left of the ridge. This kernel is bandwidth-bound by a wide margin, which is what everyone expects of SpMV. The full calibration object also has the five samples behind each median and the L2 and L3 bandwidths.
+Four cores sustain 113 GFLOP/s of FP64 FMA and 16.6 GB/s from DRAM. The ridge is at 6.8 FLOP/byte. Our loops sit at 0.125 and 0.143, fifty times to the left of the ridge. This kernel is bandwidth-bound by a wide margin, which is what everyone expects of SpMV. One core alone reaches 29.8 GFLOP/s and 8.0 GB/s; the viewer rates a loop that ran on one thread against those instead of the four-core roofs. The full calibration object also has the five samples behind each median and the L2 and L3 bandwidths.
 
 ## The second mistake: bytes and roof at different levels
 
-Now the arithmetic. At intensity 0.125 the DRAM roof allows \\(0.125 \times 19.35 = 2.4\\) GFLOP/s. The loop at line 174 runs at 3.5 GFLOP/s. It is above the roof.
+Now the arithmetic. At intensity 0.125 the DRAM roof allows \\(0.125 \times 16.64 = 2.1\\) GFLOP/s. The loop at line 174 runs at 3.3 GFLOP/s. It is above the roof.
 
 That is not a measurement error. It is the `traffic_source` column telling us the denominator and the roof describe different things. Architectural bytes count every load, including the gathers from the `x` vector, which is 2 MiB and lives in the L3 for the whole run. Those bytes never reach DRAM. Measured against the L3 bandwidth from the calibration, the point sits comfortably below its roof.
 
