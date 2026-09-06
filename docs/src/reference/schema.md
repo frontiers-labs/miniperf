@@ -106,11 +106,15 @@ Lines touched by more than one thread or with any HITM snoop: `cache_line`, `sam
 
 ### roofline
 
-One row per loop with a plotted point or its accounting: `file_name`, `function_name`, `line`, then for each of `scalar_int`, `scalar_float`, `scalar_double`, `vector_int`, `vector_float`, `vector_double` the columns `<kind>_ops` in operations per second and `<kind>_ai` in operations per byte, then `timing_samples`, `timing_relative_error`, `timing_quality`, `module_offset`, `trip_count`, `arch_bytes`, `dram_bytes`, `measured_dram_bytes`, `traffic_source`.
+One row per loop with a plotted point or its accounting: `file_name`, `function_name`, `line`, then for each of `scalar_int`, `scalar_float`, `scalar_double`, `vector_int`, `vector_float`, `vector_double` the columns `<kind>_ops` in operations per second and `<kind>_ai` in operations per byte, then `timing_samples`, `timing_relative_error`, `timing_quality`, `module_offset`, `trip_count`, `arch_bytes`, `dram_bytes`, `measured_dram_bytes`, `traffic_source`, `duration_ns`, `cpu_time_ns`, `thread_count`.
 
-### roofline_binary_loops
+`<kind>_ops` is the total over every thread divided by `duration_ns`, so it is the aggregate rate to compare with the all-core ceilings. Divide by `duration_ns / cpu_time_ns` for the mean rate of one thread.
 
-Raw per-loop accounting from the engine: `module_offset`, `function_name`, `file_name`, `line`, `trip_count`, `duration_ns`, `timing_samples`, `timing_relative_error`, `timing_quality`, `measured_dram_bytes`, `bytes_load`, `bytes_store`, `arch_bytes_load`, `arch_bytes_store`, and the six `*_ops` counts.
+### roofline_loops
+
+One row per loop from the backend that measured it: `module_offset` and `trip_count` (binary backends only), `function_name`, `file_name`, `line`, `duration_ns`, `cpu_time_ns`, `thread_count`, `timing_samples`, `timing_relative_error`, `timing_quality`, `measured_dram_bytes`, `bytes_load`, `bytes_store`, `arch_bytes_load`, `arch_bytes_store`, and the six `*_ops` counts.
+
+`duration_ns` is the wall-clock time during which at least one thread was inside the loop. `cpu_time_ns` adds up each thread's own time inside it, so a loop that four threads run together has `cpu_time_ns` near four times `duration_ns`. `thread_count` is the number of distinct threads observed in the loop. With the binary backends the times come from sample windows and are present only for `high-confidence` rows; the compiler backend measures them directly and marks its rows `instrumented`.
 
 ### roofline_ops, roofline_loop_runs
 

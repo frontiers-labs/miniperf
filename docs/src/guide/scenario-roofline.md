@@ -38,7 +38,7 @@ Loops in shared libraries and the dynamic loader are excluded.
 ## What it produces
 
 - `roofline` is the chart table: per loop, operations per second and arithmetic intensity for scalar and vector single and double precision, plus `timing_quality`, `traffic_source`, and byte counts.
-- `roofline_binary_loops` has the raw per-loop accounting: trip count, duration, sample count, load and store bytes, and operation counts by kind.
+- `roofline_loops` has the raw per-loop accounting: trip count, wall-clock duration, CPU time, thread count, sample count, load and store bytes, and operation counts by kind.
 - `info.json` holds the full calibration under `cpu_info.roofline_calibration`: five samples per ceiling with their median, the thread count, affinity, kernel used, and the ridge point.
 - `qemu-roofline.loops.json`, `qemu-roofline.cfg`, and `qemu-roofline.counts` are the engine's own output, kept for audit.
 
@@ -55,6 +55,12 @@ mperf record -s roofline -o results/compiler -- ./workload
 ```
 
 The result has one row per instrumented source loop instead of per binary loop.
+
+## Threads
+
+Every thread of the process is sampled and every thread's operations are counted, whatever created them: OpenMP, pthreads, Rayon, or a custom pool. A loop's `duration_ns` is the wall-clock time during which any of its threads was inside it, so the plotted GFLOP/s is the aggregate rate of the whole team and compares with the all-core ceilings. `cpu_time_ns` and `thread_count` say how much of that came from parallelism: a loop that four threads share has a CPU time near four times its duration. Threads that spin in the OpenMP runtime's barriers spend that time outside the executable, so it counts toward no loop.
+
+Kernels before Linux 6.12 cannot sample threads created after `exec`. On such a host the recording keeps only the main thread's timing and says so in its method warnings.
 
 ## Keep calibration and workload comparable
 
