@@ -7,12 +7,10 @@ license = "GPL-3.0-or-later"
 [dependencies]
 anyhow = "1.0.95"
 clap = { version = "4.5.23", features = ["derive"] }
-flamelens = "0.3.1"
 # Compile Metal shaders through the framework at startup on macOS. This keeps
 # local builds working without the optional Xcode Metal Toolchain component.
 gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 miniperf-store = { path = "../store" }
 mperf-data = { path = "../mperf-data" }
-num-format = "0.4.4"
 pmu-data = { package = "miniperf-pmu-data", path = "../pmu-data" }
 serde_json = "1.0"

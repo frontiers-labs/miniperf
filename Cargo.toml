@@ -33,3 +33,10 @@ mperf.opt-level = 3
 # model and CFG accounting across modules.
 [profile.release.package.miniperf-roofline-core]
 codegen-units = 1
+
+# `libduckdb-sys` is vendored only to give it a build-dependency on
+# `miniperf-duckdb-prefetch`, which installs the pinned DuckDB before rustc
+# compiles this crate. Nothing else differs from the published crate; re-vendor
+# it when the `duckdb` pin moves.
+[patch.crates-io]
+libduckdb-sys = { path = "third_party/libduckdb-sys" }

@@ -10,8 +10,15 @@ inputs:
     required: false
     default: ''
   cache-key:
-    description: Cache key suffix
-    required: true
+    description: >-
+      Cache identity. Jobs that compile the same artifacts for the same target
+      must pass the same value so they share one cache entry; see ci.yml.
+    required: false
+    default: ''
+  cache:
+    description: Set to 'false' for jobs that compile nothing, so they neither restore nor store a cargo cache.
+    required: false
+    default: 'true'
 
 runs:
   using: composite
@@ -35,6 +42,10 @@ runs:
         components: ${{ inputs.components }}
         targets: ${{ inputs.target }}
 
+    # `shared-key`, not `key`: rust-cache mixes the job id into `key`, so jobs
+    # passing the same `key` still get separate entries. `shared-key` replaces
+    # that job component, which is what lets build and test reuse one entry.
     - uses: Swatinem/rust-cache@v2
+      if: inputs.cache != 'false'
       with:
-        key: ${{ inputs.cache-key }}
+        shared-key: ${{ inputs.cache-key }}
