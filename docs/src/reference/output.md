@@ -35,7 +35,7 @@ Per scenario:
 | `snapshot` | `hotspots`, `snapshot_processes`, `snapshot_findings`, `bpf_metrics` when BPF ran |
 | `tma` | `tma`, `tma_summary`, `tma_intervals`, `mem_samples`, `alloc_site_memory`, `cacheline_contention` |
 | `mem` | `hotspots`, `memory_summary`, `memory_timeline`, `memory_working_set`, `memory_miss_ratio`, `memory_reuse_distance`, `memory_spatial_utilization`, `memory_strides`, `mem_samples`, `alloc_site_memory`, `cacheline_contention` |
-| `roofline` | `hotspots`, `roofline`, `roofline_loops`, `roofline_ops`, `roofline_loop_runs`, and the `memory_*` tables with the QEMU backend |
+| `roofline` | `hotspots`, `roofline`, `roofline_loops`, `roofline_loop_threads`, `roofline_ops`, `roofline_loop_runs`, and the `memory_*` tables with the QEMU backend |
 
 When the program emitted trace events: `events*.parquet`, `payloads*.parquet`, `event_meta*.parquet`, and the aggregated `custom_events.parquet`.
 

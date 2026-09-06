@@ -60,6 +60,8 @@ The result has one row per instrumented source loop instead of per binary loop.
 
 Every thread of the process is sampled and every thread's operations are counted, whatever created them: OpenMP, pthreads, Rayon, or a custom pool. A loop's `duration_ns` is the wall-clock time during which any of its threads was inside it, so the plotted GFLOP/s is the aggregate rate of the whole team and compares with the all-core ceilings. `cpu_time_ns` and `thread_count` say how much of that came from parallelism: a loop that four threads share has a CPU time near four times its duration. Threads that spin in the OpenMP runtime's barriers spend that time outside the executable, so it counts toward no loop.
 
+The accounting run keeps its own thread identities. `roofline_loop_threads` lists each accounting thread's share of a loop's operations, and `accounting_threads` in `roofline_loops` counts them, so a loop whose native timing saw four threads but whose accounting run saw one is easy to spot. The DynamoRIO x86 fast path counts blocks on a shared counter and leaves both empty.
+
 Kernels before Linux 6.12 cannot sample threads created after `exec`. On such a host the recording keeps only the main thread's timing and says so in its method warnings.
 
 ## Keep calibration and workload comparable

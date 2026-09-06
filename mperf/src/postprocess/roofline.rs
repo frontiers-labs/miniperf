@@ -195,7 +195,55 @@ pub(crate) fn process(tables: &Tables, record_info: &RecordInfo, res_dir: &Path)
         }
         None => collect_instrumented_loops(&data, &names, res_dir, &mut rows)?,
     }
+    tables.write("roofline_loop_threads", loop_thread_columns(&rows)?)?;
     tables.write("roofline_loops", loop_columns(rows)?)
+}
+
+/// `roofline_loop_threads`: each accounting-run thread's share of a loop.
+fn loop_thread_columns(rows: &[LoopRow]) -> Result<store::arrow::record_batch::RecordBatch> {
+    let entries = rows
+        .iter()
+        .flat_map(|row| row.threads.iter().map(move |thread| (row, thread)))
+        .collect::<Vec<_>>();
+    let mut columns = Columns::default();
+    columns.text_opt(
+        "module_offset",
+        entries
+            .iter()
+            .map(|(row, _)| row.module_offset.clone())
+            .collect(),
+    );
+    columns.text(
+        "function_name",
+        entries
+            .iter()
+            .map(|(row, _)| row.function_name.clone())
+            .collect(),
+    );
+    columns.i64("line", entries.iter().map(|(row, _)| row.line).collect());
+    type Pick = fn(&BinaryLoopThread) -> u64;
+    let picks: [(&str, Pick); 10] = [
+        ("thread", |t| t.thread as u64),
+        ("executions", |t| t.executions),
+        ("arch_bytes_load", |t| t.arch_bytes_load),
+        ("arch_bytes_store", |t| t.arch_bytes_store),
+        ("scalar_int_ops", |t| t.scalar_int_ops),
+        ("scalar_float_ops", |t| t.scalar_float_ops),
+        ("scalar_double_ops", |t| t.scalar_double_ops),
+        ("vector_int_ops", |t| t.vector_int_ops),
+        ("vector_float_ops", |t| t.vector_float_ops),
+        ("vector_double_ops", |t| t.vector_double_ops),
+    ];
+    for (name, pick) in picks {
+        columns.i64(
+            name,
+            entries
+                .iter()
+                .map(|(_, thread)| pick(thread) as i64)
+                .collect(),
+        );
+    }
+    columns.finish()
 }
 
 fn load_instrumented_loops(
@@ -391,6 +439,7 @@ fn collect_instrumented_loops(
             duration_ns: Some(timing.wall_ns()),
             cpu_time_ns: Some(timing.cpu_ns),
             thread_count: timing.threads,
+            accounting_threads: None,
             timing_samples: samples,
             timing_relative_error: None,
             timing_quality: "instrumented",
@@ -398,6 +447,7 @@ fn collect_instrumented_loops(
                 .as_ref()
                 .and_then(|timeline| timeline.bytes_in(&timing.wall)),
             counts: ops.remove(&key).unwrap_or_default(),
+            threads: Vec::new(),
         });
     }
     Ok(())
@@ -441,6 +491,23 @@ struct BinaryLoop {
     trip_count: u64,
     block_ranges: Vec<BinaryBlockRange>,
     inclusive: LoopCounts,
+    #[serde(default)]
+    threads: Vec<BinaryLoopThread>,
+}
+
+/// One accounting-run thread's share of a loop's work.
+#[derive(Deserialize)]
+struct BinaryLoopThread {
+    thread: u32,
+    executions: u64,
+    scalar_int_ops: u64,
+    scalar_float_ops: u64,
+    scalar_double_ops: u64,
+    vector_int_ops: u64,
+    vector_float_ops: u64,
+    vector_double_ops: u64,
+    arch_bytes_load: u64,
+    arch_bytes_store: u64,
 }
 
 #[derive(Deserialize)]
@@ -499,7 +566,7 @@ fn binary_loop_artifact(
             .with_context(|| format!("open binary loop artifact '{}'", artifact_path.display()))?,
     )
     .with_context(|| format!("parse binary loop artifact '{}'", artifact_path.display()))?;
-    if artifact.format_version != 3 {
+    if !matches!(artifact.format_version, 3 | 4) {
         anyhow::bail!(
             "unsupported binary loop artifact version {}",
             artifact.format_version
@@ -518,11 +585,15 @@ struct LoopRow {
     duration_ns: Option<u64>,
     cpu_time_ns: Option<u64>,
     thread_count: u32,
+    /// Threads that executed the loop in the accounting run, when the engine
+    /// kept a thread identity per block.
+    accounting_threads: Option<u32>,
     timing_samples: u64,
     timing_relative_error: Option<f64>,
     timing_quality: &'static str,
     measured_dram_bytes: Option<i64>,
     counts: LoopCounts,
+    threads: Vec<BinaryLoopThread>,
 }
 
 fn loop_columns(rows: Vec<LoopRow>) -> Result<store::arrow::record_batch::RecordBatch> {
@@ -560,6 +631,12 @@ fn loop_columns(rows: Vec<LoopRow>) -> Result<store::arrow::record_batch::Record
             .collect(),
     );
     columns.i64("thread_count", column(|row| row.thread_count as i64));
+    columns.i64_opt(
+        "accounting_threads",
+        rows.iter()
+            .map(|row| row.accounting_threads.map(|v| v as i64))
+            .collect(),
+    );
     columns.i64("timing_samples", column(|row| row.timing_samples as i64));
     columns.f64_opt(
         "timing_relative_error",
@@ -714,6 +791,8 @@ fn collect_binary_loops(
             duration_ns: timed.then(|| timing.wall_ns()),
             cpu_time_ns: timed.then_some(timing.cpu_ns),
             thread_count: timing.threads,
+            accounting_threads: (!loop_info.threads.is_empty())
+                .then_some(loop_info.threads.len() as u32),
             timing_samples: sample_count,
             timing_relative_error: relative_error,
             timing_quality: quality,
@@ -721,6 +800,7 @@ fn collect_binary_loops(
                 .as_ref()
                 .and_then(|timeline| timeline.bytes_in(&timing.wall)),
             counts: loop_info.inclusive,
+            threads: loop_info.threads,
         });
     }
 
@@ -887,7 +967,8 @@ pub(crate) fn write_chart(tables: &Tables) -> Result<()> {
                     ELSE 'uncore_measured' END AS traffic_source,
                duration_ns,
                cpu_time_ns,
-               thread_count
+               thread_count,
+               accounting_threads
              FROM roofline_loops"
         ),
     )
@@ -918,6 +999,7 @@ mod tests {
             duration_ns: Some(1_000_000_000),
             cpu_time_ns: Some(4_000_000_000),
             thread_count: 4,
+            accounting_threads: Some(4),
             timing_samples: 400,
             timing_relative_error: Some(0.098),
             timing_quality: "high-confidence",
@@ -931,7 +1013,53 @@ mod tests {
                 vector_double_ops: 6_000_000_000,
                 ..LoopCounts::default()
             },
+            threads: vec![
+                BinaryLoopThread {
+                    thread: 0,
+                    executions: 50,
+                    scalar_int_ops: 0,
+                    scalar_float_ops: 0,
+                    scalar_double_ops: 1_000_000_000,
+                    vector_int_ops: 0,
+                    vector_float_ops: 0,
+                    vector_double_ops: 3_000_000_000,
+                    arch_bytes_load: 2000,
+                    arch_bytes_store: 500,
+                },
+                BinaryLoopThread {
+                    thread: 1,
+                    executions: 50,
+                    scalar_int_ops: 0,
+                    scalar_float_ops: 0,
+                    scalar_double_ops: 1_000_000_000,
+                    vector_int_ops: 0,
+                    vector_float_ops: 0,
+                    vector_double_ops: 3_000_000_000,
+                    arch_bytes_load: 2000,
+                    arch_bytes_store: 500,
+                },
+            ],
         }
+    }
+
+    #[test]
+    fn accounting_threads_get_their_own_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let tables = Tables::open(dir.path()).unwrap();
+        let rows = vec![row(None)];
+        tables
+            .write("roofline_loop_threads", loop_thread_columns(&rows).unwrap())
+            .unwrap();
+        let (count, ops): (i64, i64) = tables
+            .connection()
+            .query_row(
+                "SELECT COUNT(*), SUM(scalar_double_ops) FROM roofline_loop_threads WHERE function_name = 'kernel'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(ops, 2_000_000_000);
     }
 
     /// The single chart row produced for one loop with 5000 architectural

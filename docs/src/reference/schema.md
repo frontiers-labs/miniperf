@@ -114,7 +114,11 @@ One row per loop with a plotted point or its accounting: `file_name`, `function_
 
 One row per loop from the backend that measured it: `module_offset` and `trip_count` (binary backends only), `function_name`, `file_name`, `line`, `duration_ns`, `cpu_time_ns`, `thread_count`, `timing_samples`, `timing_relative_error`, `timing_quality`, `measured_dram_bytes`, `bytes_load`, `bytes_store`, `arch_bytes_load`, `arch_bytes_store`, and the six `*_ops` counts.
 
-`duration_ns` is the wall-clock time during which at least one thread was inside the loop. `cpu_time_ns` adds up each thread's own time inside it, so a loop that four threads run together has `cpu_time_ns` near four times `duration_ns`. `thread_count` is the number of distinct threads observed in the loop. With the binary backends the times come from sample windows and are present only for `high-confidence` rows; the compiler backend measures them directly and marks its rows `instrumented`.
+`duration_ns` is the wall-clock time during which at least one thread was inside the loop. `cpu_time_ns` adds up each thread's own time inside it, so a loop that four threads run together has `cpu_time_ns` near four times `duration_ns`. `thread_count` is the number of distinct threads observed in the loop. With the binary backends the times come from sample windows and are present only for `high-confidence` rows; the compiler backend measures them directly and marks its rows `instrumented`. `accounting_threads` is how many threads executed the loop in the accounting run, when the engine kept a thread identity per block; it is NULL for the compiler backend and for the DynamoRIO x86 fast path, whose block counters are shared.
+
+### roofline_loop_threads
+
+One row per loop and accounting-run thread: `module_offset`, `function_name`, `line`, `thread` (the engine's thread index, not an OS thread id), `executions`, `arch_bytes_load`, `arch_bytes_store`, and the six `*_ops` counts, apportioned by that thread's share of each block's executions. The two runs schedule threads independently, so these rows describe work balance in the accounting run and cannot be paired with the native timing of a particular thread.
 
 ### roofline_ops, roofline_loop_runs
 

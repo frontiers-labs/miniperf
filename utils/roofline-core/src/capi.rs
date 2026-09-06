@@ -450,14 +450,14 @@ impl PendingMemory {
     }
 }
 
-fn flush_repeats(inner: &mut Inner, run_handle: u32, run_count: &mut u64) {
+fn flush_repeats(inner: &mut Inner, thread: usize, run_handle: u32, run_count: &mut u64) {
     if *run_count == 0 {
         return;
     }
     if let Some(block) = inner.blocks.get(run_handle as usize) {
         let block = block.clone();
         add_exec_counters(&mut inner.counters, &block.cost, *run_count);
-        inner.cfg.record_repeats(&block.cost, *run_count);
+        inner.cfg.record_repeats(thread, &block.cost, *run_count);
         add_static_memory(inner, &block, *run_count);
     }
     *run_count = 0;
@@ -558,7 +558,7 @@ pub unsafe extern "C" fn rc_process_batch(
                     run_count += 1;
                     continue;
                 }
-                flush_repeats(inner, run_handle, &mut run_count);
+                flush_repeats(inner, thread, run_handle, &mut run_count);
                 let Some(block) = inner.blocks.get(handle) else {
                     run_handle = u32::MAX;
                     continue;
@@ -584,7 +584,7 @@ pub unsafe extern "C" fn rc_process_batch(
             _ => {}
         }
     }
-    flush_repeats(inner, run_handle, &mut run_count);
+    flush_repeats(inner, thread, run_handle, &mut run_count);
     pending.flush(&mut inner.cfg);
 }
 

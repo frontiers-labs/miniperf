@@ -104,6 +104,27 @@ struct BlockCounts {
     arch_bytes_load: u64,
     arch_bytes_store: u64,
     unclassified_instructions: u64,
+    /// Executions per accounting-engine thread; empty when the engine counted
+    /// the block without a thread identity.
+    #[serde(skip_serializing)]
+    threads: Vec<(u32, u64)>,
+}
+
+/// One thread's share of a loop's work in the accounting run. Operation and
+/// byte counts are apportioned by that thread's share of each block's
+/// executions.
+#[derive(Clone, Debug, Default, Serialize)]
+struct LoopThreadArtifact {
+    thread: u32,
+    executions: u64,
+    scalar_int_ops: u64,
+    scalar_float_ops: u64,
+    scalar_double_ops: u64,
+    vector_int_ops: u64,
+    vector_float_ops: u64,
+    vector_double_ops: u64,
+    arch_bytes_load: u64,
+    arch_bytes_store: u64,
 }
 
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -143,6 +164,7 @@ struct LoopArtifact {
     trip_count: u64,
     inclusive: BlockCounts,
     self_counts: BlockCounts,
+    threads: Vec<LoopThreadArtifact>,
 }
 
 #[derive(Serialize)]
@@ -1216,12 +1238,13 @@ fn parse_counts(input: &str) -> Result<Counts> {
 fn parse_dynamic_cfg(input: &str) -> Result<DynamicCfgCapture> {
     let mut capture = DynamicCfgCapture::default();
     let mut version_seen = false;
+    let mut thread_blocks = Vec::new();
     for line in input.lines().map(str::trim).filter(|line| !line.is_empty()) {
         if let Some(version) = line.strip_prefix("miniperf-qemu-cfg=") {
             if version_seen {
                 anyhow::bail!("duplicate QEMU dynamic CFG version");
             }
-            if version != "4" {
+            if version != "4" && version != "5" {
                 anyhow::bail!("unsupported QEMU dynamic CFG version '{version}'");
             }
             version_seen = true;
@@ -1319,6 +1342,7 @@ fn parse_dynamic_cfg(input: &str) -> Result<DynamicCfgCapture> {
                     arch_bytes_load: parse_decimal(arch_bytes_load, line)?,
                     arch_bytes_store: parse_decimal(arch_bytes_store, line)?,
                     unclassified_instructions: parse_decimal(unclassified, line)?,
+                    threads: Vec::new(),
                 };
                 if counts.executions == 0 {
                     anyhow::bail!("QEMU dynamic CFG block has zero executions: '{line}'");
@@ -1329,6 +1353,18 @@ fn parse_dynamic_cfg(input: &str) -> Result<DynamicCfgCapture> {
                 if capture.blocks.insert(address, counts).is_some() {
                     anyhow::bail!("duplicate QEMU dynamic CFG block '{address:#x}'");
                 }
+            }
+            ["tblock", address, thread, executions] => {
+                let executions = parse_decimal(executions, line)?;
+                if executions == 0 {
+                    anyhow::bail!("QEMU dynamic CFG thread block has zero executions: '{line}'");
+                }
+                thread_blocks.push((
+                    parse_address(address)?,
+                    u32::try_from(parse_decimal(thread, line)?)
+                        .with_context(|| format!("invalid QEMU dynamic CFG thread in '{line}'"))?,
+                    executions,
+                ));
             }
             _ => anyhow::bail!("invalid QEMU dynamic CFG line '{line}'"),
         }
@@ -1344,6 +1380,26 @@ fn parse_dynamic_cfg(input: &str) -> Result<DynamicCfgCapture> {
     }
     if capture.cache.is_none() {
         anyhow::bail!("QEMU dynamic CFG contains no cache-model metadata");
+    }
+    for (address, thread, executions) in thread_blocks {
+        let block = capture.blocks.get_mut(&address).with_context(|| {
+            format!("QEMU dynamic CFG thread block references unknown block '{address:#x}'")
+        })?;
+        if block
+            .threads
+            .iter()
+            .any(|(candidate, _)| *candidate == thread)
+        {
+            anyhow::bail!("duplicate QEMU dynamic CFG thread block '{address:#x}' thread {thread}");
+        }
+        block.threads.push((thread, executions));
+        let counted = block.threads.iter().map(|(_, count)| *count).sum::<u64>();
+        if counted > block.executions {
+            anyhow::bail!(
+                "QEMU dynamic CFG block '{address:#x}' has {counted} per-thread executions but {} in total",
+                block.executions
+            );
+        }
     }
     for address in capture
         .entries
@@ -1528,6 +1584,12 @@ fn write_loop_artifact(
                         .filter_map(|address| capture.blocks.get(address)),
                 ),
                 self_counts: sum_blocks(self_blocks),
+                threads: loop_threads(
+                    loop_info
+                        .blocks
+                        .iter()
+                        .filter_map(|address| capture.blocks.get(address)),
+                ),
             }
         })
         .collect::<Vec<_>>();
@@ -1563,7 +1625,7 @@ fn write_loop_artifact(
         )
     };
     let artifact = DynamicCfgArtifact {
-        format_version: 3,
+        format_version: 4,
         model,
         executable: executable.to_string_lossy().into_owned(),
         warnings,
@@ -1637,6 +1699,28 @@ fn resolve_source(
         }
     }
     (function, file, line)
+}
+
+fn loop_threads<'a>(blocks: impl IntoIterator<Item = &'a BlockCounts>) -> Vec<LoopThreadArtifact> {
+    let mut by_thread: BTreeMap<u32, LoopThreadArtifact> = BTreeMap::new();
+    for block in blocks {
+        for &(thread, executions) in &block.threads {
+            let share = executions as f64 / block.executions.max(1) as f64;
+            let apportion = |count: u64| (count as f64 * share).round() as u64;
+            let entry = by_thread.entry(thread).or_default();
+            entry.thread = thread;
+            entry.executions = entry.executions.saturating_add(executions);
+            entry.scalar_int_ops += apportion(block.scalar_int_ops);
+            entry.scalar_float_ops += apportion(block.scalar_float_ops);
+            entry.scalar_double_ops += apportion(block.scalar_double_ops);
+            entry.vector_int_ops += apportion(block.vector_int_ops);
+            entry.vector_float_ops += apportion(block.vector_float_ops);
+            entry.vector_double_ops += apportion(block.vector_double_ops);
+            entry.arch_bytes_load += apportion(block.arch_bytes_load);
+            entry.arch_bytes_store += apportion(block.arch_bytes_store);
+        }
+    }
+    by_thread.into_values().collect()
 }
 
 fn sum_blocks<'a>(blocks: impl IntoIterator<Item = &'a BlockCounts>) -> BlockCounts {
@@ -1750,11 +1834,16 @@ mod tests {
         let base = executable_segment_start(&object).unwrap();
         let image_end = object.entry().max(base + 0x100) + 1;
         let external = image_end + 0x100;
+        let (loop_head, loop_body) = (base + 0x10, base + 0x20);
         let capture = parse_dynamic_cfg(&format!(
-            "miniperf-qemu-cfg=4\n\
+            "miniperf-qemu-cfg=5\n\
              cache 64 8388608 16 write-back-no-rfo\n\
              image {base:#x} {image_end:#x} {external:#x}\n\
              entry {base:#x}\n\
+             tblock {loop_head:#x} 0 2\n\
+             tblock {loop_head:#x} 1 1\n\
+             tblock {loop_body:#x} 0 2\n\
+             tblock {loop_body:#x} 1 1\n\
              edge {base:#x} {:#x} 1\n\
              edge {:#x} {:#x} 3\n\
              edge {:#x} {:#x} 1\n\
@@ -1815,6 +1904,15 @@ mod tests {
         assert_eq!(artifact["loops"][0]["header"], hex(base + 0x10));
         assert_eq!(artifact["loops"][0]["trip_count"], 2);
         assert_eq!(artifact["loops"][0]["inclusive"]["scalar_int_ops"], 6);
+        assert_eq!(artifact["format_version"], 4);
+        let threads = artifact["loops"][0]["threads"].as_array().unwrap();
+        assert_eq!(threads.len(), 2);
+        assert_eq!(threads[0]["thread"], 0);
+        assert_eq!(threads[0]["executions"], 4);
+        assert_eq!(threads[0]["scalar_int_ops"], 4);
+        assert_eq!(threads[1]["thread"], 1);
+        assert_eq!(threads[1]["executions"], 2);
+        assert_eq!(threads[1]["scalar_int_ops"], 2);
         assert_eq!(
             artifact["loops"][0]["block_ranges"][0]["runtime_start"],
             hex(base + 0x10)
