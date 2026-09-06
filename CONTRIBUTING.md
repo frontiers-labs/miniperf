@@ -1,17 +1,5 @@
 # Contributing to miniperf
 
-Install the pinned DuckDB once per checkout, before the first cargo command:
-
-```sh
-utils/deps/setup-duckdb.sh
-```
-
-`libduckdb-sys` declares `links = "duckdb"`, so it is compiled before any of
-our build scripts run and rustc bundles the static archive into its rlib on the
-spot; nothing inside cargo can fetch the library in time. Skipping this step
-fails with `could not find native static library duckdb_static`. Re-running it
-is a no-op until `deps/manifest.toml` changes the pin.
-
 Run the workspace quality gates before submitting a change:
 
 ```sh
@@ -93,15 +81,11 @@ every pull request. Adding a platform means adding it there.
 
 ### How the pins are consumed
 
-`utils/deps/setup-duckdb.sh` downloads the pinned DuckDB, verifies its checksum
-and unpacks it into `deps/cache/duckdb`, which `.cargo/config.toml` points
-`libduckdb-sys` at through `DUCKDB_LIB_DIR`. The first build on a machine
-therefore needs network access; afterwards a stamp file makes it a no-op.
-Nothing compiles DuckDB from source any more: the `duckdb` crate's `parquet`
-feature must stay off, because it implies `bundled`, and the bundled branch is
-chosen by `#[cfg]` before the crate ever reads `DUCKDB_LIB_DIR`. The pinned
-build already carries the parquet extension. `store/build.rs` adds only the C++
-runtime, which `libduckdb-sys` emits from its bundled branch alone.
+`store/build.rs` downloads the pinned DuckDB, verifies its checksum and unpacks
+it into `deps/cache/duckdb`, which `.cargo/config.toml` points `libduckdb-sys`
+at through `DUCKDB_LIB_DIR`. The first build on a machine therefore needs
+network access; afterwards a stamp file makes it a no-op. Nothing compiles
+DuckDB from source any more.
 
 `utils/package-miniperf.sh` embeds the pinned DynamoRIO and qemu-user bundles
 under `lib/miniperf`, where `mperf` finds them relative to its own executable
