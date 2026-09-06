@@ -13,6 +13,7 @@ use std::{
 
 const MPERF: &str = env!("CARGO_BIN_EXE_mperf");
 const WORKLOAD: &str = env!("MPERF_SMOKE_BIN");
+const THREADED_WORKLOAD: &str = env!("MPERF_THREADS_BIN");
 
 fn pmu_available() -> bool {
     if env::var_os("MPERF_NO_PMU").is_some() {
@@ -195,6 +196,65 @@ fn other_scenarios_record_or_explain() {
         }
         let _ = fs::remove_dir_all(&dir);
     }
+}
+
+/// A loop run by two threads at once is timed as one wall-clock window
+/// with two threads' worth of CPU time. Needs an accounting engine; a host
+/// without one must refuse with an explanation rather than mis-time it.
+#[test]
+fn roofline_times_every_thread_of_a_parallel_loop() {
+    if !pmu_available() {
+        return;
+    }
+    let dir = results_dir("roofline-threads");
+    let output = mperf(&[
+        "record",
+        "-s",
+        "roofline",
+        "-o",
+        dir.to_str().unwrap(),
+        "--",
+        THREADED_WORKLOAD,
+        "2",
+        "20000",
+    ]);
+    let log = text(&output);
+    assert!(!log.contains("panicked"), "record panicked\n{log}");
+    if !output.status.success() {
+        assert!(
+            log.contains("Error"),
+            "roofline failed without an explanation\n{log}"
+        );
+        eprintln!("skipped: no Roofline accounting engine on this host\n{log}");
+        let _ = fs::remove_dir_all(&dir);
+        return;
+    }
+    let rows: serde_json::Value = serde_json::from_str(&query(
+        &dir,
+        "SELECT thread_count, duration_ns, cpu_time_ns, timing_samples FROM roofline_loops \
+         WHERE timing_quality = 'high-confidence' ORDER BY cpu_time_ns DESC NULLS LAST LIMIT 1",
+    ))
+    .unwrap();
+    let row = rows
+        .as_array()
+        .and_then(|rows| rows.first())
+        .unwrap_or_else(|| panic!("no timed loop in the recording:\n{log}"));
+    let field = |name: &str| {
+        row[name]
+            .as_i64()
+            .unwrap_or_else(|| panic!("{name} in {row}"))
+    };
+    let (threads, duration, cpu) = (
+        field("thread_count"),
+        field("duration_ns"),
+        field("cpu_time_ns"),
+    );
+    assert_eq!(threads, 2, "the daxpy loop ran on two threads: {row}");
+    assert!(
+        cpu > duration && cpu <= duration * 2,
+        "two concurrent threads: cpu_time_ns {cpu} should be between duration_ns {duration} and twice it"
+    );
+    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
