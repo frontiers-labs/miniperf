@@ -586,10 +586,14 @@ async fn profile_command(
         std::thread::spawn(move || sample_memory_timeline(pid, &path, stop))
     });
     let counters = crate::source::scenario_counters(Scenario::Roofline);
-    // Opened before the sampling groups so they can size themselves around the
-    // hardware counter it takes.
+    // Shares the PMU with the sampling groups below. Pinned, it would own the
+    // only counter able to count instructions wherever the event-to-counter
+    // map is fixed (RISC-V sscofpmf), and every sampling group naming
+    // instructions would be accepted and then never scheduled — a recording
+    // with no hardware counters at all.
     let mut instruction_counter = libprof::CountingDriverBuilder::new()
         .counters(&[Counter::Instructions])
+        .shared_with_sampler()
         .process(Some(&process))
         .build()
         .ok();
@@ -598,6 +602,15 @@ async fn profile_command(
         .process(&process)
         .build()?;
     let mut warnings = Vec::new();
+    // This pass builds its own driver rather than a Pass, so the host ceiling
+    // has to be reported here too.
+    if let Some((effective, requested)) = driver.sample_rate().filter(|(e, r)| e < r) {
+        let warning = format!(
+            "sampling at {effective} Hz, not the requested {requested} Hz: this host's perf_event_max_sample_rate is shared between the groups this scenario opens, so loop timing is thinner than requested"
+        );
+        eprintln!("Warning: {warning}");
+        warnings.push(warning);
+    }
     let sampled = driver.counters();
     let shed = counters
         .iter()
