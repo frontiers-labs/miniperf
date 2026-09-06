@@ -290,6 +290,12 @@ fn select_method(options: &Options, command: &[String]) -> Result<SelectedMethod
             Ok(compiler_method(false, guest.path))
         }
         BackendKind::Auto => {
+            // The riscv64 DynamoRIO client currently stalls at a few
+            // thousand instructions per second, so QEMU comes first there.
+            let prefer_qemu = cfg!(target_arch = "riscv64");
+            if prefer_qemu && qemu_probe.is_ok() && native {
+                return Ok(qemu_method(true, native, guest.path));
+            }
             if dynamorio_probe.is_ok() && native {
                 return Ok(dynamorio_method(true, guest.path));
             }

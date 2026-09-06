@@ -21,11 +21,11 @@ DynamoRIO aggregate CFG: 8 natural loops, 1 irreducible cycles; candidates saved
 
 | Backend | Accounting | Traffic | When `auto` picks it |
 |---|---|---|---|
-| `dynamorio` | Binary loops, exact block counts, low overhead | Architectural bytes | Native executable, DynamoRIO available |
+| `dynamorio` | Binary loops, exact block counts, low overhead | Architectural bytes | Native executable, DynamoRIO available, host not riscv64 |
 | `qemu` | Binary loops, exact operation counts, plus a shared last-level cache model | Modeled DRAM traffic | Native executable, DynamoRIO unavailable |
 | `compiler` | Source loops instrumented at build time | Bytes the instrumentation reports | Executable carries the instrumentation and no engine is available |
 
-If the DynamoRIO run fails under `auto`, `mperf` retries with QEMU and says so. An explicit backend never falls back.
+If the DynamoRIO run fails under `auto`, `mperf` retries with QEMU and says so. An explicit backend never falls back. On riscv64 hosts `auto` prefers QEMU: the riscv64 DynamoRIO client is currently far slower than QEMU there, and `--roofline-backend dynamorio` still selects it explicitly.
 
 For a cross-architecture executable, for example a RISC-V binary on an x86 host, `auto` refuses to run. QEMU could count operations, but the throughput would be emulator time and would say nothing about RISC-V hardware. Run the same command on a RISC-V host. `--roofline-backend qemu` forces the emulated run for accounting only, and the result is labeled `emulation-analysis`.
 

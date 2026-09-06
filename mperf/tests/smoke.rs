@@ -207,6 +207,10 @@ fn roofline_times_every_thread_of_a_parallel_loop() {
     if !pmu_available() {
         return;
     }
+    if cfg!(target_arch = "riscv64") {
+        eprintln!("skipped: the riscv64 DynamoRIO client is too slow for this loop");
+        return;
+    }
     let dir = results_dir("roofline-threads");
     let output = mperf(&[
         "record",
