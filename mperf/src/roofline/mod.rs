@@ -290,6 +290,12 @@ fn select_method(options: &Options, command: &[String]) -> Result<SelectedMethod
             Ok(compiler_method(false, guest.path))
         }
         BackendKind::Auto => {
+            // The riscv64 DynamoRIO client currently stalls at a few
+            // thousand instructions per second, so QEMU comes first there.
+            let prefer_qemu = cfg!(target_arch = "riscv64");
+            if prefer_qemu && qemu_probe.is_ok() && native {
+                return Ok(qemu_method(true, native, guest.path));
+            }
             if dynamorio_probe.is_ok() && native {
                 return Ok(dynamorio_method(true, guest.path));
             }
@@ -591,6 +597,21 @@ async fn profile_command(
         .counters(&counters)
         .process(&process)
         .build()?;
+    let mut warnings = Vec::new();
+    let sampled = driver.counters();
+    let shed = counters
+        .iter()
+        .filter(|counter| !sampled.contains(counter))
+        .map(|counter| counter.name())
+        .collect::<Vec<_>>();
+    if !shed.is_empty() {
+        let warning = format!(
+            "this host's PMU cannot run the full sampling group, so these counters were not sampled: {}",
+            shed.join(", ")
+        );
+        eprintln!("Warning: {warning}");
+        warnings.push(warning);
+    }
     let mut precise_memory = precise_memory_source.map(|(source, directory)| {
         start_precise_memory(source, dispatcher.clone(), &directory, &process)
     });
@@ -625,16 +646,20 @@ async fn profile_command(
             .map_err(|_| anyhow::anyhow!("bandwidth sampler panicked"))??;
     }
     let end_ns = monotonic_timestamp()?;
-    let mut warnings = Vec::new();
     // A sampler that lost records still measured the run, and a second pass
     // depends on this one; a sampler that never scheduled measured nothing, so
     // there is no timing for the second pass to pair with.
     if let Err(error) = driver.stop() {
-        if matches!(error, libprof::Error::SamplingGroupNeverScheduled) {
+        if matches!(error, libprof::Error::SamplingGroupNeverScheduled { .. }) {
             anyhow::bail!("{error}");
         }
         eprintln!("Warning: pmu_sampling: {error}");
         warnings.push(format!("pmu_sampling: {error}"));
+    }
+    if libprof::inherited_sampling_supported() == Some(false) {
+        let warning = "this kernel rejects inherited sampling groups (Linux < 6.12), so threads created after exec were not sampled and loop timing covers the main thread only".to_string();
+        eprintln!("Warning: {warning}");
+        warnings.push(warning);
     }
 
     if let Some((source, context)) = precise_memory.as_mut() {

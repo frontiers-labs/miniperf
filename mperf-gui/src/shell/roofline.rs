@@ -100,9 +100,13 @@ struct Dot {
 #[derive(Clone)]
 struct Plot {
     dots: Vec<Dot>,
-    /// Bandwidth ceilings as (label, GB/s), fastest first.
+    /// All-core bandwidth ceilings as (label, GB/s), fastest first.
     roofs: Vec<(String, f64)>,
     compute: Option<f64>,
+    /// The same ceilings measured on one thread, when the calibration has
+    /// them; loops that ran on one thread are rated against these.
+    single_roofs: Vec<(String, f64)>,
+    single_compute: Option<f64>,
     fit: Viewport,
 }
 
@@ -319,51 +323,76 @@ impl Plot {
             .as_ref()
             .map(|calibration| calibration.fp64_gflops)
             .filter(|value| value.is_finite() && *value > 0.0);
+        let (single_compute, single_roofs) = data
+            .single_thread_roofs()
+            .map(|(compute, roofs)| {
+                (
+                    Some(compute),
+                    roofs
+                        .into_iter()
+                        .map(|(label, bandwidth)| (label.to_owned(), bandwidth))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .unwrap_or_default();
 
         // Fit the loops with breathing room, then stretch just far enough to
         // show every ridge point — otherwise a slow roof runs off the edge and
         // reads as if it never meets the compute ceiling.
         let intensities: Vec<f64> = dots.iter().map(|dot| dot.intensity).collect();
         let throughputs: Vec<f64> = dots.iter().map(|dot| dot.gflops).collect();
-        let ridges: Vec<f64> = compute
-            .map(|compute| {
-                roofs
-                    .iter()
-                    .map(|(_, bandwidth)| compute / bandwidth)
-                    .collect()
-            })
-            .unwrap_or_default();
+        let ridges_of = |compute: Option<f64>, roofs: &[(String, f64)]| -> Vec<f64> {
+            compute
+                .map(|compute| {
+                    roofs
+                        .iter()
+                        .map(|(_, bandwidth)| compute / bandwidth)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let mut ridges = ridges_of(compute, &roofs);
+        ridges.extend(ridges_of(single_compute, &single_roofs));
+        let ceilings: Vec<f64> = compute.into_iter().chain(single_compute).collect();
         Some(Self {
             fit: Viewport {
                 x: log_extent(&intensities, &ridges),
-                y: log_extent(&throughputs, compute.as_slice()),
+                y: log_extent(&throughputs, &ceilings),
             },
             dots,
             roofs,
             compute,
+            single_roofs,
+            single_compute,
         })
     }
 
     /// The lowest ceiling at this intensity: bandwidth-bound on the slope,
-    /// compute-bound past the ridge.
-    fn limit_at(&self, intensity: f64) -> Option<f64> {
-        let bandwidth = self.roofs.first().map(|(_, roof)| roof * intensity);
-        match (bandwidth, self.compute) {
+    /// compute-bound past the ridge. Single-thread loops meet the
+    /// single-thread ceilings.
+    fn limit_at(&self, intensity: f64, single_thread: bool) -> Option<f64> {
+        let (roofs, compute) = if single_thread && self.single_compute.is_some() {
+            (&self.single_roofs, self.single_compute)
+        } else {
+            (&self.roofs, self.compute)
+        };
+        let bandwidth = roofs.first().map(|(_, roof)| roof * intensity);
+        match (bandwidth, compute) {
             (Some(bandwidth), Some(compute)) => Some(bandwidth.min(compute)),
             (bandwidth, compute) => bandwidth.or(compute),
         }
     }
+}
 
-    /// Where a bandwidth roof is visible: it enters at the bottom of the plot
-    /// and ends at the compute ridge or the right edge, whichever comes first.
-    fn roof_segment(&self, bandwidth: f64, view: Viewport) -> Option<(f64, f64)> {
-        let start = view.x.0.max(view.y.0 / bandwidth);
-        let mut end = view.x.1.min(view.y.1 / bandwidth);
-        if let Some(compute) = self.compute {
-            end = end.min(compute / bandwidth);
-        }
-        (start < end).then_some((start, end))
+/// Where a bandwidth roof is visible: it enters at the bottom of the plot
+/// and ends at the compute ridge or the right edge, whichever comes first.
+fn roof_segment(bandwidth: f64, compute: Option<f64>, view: Viewport) -> Option<(f64, f64)> {
+    let start = view.x.0.max(view.y.0 / bandwidth);
+    let mut end = view.x.1.min(view.y.1 / bandwidth);
+    if let Some(compute) = compute {
+        end = end.min(compute / bandwidth);
     }
+    (start < end).then_some((start, end))
 }
 
 /// Log extent of `values` with a 3× margin, widened to cover `anchors` (the
@@ -461,17 +490,44 @@ fn paint_grid(axes: &Axes, theme: &Theme, window: &mut Window, cx: &mut gpui::Ap
 
 /// Bandwidth roofs rise at unit slope until the compute ceiling caps them.
 /// Each segment is clipped in data space, so a roof that leaves the viewport
-/// keeps its true slope instead of bending along the axis.
+/// keeps its true slope instead of bending along the axis. The single-thread
+/// ceilings are painted the same way, fainter and marked as such.
 fn paint_roofs(axes: &Axes, plot: &Plot, theme: &Theme, window: &mut Window, cx: &mut gpui::App) {
+    if plot.single_compute.is_some() {
+        paint_roof_set(
+            axes,
+            &plot.single_roofs,
+            plot.single_compute,
+            " · 1 thread",
+            0.4,
+            theme,
+            window,
+            cx,
+        );
+    }
+    paint_roof_set(axes, &plot.roofs, plot.compute, "", 1.0, theme, window, cx);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_roof_set(
+    axes: &Axes,
+    roofs: &[(String, f64)],
+    compute: Option<f64>,
+    suffix: &str,
+    alpha: f32,
+    theme: &Theme,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
     let angle = axes.roof_angle();
-    for (index, (label, bandwidth)) in plot.roofs.iter().enumerate() {
-        let Some((start, end)) = plot.roof_segment(*bandwidth, axes.view) else {
+    for (index, (label, bandwidth)) in roofs.iter().enumerate() {
+        let Some((start, end)) = roof_segment(*bandwidth, compute, axes.view) else {
             continue;
         };
         let color = if index == 0 {
-            theme.viz.axis
+            theme.viz.axis.opacity(alpha)
         } else {
-            theme.viz.axis.opacity(0.65)
+            theme.viz.axis.opacity(0.65 * alpha)
         };
         paint_line(
             point(px(axes.x_at(start)), px(axes.y_at(bandwidth * start))),
@@ -485,20 +541,19 @@ fn paint_roofs(axes: &Axes, plot: &Plot, theme: &Theme, window: &mut Window, cx:
         let along = (0.18 + index as f64 * 0.16).clamp(0.05, 0.85);
         let at = 10f64.powf(start.log10() + along * (end.log10() - start.log10()));
         paint_rotated_label(
-            &format!("{label} {bandwidth:.0} GB/s"),
+            &format!("{label} {bandwidth:.0} GB/s{suffix}"),
             point(px(axes.x_at(at)), px(axes.y_at(bandwidth * at) - 10.0)),
             angle,
-            theme.viz.muted,
+            theme.viz.muted.opacity(alpha),
             window,
             cx,
         );
     }
 
-    if let Some(compute) = plot.compute
+    if let Some(compute) = compute
         && (axes.view.y.0..=axes.view.y.1).contains(&compute)
     {
-        let ridge = plot
-            .roofs
+        let ridge = roofs
             .first()
             .map(|(_, bandwidth)| (compute / bandwidth).max(axes.view.x.0))
             .unwrap_or(axes.view.x.0);
@@ -506,15 +561,15 @@ fn paint_roofs(axes: &Axes, plot: &Plot, theme: &Theme, window: &mut Window, cx:
             paint_line(
                 point(px(axes.x_at(ridge)), px(axes.y_at(compute))),
                 point(px(axes.x_at(axes.view.x.1)), px(axes.y_at(compute))),
-                theme.viz.axis,
+                theme.viz.axis.opacity(alpha),
                 window,
             );
             let at = 10f64.powf(ridge.log10() + 0.7 * (axes.view.x.1.log10() - ridge.log10()));
             paint_rotated_label(
-                &format!("FP64 peak {compute:.0} GFLOP/s"),
+                &format!("FP64 peak {compute:.0} GFLOP/s{suffix}"),
                 point(px(axes.x_at(at)), px(axes.y_at(compute) - 10.0)),
                 0.0,
-                theme.viz.muted,
+                theme.viz.muted.opacity(alpha),
                 window,
                 cx,
             );
@@ -865,13 +920,15 @@ fn detail_panel(
 
     let intensity = entry.fp64_arithmetic_intensity();
     let gflops = entry.fp64_gflops();
+    let single_thread = data.uses_single_thread_roofs(entry);
     let of_roof = intensity.zip(gflops).and_then(|(intensity, gflops)| {
-        plot.limit_at(intensity)
+        plot.limit_at(intensity, single_thread)
             .filter(|roof| *roof > 0.0)
             .map(|roof| {
                 format!(
-                    "{:.0}% of the roof at this intensity",
-                    gflops / roof * 100.0
+                    "{:.0}% of the {}roof at this intensity",
+                    gflops / roof * 100.0,
+                    if single_thread { "single-thread " } else { "" }
                 )
             })
     });
@@ -1016,6 +1073,7 @@ fn loops_table(
                 .child(cell(None, false).child("Loop"))
                 .child(cell(Some(220.0), false).child("Location"))
                 .child(cell(Some(64.0), true).child("Time"))
+                .child(cell(Some(56.0), true).child("Threads"))
                 .child(cell(Some(88.0), true).child("AI"))
                 .child(cell(Some(88.0), true).child("GFLOP/s"))
                 .child(cell(Some(72.0), true).child("of roof"))
@@ -1028,8 +1086,9 @@ fn loops_table(
             let share = entry.timing_samples.unwrap_or(0) as f64 / total_samples.max(1) as f64;
             let intensity = entry.fp64_arithmetic_intensity();
             let gflops = entry.fp64_gflops();
+            let single_thread = data.uses_single_thread_roofs(entry);
             let of_roof = intensity.zip(gflops).and_then(|(intensity, gflops)| {
-                plot.limit_at(intensity)
+                plot.limit_at(intensity, single_thread)
                     .filter(|roof| *roof > 0.0)
                     .map(|roof| format!("{:.0}%", gflops / roof * 100.0))
             });
@@ -1066,6 +1125,14 @@ fn loops_table(
                         .child(location(entry)),
                 )
                 .child(cell(Some(64.0), true).child(format!("{:.1}%", share * 100.0)))
+                .child(
+                    cell(Some(56.0), true).child(
+                        entry
+                            .thread_count
+                            .map(|threads| threads.to_string())
+                            .unwrap_or_else(|| "—".to_owned()),
+                    ),
+                )
                 .child(cell(Some(88.0), true).child(optional(intensity, 3)))
                 .child(cell(Some(88.0), true).child(optional(gflops, 2)))
                 .child(cell(Some(72.0), true).child(of_roof.unwrap_or_else(|| "—".to_owned())))
@@ -1108,6 +1175,8 @@ mod tests {
             dots: Vec::new(),
             roofs: vec![("DRAM".to_owned(), 31.0)],
             compute: Some(184.0),
+            single_roofs: vec![("DRAM".to_owned(), 12.0)],
+            single_compute: Some(46.0),
             fit: viewport(),
         }
     }
@@ -1124,7 +1193,7 @@ mod tests {
 
     #[test]
     fn a_roof_is_clipped_to_the_viewport_not_bent_along_the_axis() {
-        let (start, end) = plot().roof_segment(31.0, viewport()).unwrap();
+        let (start, end) = roof_segment(31.0, plot().compute, viewport()).unwrap();
 
         // Enters where it crosses the bottom of the plot, ends at the ridge.
         assert!((start - 1.0 / 31.0).abs() < 1e-9);
@@ -1154,10 +1223,12 @@ mod tests {
             dots: Vec::new(),
             roofs: vec![("DRAM".to_owned(), 31.0)],
             compute: Some(compute),
+            single_roofs: Vec::new(),
+            single_compute: None,
             fit,
         };
 
-        let (start, end) = plot.roof_segment(31.0, fit).unwrap();
+        let (start, end) = roof_segment(31.0, plot.compute, fit).unwrap();
         assert!(
             start > fit.x.0,
             "the roof enters where it crosses the floor"
@@ -1172,7 +1243,16 @@ mod tests {
             x: (0.01, 0.02),
             y: (1000.0, 2000.0),
         };
-        assert!(plot().roof_segment(31.0, view).is_none());
+        assert!(roof_segment(31.0, plot().compute, view).is_none());
+    }
+
+    #[test]
+    fn single_thread_loops_meet_the_single_thread_ceilings() {
+        let plot = plot();
+        assert_eq!(plot.limit_at(1.0, false), Some(31.0));
+        assert_eq!(plot.limit_at(1.0, true), Some(12.0));
+        assert_eq!(plot.limit_at(100.0, false), Some(184.0));
+        assert_eq!(plot.limit_at(100.0, true), Some(46.0));
     }
 
     #[test]

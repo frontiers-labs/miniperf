@@ -45,11 +45,10 @@ pub async fn perform_postprocessing(res_dir: &Path, pb: kdam::Bar) -> Result<()>
             write_hotspots(&tables)?;
         }
         Scenario::Roofline => {
-            roofline::process_loops(&tables, &info, res_dir)?;
+            roofline::process(&tables, &info, res_dir)?;
             if res_dir.join("qemu-roofline.memory.json").exists() {
                 memory::process(&tables, &info, res_dir)?;
             }
-            roofline::process_binary_loops(&tables, &info, res_dir)?;
             assembly::process(&tables, &mut pb)?;
             write_hotspots(&tables)?;
             roofline::write_chart(&tables)?;

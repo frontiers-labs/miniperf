@@ -276,6 +276,25 @@ pub struct RooflineCalibration {
     /// bandwidth and needs the cache-level roofs to be read correctly.
     #[serde(default)]
     pub memory_levels: Vec<MemoryLevelCalibration>,
+    /// The same kernels run on one worker, so a loop that ran on one thread
+    /// has a ceiling of its own. Absent when the pool had a single worker.
+    #[serde(default)]
+    pub single_thread: Option<RooflineCeilings>,
+}
+
+/// One set of measured ceilings for a given worker count.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RooflineCeilings {
+    pub threads: usize,
+    pub fp64_gflops: f64,
+    #[serde(default)]
+    pub fp64_gflops_samples: Vec<f64>,
+    pub memory_gbytes_per_second: f64,
+    #[serde(default)]
+    pub memory_gbytes_per_second_samples: Vec<f64>,
+    pub ridge_point_flops_per_byte: f64,
+    #[serde(default)]
+    pub memory_levels: Vec<MemoryLevelCalibration>,
 }
 
 /// One measured bandwidth roof of the memory hierarchy.
@@ -489,6 +508,7 @@ mod tests {
             ridge_point_flops_per_byte: 2.0,
             memory_working_set_bytes: 1024,
             memory_levels: Vec::new(),
+            single_thread: None,
         };
         let cpu_info = CpuInfo {
             memory_calibration: None,

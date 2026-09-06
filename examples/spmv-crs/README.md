@@ -42,5 +42,5 @@ qemu-riscv64 -L /usr/riscv64-linux-gnu \
   examples/spmv-crs/build/spmv-rvv
 ```
 
-See the [Roofline analysis tutorial](../../docs/tutorials/roofline.md) for
+See the [Roofline tutorial](https://frontiers-labs.github.io/miniperf/tutorials/roofline.html) for
 recording commands and guidance on interpreting the results.

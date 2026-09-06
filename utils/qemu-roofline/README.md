@@ -58,5 +58,5 @@ verified by SHA-256. The resulting archive contains `qemu-x86_64`,
 manifest, and a checksum. `.github/workflows/deps.yml` builds it for every
 platform and publishes it as a pinned prerelease.
 
-See the [Roofline analysis tutorial](../../docs/tutorials/roofline.md) for
+See the [Roofline tutorial](https://frontiers-labs.github.io/miniperf/tutorials/roofline.html) for
 complete recording examples.

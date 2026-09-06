@@ -79,7 +79,7 @@ pub fn write_cfg(
     let Ok(mut file) = File::create(path) else {
         return;
     };
-    let _ = writeln!(file, "miniperf-qemu-cfg=4");
+    let _ = writeln!(file, "miniperf-qemu-cfg=5");
     if let Some(cache) = cache {
         let _ = writeln!(
             file,
@@ -118,6 +118,9 @@ pub fn write_cfg(
             counts.arch_bytes_store,
             counts.unclassified,
         );
+        for &(thread, executions) in &counts.threads {
+            let _ = writeln!(file, "tblock {address:#x} {thread} {executions}");
+        }
     }
 }
 

@@ -24,6 +24,20 @@ pub struct DynamicBlockCounts {
     pub arch_bytes_load: u64,
     pub arch_bytes_store: u64,
     pub unclassified: u64,
+    /// Executions per thread, for blocks recorded with a thread identity.
+    /// Counted blocks (a shared counter with no thread) leave this empty.
+    pub threads: Vec<(u32, u64)>,
+}
+
+fn add_thread_executions(block: &mut DynamicBlockCounts, thread: u32, count: u64) {
+    match block
+        .threads
+        .iter_mut()
+        .find(|(candidate, _)| *candidate == thread)
+    {
+        Some((_, executions)) => *executions = executions.saturating_add(count),
+        None => block.threads.push((thread, count)),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,6 +109,7 @@ impl DynamicCfg {
             block.end_vaddr = block.end_vaddr.max(cost.end_vaddr);
         }
         block.executions = block.executions.saturating_add(1);
+        add_thread_executions(block, vcpu as u32, 1);
         block.scalar_int = block.scalar_int.saturating_add(cost.scalar_int);
         block.scalar_float = block.scalar_float.saturating_add(cost.scalar_float);
         block.scalar_double = block.scalar_double.saturating_add(cost.scalar_double);
@@ -108,13 +123,14 @@ impl DynamicCfg {
     /// calling `record_block` `count` more times on the same vcpu, but with a
     /// single edge/block update. Callers must ensure the block is the most
     /// recent one recorded for its vcpu.
-    pub fn record_repeats(&mut self, cost: &BlockCost, count: u64) {
+    pub fn record_repeats(&mut self, vcpu: usize, cost: &BlockCost, count: u64) {
         if count == 0 {
             return;
         }
         *self.edges.entry((cost.vaddr, cost.vaddr)).or_default() += count;
         let block = self.blocks.entry(cost.vaddr).or_default();
         block.executions = block.executions.saturating_add(count);
+        add_thread_executions(block, vcpu as u32, count);
         block.scalar_int = block
             .scalar_int
             .saturating_add(cost.scalar_int.saturating_mul(count));
@@ -246,5 +262,28 @@ mod tests {
         assert_eq!(block.vector_double, 80);
         assert_eq!(cfg.edges[&(0x100, 0x100)], 9);
         assert_eq!(cfg.edges[&(0x100, 0x120)], 10);
+        assert!(block.threads.is_empty());
+    }
+
+    #[test]
+    fn executions_are_kept_per_thread() {
+        let mut cfg = DynamicCfg::new();
+        let cost = BlockCost {
+            vaddr: 0x100,
+            end_vaddr: 0x120,
+            flow: FlowKind::Normal,
+            scalar_double: 4,
+            instructions: 5,
+            ..BlockCost::default()
+        };
+        cfg.record_block(0, &cost);
+        cfg.record_block(1, &cost);
+        cfg.record_repeats(1, &cost, 9);
+        cfg.record_block(0, &cost);
+
+        let block = &cfg.blocks[&0x100];
+        assert_eq!(block.executions, 12);
+        assert_eq!(block.scalar_double, 48);
+        assert_eq!(block.threads, vec![(0, 2), (1, 10)]);
     }
 }

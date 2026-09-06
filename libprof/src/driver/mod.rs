@@ -422,6 +422,35 @@ where
                 };
                 counters.remove(index);
             }
+            // The kernel took the group but the PMU never runs it: too many
+            // hardware events for its counters, or one it does not implement.
+            // Shed hardware events from the end until the group fits; when
+            // not even cycles alone runs, sample on the cpu-clock timer.
+            Err(Error::SamplingGroupNeverScheduled { groups }) => {
+                let leader =
+                    crate::cpu_family::find_cpu_family(crate::cpu_family::get_host_cpu_family())
+                        .and_then(|family| family.leader_event.clone());
+                let essential = |counter: &Counter| match counter {
+                    Counter::Cycles | Counter::Instructions => true,
+                    Counter::Custom(name) => leader.as_deref() == Some(name.as_str()),
+                    _ => false,
+                };
+                match counters
+                    .iter()
+                    .rposition(|counter| !counter.is_software() && !essential(counter))
+                {
+                    Some(index) => {
+                        counters.remove(index);
+                    }
+                    None if counters.contains(&Counter::Cycles) => {
+                        counters.retain(Counter::is_software);
+                        if !counters.contains(&Counter::CpuClock) {
+                            counters.insert(0, Counter::CpuClock);
+                        }
+                    }
+                    None => return Err(Error::SamplingGroupNeverScheduled { groups }),
+                }
+            }
             // Opening the event is the authoritative support probe for a
             // branch recorder: Intel LBR takes call-stack mode, AMD LbrV2 only
             // call filtering, AMD BRS only a plain history, and a VM none at
@@ -551,6 +580,66 @@ mod tests {
                 .all(|(_, mode)| *mode == Some(perf::branch::BranchMode::CallStack)),
             "branch records must survive an unrelated counter failure"
         );
+    }
+
+    #[test]
+    fn a_group_the_pmu_never_runs_sheds_hardware_events_until_it_fits() {
+        let selected = sampling_with_fallback(
+            vec![
+                Counter::Cycles,
+                Counter::Instructions,
+                Counter::LLCReferences,
+                Counter::LLCMisses,
+                Counter::CpuClock,
+            ],
+            false,
+            |counters, _| {
+                if counters.contains(&Counter::LLCReferences) {
+                    Err(Error::SamplingGroupNeverScheduled {
+                        groups: String::new(),
+                    })
+                } else {
+                    Ok(counters.to_vec())
+                }
+            },
+        )
+        .expect("shedding the unschedulable event should open");
+
+        assert_eq!(
+            selected,
+            vec![Counter::Cycles, Counter::Instructions, Counter::CpuClock]
+        );
+
+        // A PMU on which not even cycles and instructions run leaves the
+        // cpu-clock timer; instructions are never shed on their own, since
+        // hardware sampling needs them next to cycles.
+        let software = sampling_with_fallback(
+            vec![Counter::Cycles, Counter::Instructions, Counter::PageFaults],
+            false,
+            |counters, _| {
+                if counters.contains(&Counter::Cycles) {
+                    Err(Error::SamplingGroupNeverScheduled {
+                        groups: String::new(),
+                    })
+                } else {
+                    Ok(counters.to_vec())
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(software, vec![Counter::CpuClock, Counter::PageFaults]);
+
+        let error = sampling_with_fallback(
+            vec![Counter::CpuClock],
+            false,
+            |_, _| -> Result<Vec<Counter>, Error> {
+                Err(Error::SamplingGroupNeverScheduled {
+                    groups: String::new(),
+                })
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::SamplingGroupNeverScheduled { .. }));
     }
 
     #[test]
