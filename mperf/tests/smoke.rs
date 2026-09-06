@@ -199,8 +199,9 @@ fn other_scenarios_record_or_explain() {
 }
 
 /// A loop run by two threads at once is timed as one wall-clock window
-/// with two threads' worth of CPU time. Needs an accounting engine; a host
-/// without one must refuse with an explanation rather than mis-time it.
+/// with two threads' worth of CPU time. Needs DynamoRIO: QEMU is a thousand
+/// times slower than native on this loop, and a host without an engine must
+/// refuse with an explanation rather than mis-time it.
 #[test]
 fn roofline_times_every_thread_of_a_parallel_loop() {
     if !pmu_available() {
@@ -211,12 +212,14 @@ fn roofline_times_every_thread_of_a_parallel_loop() {
         "record",
         "-s",
         "roofline",
+        "--roofline-backend",
+        "dynamorio",
         "-o",
         dir.to_str().unwrap(),
         "--",
         THREADED_WORKLOAD,
         "2",
-        "20000",
+        "200000",
     ]);
     let log = text(&output);
     assert!(!log.contains("panicked"), "record panicked\n{log}");
@@ -225,7 +228,7 @@ fn roofline_times_every_thread_of_a_parallel_loop() {
             log.contains("Error"),
             "roofline failed without an explanation\n{log}"
         );
-        eprintln!("skipped: no Roofline accounting engine on this host\n{log}");
+        eprintln!("skipped: DynamoRIO is not available on this host\n{log}");
         let _ = fs::remove_dir_all(&dir);
         return;
     }
@@ -235,7 +238,7 @@ fn roofline_times_every_thread_of_a_parallel_loop() {
          WHERE timing_quality = 'high-confidence' ORDER BY cpu_time_ns DESC NULLS LAST LIMIT 1",
     ))
     .unwrap();
-    let row = rows
+    let row = rows["rows"]
         .as_array()
         .and_then(|rows| rows.first())
         .unwrap_or_else(|| panic!("no timed loop in the recording:\n{log}"));

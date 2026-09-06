@@ -190,9 +190,7 @@ pub(crate) fn process(tables: &Tables, record_info: &RecordInfo, res_dir: &Path)
     write_instrumented_tables(tables, &data, res_dir)?;
     let mut rows = Vec::new();
     match binary_loop_artifact(info, res_dir)? {
-        Some(artifact) => {
-            collect_binary_loops(tables, info, record_info, artifact, res_dir, &mut rows)?
-        }
+        Some(artifact) => collect_binary_loops(tables, info, artifact, res_dir, &mut rows)?,
         None => collect_instrumented_loops(&data, &names, res_dir, &mut rows)?,
     }
     tables.write("roofline_loop_threads", loop_thread_columns(&rows)?)?;
@@ -540,6 +538,9 @@ struct ModuleMapping {
 struct BinaryTimingSample {
     timestamp: u64,
     thread: u32,
+    /// CPU time the thread accumulated since its previous sample, scaled up
+    /// by the share of that time the counter group was actually scheduled.
+    cpu_ns: u64,
     module_address: u64,
 }
 
@@ -678,7 +679,6 @@ fn loop_columns(rows: Vec<LoopRow>) -> Result<store::arrow::record_batch::Record
 fn collect_binary_loops(
     tables: &Tables,
     roofline_info: &mperf_data::RooflineInfo,
-    record_info: &RecordInfo,
     artifact: BinaryLoopFile,
     res_dir: &Path,
     rows: &mut Vec<LoopRow>,
@@ -705,7 +705,7 @@ fn collect_binary_loops(
         .any(|column| column == "os_cpu_clock")
     {
         let mut statement = tables.connection().prepare(
-            "SELECT timestamp, thread_id, ip FROM pmu_counters
+            "SELECT timestamp, thread_id, ip, os_cpu_clock, confidence FROM pmu_counters
              WHERE process_id = ? AND os_cpu_clock > 0 AND ip != 0
              ORDER BY timestamp",
         )?;
@@ -715,14 +715,22 @@ fn collect_binary_loops(
                     row.get::<_, i64>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, u64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<f64>>(4)?,
                 ))
             })?
             .collect::<store::duckdb::Result<Vec<_>>>()?;
-        for (timestamp, thread, ip) in timings {
+        for (timestamp, thread, ip, cpu_ns, confidence) in timings {
             if let Some(module_address) = normalize_sample_ip(ip, &mappings) {
+                // A multiplexed group only counts while it is scheduled;
+                // the thread ran the whole time.
+                let scheduled = confidence
+                    .filter(|share| share.is_finite() && *share > 0.0 && *share <= 1.0)
+                    .unwrap_or(1.0);
                 samples.push(BinaryTimingSample {
                     timestamp: timestamp.max(0) as u64,
                     thread: thread.max(0) as u32,
+                    cpu_ns: (cpu_ns.max(0) as f64 / scheduled) as u64,
                     module_address,
                 });
             }
@@ -730,9 +738,6 @@ fn collect_binary_loops(
     }
 
     let bandwidth = BandwidthTimeline::load(res_dir)?;
-    let sample_period_ns = 1_000_000_000_u64
-        .checked_div(record_info.sampling_frequency_hz.unwrap_or(1_000).max(1))
-        .unwrap_or(1_000_000);
 
     for loop_info in artifact.loops {
         let ranges = loop_info
@@ -755,21 +760,14 @@ fn collect_binary_loops(
             .map(|sample| {
                 (
                     sample.thread,
-                    sample.timestamp.saturating_sub(sample_period_ns),
+                    sample.timestamp.saturating_sub(sample.cpu_ns),
                     sample.timestamp,
                 )
             })
             .collect::<Vec<_>>();
         let sample_count = observations.len() as u64;
         let timing = LoopTiming::from_intervals(observations);
-        // Each sampling period of wall-clock occupancy is one independent
-        // observation; concurrent threads' samples overlap and do not add
-        // evidence. The 95% relative error is approximately 1.96/sqrt(N),
-        // and only rows at or below 10% produce a throughput point.
-        let relative_error = (sample_count > 0).then(|| {
-            let slots = (timing.wall_ns() / sample_period_ns).max(1);
-            1.96 / (slots as f64).sqrt()
-        });
+        let relative_error = timing.relative_error(sample_count);
         let quality = match (
             loop_info.inclusive.unclassified_instructions == 0,
             relative_error,
@@ -896,6 +894,18 @@ impl LoopTiming {
 
     fn wall_ns(&self) -> u64 {
         total_duration(&self.wall)
+    }
+
+    /// The 95% relative sampling error of the wall-clock occupancy,
+    /// approximately 1.96/sqrt(N) over N independent observations. One
+    /// observation is one mean sample window of wall-clock time: concurrent
+    /// threads' samples overlap and do not add evidence.
+    fn relative_error(&self, samples: u64) -> Option<f64> {
+        if samples == 0 || self.cpu_ns == 0 {
+            return None;
+        }
+        let observations = (self.wall_ns() as f64 * samples as f64 / self.cpu_ns as f64).max(1.0);
+        Some(1.96 / observations.sqrt())
     }
 }
 
@@ -1140,6 +1150,22 @@ mod tests {
         let none = LoopTiming::from_intervals([]);
         assert_eq!(none.wall_ns(), 0);
         assert_eq!(none.threads, 0);
+        assert_eq!(none.relative_error(0), None);
+    }
+
+    #[test]
+    fn sampling_error_counts_wall_clock_observations() {
+        let serial = LoopTiming::from_intervals((0..400).map(|i| (1, i * 1_000, (i + 1) * 1_000)));
+        assert!((serial.relative_error(400).unwrap() - 1.96 / 20.0).abs() < 1e-9);
+
+        // Two threads sampled at the same instants: half the evidence.
+        let parallel = LoopTiming::from_intervals((0..400).flat_map(|i| {
+            [
+                (1, i * 1_000, (i + 1) * 1_000),
+                (2, i * 1_000, (i + 1) * 1_000),
+            ]
+        }));
+        assert!((parallel.relative_error(800).unwrap() - 1.96 / 20.0).abs() < 1e-9);
     }
 
     #[test]
