@@ -591,6 +591,21 @@ async fn profile_command(
         .counters(&counters)
         .process(&process)
         .build()?;
+    let mut warnings = Vec::new();
+    let sampled = driver.counters();
+    let shed = counters
+        .iter()
+        .filter(|counter| !sampled.contains(counter))
+        .map(|counter| counter.name())
+        .collect::<Vec<_>>();
+    if !shed.is_empty() {
+        let warning = format!(
+            "this host's PMU cannot run the full sampling group, so these counters were not sampled: {}",
+            shed.join(", ")
+        );
+        eprintln!("Warning: {warning}");
+        warnings.push(warning);
+    }
     let mut precise_memory = precise_memory_source.map(|(source, directory)| {
         start_precise_memory(source, dispatcher.clone(), &directory, &process)
     });
@@ -625,12 +640,11 @@ async fn profile_command(
             .map_err(|_| anyhow::anyhow!("bandwidth sampler panicked"))??;
     }
     let end_ns = monotonic_timestamp()?;
-    let mut warnings = Vec::new();
     // A sampler that lost records still measured the run, and a second pass
     // depends on this one; a sampler that never scheduled measured nothing, so
     // there is no timing for the second pass to pair with.
     if let Err(error) = driver.stop() {
-        if matches!(error, libprof::Error::SamplingGroupNeverScheduled) {
+        if matches!(error, libprof::Error::SamplingGroupNeverScheduled { .. }) {
             anyhow::bail!("{error}");
         }
         eprintln!("Warning: pmu_sampling: {error}");

@@ -545,7 +545,9 @@ impl SamplingDriver for PerfSamplingDriver {
         }
 
         if self.groups_scheduled() == Some(false) {
-            return Err(Error::SamplingGroupNeverScheduled);
+            return Err(Error::SamplingGroupNeverScheduled {
+                groups: self.group_times_summary(),
+            });
         }
 
         let lost = self.lost_samples.load(Ordering::Relaxed);
@@ -574,7 +576,115 @@ fn read_group_times(fd: i32) -> Option<(u64, u64)> {
     Some((buffer[1], buffer[2]))
 }
 
+/// Whether this host runs the sampling groups that `attrs` describe for
+/// `counters`. `perf_event_open` accepts a group wider than the PMU, or one
+/// naming an event the PMU does not implement, and then never runs it; one
+/// RISC-V host runs such groups for a forked task but never for a task that
+/// has exec'd. So the probe does what a recording does: fork a child, open
+/// the driver's own group plan on it with enable-on-exec, let it exec a
+/// spinning shell, and read the leaders after a moment. Software-only groups
+/// always schedule.
+fn group_schedules(counters: &[Counter], attrs: &[perf_event_attr]) -> Result<bool, Error> {
+    if counters.iter().all(Counter::is_software) {
+        return Ok(true);
+    }
+    let cpu = target_allowed_cpus(0)?[0];
+    let mut gate = [0_i32; 2];
+    if unsafe { libc::pipe(gate.as_mut_ptr()) } != 0 {
+        return Ok(true);
+    }
+    let child = unsafe { libc::fork() };
+    if child < 0 {
+        unsafe {
+            close(gate[0]);
+            close(gate[1]);
+        }
+        return Ok(true);
+    }
+    if child == 0 {
+        unsafe {
+            close(gate[1]);
+            pin_to_cpu(cpu);
+            let mut byte = 0_u8;
+            libc::read(gate[0], (&mut byte as *mut u8).cast(), 1);
+            close(gate[0]);
+            let shell = c"/bin/sh";
+            let argv = [
+                shell.as_ptr(),
+                c"-c".as_ptr(),
+                c"while :; do :; done".as_ptr(),
+                std::ptr::null(),
+            ];
+            libc::execv(shell.as_ptr(), argv.as_ptr());
+            libc::_exit(127);
+        }
+    }
+    unsafe { close(gate[0]) };
+    let opened = open_inherited_target_groups_on_cpus(counters, attrs, child, &[cpu]);
+    unsafe {
+        libc::write(gate[1], [1_u8].as_ptr().cast(), 1);
+        close(gate[1]);
+    }
+    let scheduled = opened.map(|handles| {
+        // Multiplexed groups take turns, and the child needs a moment to
+        // exec: wait until every leader has been enabled for a while, and
+        // call the group unschedulable only if none of that time ran.
+        let deadline = std::time::Instant::now() + Duration::from_millis(250);
+        let verdict = loop {
+            thread::sleep(Duration::from_millis(5));
+            let times = handles
+                .iter()
+                .filter(|handle| handle.leader)
+                .filter_map(|handle| read_group_times(handle.fd))
+                .collect::<Vec<_>>();
+            if times.iter().any(|(_, running)| *running > 0) {
+                break true;
+            }
+            let settled = times.iter().all(|(enabled, _)| *enabled >= 50_000_000);
+            if settled || std::time::Instant::now() >= deadline {
+                // A child that never reached the group leaves no verdict.
+                break times.iter().all(|(enabled, _)| *enabled == 0);
+            }
+        };
+        for handle in &handles {
+            unsafe { close(handle.fd) };
+        }
+        verdict
+    });
+    unsafe {
+        libc::kill(child, libc::SIGKILL);
+        libc::waitpid(child, std::ptr::null_mut(), 0);
+    }
+    scheduled
+}
+
+fn pin_to_cpu(cpu: i32) -> bool {
+    let mut set = unsafe { std::mem::zeroed::<libc::cpu_set_t>() };
+    unsafe { libc::CPU_SET(cpu as usize, &mut set) };
+    unsafe { libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set) == 0 }
+}
+
 impl PerfSamplingDriver {
+    /// One entry per group leader: how long the kernel reports it enabled
+    /// and running.
+    fn group_times_summary(&self) -> String {
+        self.native_handles
+            .iter()
+            .filter(|handle| handle.leader)
+            .enumerate()
+            .map(|(index, handle)| {
+                let (enabled, running) = read_group_times(handle.fd).unwrap_or((0, 0));
+                format!(
+                    "group {index} led by {}: enabled {} ms, running {} ms",
+                    handle.kind.name(),
+                    enabled / 1_000_000,
+                    running / 1_000_000
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
     /// Whether any group the target actually reached ran on the PMU.
     ///
     /// `perf_event_open` accepts a group too large for the hardware and the
@@ -752,6 +862,11 @@ impl PerfSamplingDriver {
             );
         }
 
+        if !group_schedules(counters, &attrs)? {
+            return Err(Error::SamplingGroupNeverScheduled {
+                groups: "probe".to_owned(),
+            });
+        }
         let native_handles = match pid {
             None => binding::grouped_all(counters, &mut attrs, None)?,
             Some(pid) => open_inherited_target_groups(counters, &attrs, pid)?,
