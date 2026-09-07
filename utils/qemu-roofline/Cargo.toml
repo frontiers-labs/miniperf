@@ -1,9 +1,13 @@
+# Coverage comes from checks/, which drives the packaged binaries on real
+# recordings. See checks/lint/test-policy.
 [package]
 name = "miniperf-qemu-roofline"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
+test = false
+doctest = false
 name = "miniperf_qemu_roofline"
 crate-type = ["cdylib"]
 

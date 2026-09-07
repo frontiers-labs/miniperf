@@ -1,0 +1,56 @@
+name: GUI
+
+# The separate GUI pipeline. It consumes what the test stage recorded and
+# drives the shipped viewer through its production path on every desktop
+# platform. Runs even when the test stage went red, so a hardware placement
+# without a PMU cannot suppress GUI coverage.
+
+on:
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  tour:
+    name: tour (${{ matrix.label }})
+    runs-on: ${{ matrix.label }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: ubuntu-24.04,  platform: linux-x86_64,   os: linux }
+          - { label: macos-14,      platform: macos-aarch64,  os: macos }
+          - { label: windows-2022,  platform: windows-x86_64, os: windows }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v4
+        with:
+          name: miniperf-${{ matrix.platform }}
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: recordings-*
+          path: recordings
+          merge-multiple: true
+      - name: Unpack
+        id: unpack
+        run: |
+          root="$(utils/unpack-package.sh dist pkg)"
+          echo "root=${root}" >> "$GITHUB_OUTPUT"
+      - name: Install a display and a software renderer
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb mesa-vulkan-drivers \
+                                  libxkbcommon-x11-0 libxkbcommon0 libxcb1
+      - name: Tour every recording
+        env:
+          MPERF_PACKAGE: ${{ steps.unpack.outputs.root }}
+          MPERF_RECORDINGS: ${{ github.workspace }}/recordings
+          CHECK_WORK: ${{ github.workspace }}/check-work
+        run: checks/run gui

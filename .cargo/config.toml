@@ -13,3 +13,6 @@ BINDGEN_EXTRA_CLANG_ARGS_x86_64_apple_darwin = { value = "-isysroot /Library/Dev
 DUCKDB_LIB_DIR = { value = "deps/cache/duckdb/lib", relative = true, force = false }
 DUCKDB_INCLUDE_DIR = { value = "deps/cache/duckdb/include", relative = true, force = false }
 DUCKDB_STATIC = { value = "1", force = false }
+
+[alias]
+xtask = "run --package xtask --"

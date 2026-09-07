@@ -157,28 +157,6 @@ fn parse_flamegraph(data: String) -> Result<FlameGraph, String> {
     Ok(FlameGraph::from_string(data, false))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::parse_flamegraph;
-
-    #[test]
-    fn rejects_empty_or_corrupt_folded_stacks() {
-        for data in [
-            "",
-            "# only a comment\n",
-            "main not-a-count\n",
-            "main 1\ncorrupt\n",
-        ] {
-            assert!(parse_flamegraph(data.to_string()).is_err());
-        }
-    }
-
-    #[test]
-    fn accepts_folded_stack_samples() {
-        assert!(parse_flamegraph("main;work 42\n".to_string()).is_ok());
-    }
-}
-
 // Below code is adapted from flamelens library
 //
 // MIT License

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# The packaged libc shim interposes, and its events reach the recording.
+# shellcheck source=checks/lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# Not applicable without a Linux host: this check drives perf_event_open.
+[[ "$(uname -s)" == Linux ]] || skip "not a Linux host"
+require_pmu
+
+shim="${MPERF_PACKAGE}/lib/miniperf/libmperf_libc.so"
+[[ -e "${shim}" ]] || fail "libc shim not in the package"
+churn="$(cc_fixture alloc_churn)" || fail "could not compile alloc_churn.c"
+
+dir="${CHECK_WORK}/rec-shim-libc"
+LD_PRELOAD="${shim}" MPERF_LIBC_SAMPLE_EVERY=1 \
+    "${mperf}" record -s snapshot -o "${dir}" -- "${churn}" \
+    >"${dir}.log" 2>&1 || { cat "${dir}.log" >&2; fail "record with the libc shim failed"; }
+
+assert_sql "${dir}" "SELECT COUNT(*) > 0 AS shim_recorded_events FROM custom_events"
+note "libc shim recorded allocation events"

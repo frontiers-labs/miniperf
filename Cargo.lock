@@ -7220,14 +7220,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "truth"
-version = "0.1.0"
-dependencies = [
- "libc",
- "miniperf-store",
-]
-
-[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8492,6 +8484,14 @@ name = "xmlwriter"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
+
+[[package]]
+name = "xtask"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+]
 
 [[package]]
 name = "xxhash-rust"

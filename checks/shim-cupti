@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# The packaged CUPTI shim loads and answers the CUDA runtime's only entry
+# point without a GPU present.
+#
+# Deliberately load-only, and named so. Nothing beyond this can be asserted
+# honestly on a runner with no CUDA device, and pretending otherwise would be
+# the kind of test this suite exists to remove.
+# shellcheck source=checks/lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+[[ "$(uname -s)" == Linux ]] || skip "not a Linux host"
+
+shim="${MPERF_PACKAGE}/lib/miniperf/libmperf_cupti.so"
+[[ -e "${shim}" ]] || fail "CUPTI shim not in the package"
+injector="$(cc_fixture cupti_inject -ldl)" || fail "could not compile cupti_inject.c"
+
+out="${CHECK_WORK}/cupti.log"
+"${injector}" "${shim}" >"${out}" 2>&1 || { cat "${out}" >&2; fail "the CUPTI shim did not load"; }
+grep -q "InitializeInjection returned" "${out}" || { cat "${out}" >&2; fail "no answer from InitializeInjection"; }
+note "CUPTI shim loads and answers InitializeInjection ($(cat "${out}"))"

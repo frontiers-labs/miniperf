@@ -35,8 +35,9 @@ int main(int argc, char **argv) {
 `MPERF_SCOPE` is a C++ construct: it declares an object whose destructor ends the span. Compile the file as C++, and compile the stub as C:
 
 ```sh
-g++ -x c++ -O2 -g -I miniperf/collector-core/include matmul.c \
-    -x c miniperf/collector-core/stub/mperf_trace_stub.c -o traced -ldl
+# $MINIPERF is the unpacked package root.
+g++ -x c++ -O2 -g -I "$MINIPERF/include" matmul.c \
+    -x c "$MINIPERF/share/miniperf/mperf_trace_stub.c" -o traced -ldl
 ./traced 1
 ```
 

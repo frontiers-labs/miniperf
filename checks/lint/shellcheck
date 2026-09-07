@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# The check tree is shell, so it gets a linter.
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
+if ! command -v shellcheck >/dev/null; then
+    # A missing tool is a skip, not a pass. Silently succeeding here is how a
+    # check stops being one.
+    echo "SKIP: shellcheck is not installed" >&2
+    exit 3
+fi
+targets=()
+while IFS= read -r target; do
+    targets+=("${target}")
+done < <(git ls-files 'checks/*' 'utils/*.sh' | grep -v '^checks/fixtures/')
+shellcheck --shell=bash --external-sources "${targets[@]}"

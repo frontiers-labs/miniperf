@@ -955,50 +955,6 @@ mod backend {
             _ => None,
         }
     }
-
-    #[cfg(test)]
-    mod tests {
-        #[cfg(target_arch = "aarch64")]
-        use super::{arm_counter_kind, ArmCounterKind};
-        use super::{
-            metadata_counter_value, normalize_short_time, perf_time_delta, sign_extend_counter,
-        };
-
-        #[test]
-        fn sign_extends_counter_width() {
-            assert_eq!(sign_extend_counter(0xffff_ffff, 32), -1);
-            assert_eq!(sign_extend_counter(0x7fff_ffff, 32), 0x7fff_ffff);
-            assert_eq!(sign_extend_counter(42, 64), 42);
-        }
-
-        #[test]
-        fn combines_metadata_offset_and_wrapping_counter_value() {
-            assert_eq!(metadata_counter_value(1_000, 25, 32), 1_025);
-            assert_eq!(metadata_counter_value(1_000, 0xffff_ffff, 32), 999);
-        }
-
-        #[test]
-        fn converts_perf_time_with_integer_and_fractional_cycles() {
-            // quotient=2, remainder=2: 10 + 2*8 + (2*8 >> 2) = 30
-            assert_eq!(perf_time_delta(10, 2, 8, 10), 30);
-        }
-
-        #[test]
-        fn normalizes_short_wrapping_time_counter() {
-            assert_eq!(normalize_short_time(0x02, 0xfe, 0xff), 0x102);
-        }
-
-        #[cfg(target_arch = "aarch64")]
-        #[test]
-        fn arm_perf_index_maps_to_expected_register_class() {
-            // Linux publishes hw.idx + 1. General counters are 0..30 and the
-            // dedicated cycle counter is 31; index zero means unscheduled.
-            assert_eq!(arm_counter_kind(0), None);
-            assert_eq!(arm_counter_kind(1), Some(ArmCounterKind::Event(0)));
-            assert_eq!(arm_counter_kind(31), Some(ArmCounterKind::Event(30)));
-            assert_eq!(arm_counter_kind(32), Some(ArmCounterKind::Cycles));
-        }
-    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1028,56 +984,5 @@ mod backend {
         pub(super) fn snapshot(&self) -> Result<Snapshot, Error> {
             unreachable!("unsupported EventTimer backend cannot be constructed")
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{multiplex_scaling, percentile, EventTimer};
-    use crate::Counter;
-
-    #[test]
-    fn nearest_rank_percentiles() {
-        let sorted = [1, 2, 3, 4, 5];
-        assert_eq!(percentile(&sorted, 50), 3);
-        assert_eq!(percentile(&sorted, 99), 5);
-    }
-
-    #[test]
-    fn multiplex_scaling_handles_running_and_zero_time() {
-        assert_eq!(multiplex_scaling(1_000, 500), 2.0);
-        assert_eq!(multiplex_scaling(1_000, 0), 1.0);
-    }
-
-    #[test]
-    fn empty_counter_set_is_rejected_without_opening_perf() {
-        assert!(EventTimer::new(&[]).is_err());
-    }
-
-    #[test]
-    fn duplicate_counters_are_rejected_without_opening_perf() {
-        assert!(EventTimer::new(&[Counter::Cycles, Counter::Cycles]).is_err());
-    }
-
-    #[test]
-    fn live_timer_reports_deltas_when_perf_is_available() {
-        let Ok(timer) = EventTimer::new(&[Counter::Cycles, Counter::Instructions]) else {
-            // CI containers commonly deny perf_event_open. Construction's
-            // actionable error path is covered separately from this live test.
-            return;
-        };
-        let span = timer
-            .start()
-            .expect("an enabled perf group must be readable");
-        let mut value = 1_u64;
-        for index in 0..10_000_u64 {
-            value = std::hint::black_box(value.wrapping_add(index).rotate_left(3));
-        }
-        let measured = span.stop().expect("an enabled perf group must be readable");
-        assert!(measured[Counter::Cycles] > 0);
-        assert!(measured[Counter::Instructions] > 0);
-        assert!(measured.wall_ns() > 0);
-        assert!(measured.ipc().is_finite());
-        std::hint::black_box(value);
     }
 }

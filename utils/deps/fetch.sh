@@ -16,6 +16,8 @@ release="$(deps_manifest_get release)"
 if ! file="$(deps_manifest_get "artifacts.${dependency}.${platform}.file" 2>/dev/null)"; then
     printf '%s is not published for %s in %s.\n' "${dependency}" "${platform}" "${release}" >&2
     printf 'Run the Dependencies workflow and merge the repin pull request; ' >&2
+    # Backticks are literal here: this is prose telling the user what to run.
+    # shellcheck disable=SC2016
     printf '`python3 utils/deps/manifest.py check` lists what is missing.\n' >&2
     exit 1
 fi

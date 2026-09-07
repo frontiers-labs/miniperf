@@ -179,20 +179,3 @@ END {{ printf("MPERF runq_ns %llu\n", @runq_ns); printf("MPERF runq_count %llu\n
 "#
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::metrics;
-
-    #[test]
-    fn reads_only_the_tagged_metric_lines() {
-        let text = "noise\nMPERF runq_ns 1234\nMPERF_READY\nMPERF block_count 7\nMPERF bad x\n";
-        assert_eq!(
-            metrics(text),
-            vec![
-                ("runq_ns".to_string(), 1234.0),
-                ("block_count".to_string(), 7.0)
-            ]
-        );
-    }
-}

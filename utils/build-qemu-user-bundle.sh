@@ -70,7 +70,9 @@ tar --extract --file "${archive}" --directory "${source_directory}" --strip-comp
 
 configure_arguments=(
     --python="${MINIPERF_QEMU_PYTHON:-/usr/bin/python3}"
-    --extra-ldflags='-Wl,-rpath,$ORIGIN/../lib'
+    # \$ORIGIN is resolved by the dynamic loader, so it must reach the linker
+    # unexpanded.
+    "--extra-ldflags=-Wl,-rpath,\$ORIGIN/../lib"
     --disable-download
     --prefix=/usr
     "--target-list=${targets}"
@@ -83,7 +85,7 @@ configure_arguments=(
     --disable-guest-agent
     --without-default-features
 )
-strip_tool=strip
+strip_tool="strip"
 readelf_tool=readelf
 library_directory=/usr/lib
 

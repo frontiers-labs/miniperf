@@ -54,7 +54,7 @@ cmake_arguments=(
 
 # Keep MSYS from rewriting MSVC's '-FOO:bar' arguments as Windows paths.
 export MSYS2_ARG_CONV_EXCL='*'
-archiver=ar
+archiver="ar"
 warning_flag=-w
 case "${platform}" in
     linux-x86_64 | linux-aarch64)

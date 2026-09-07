@@ -7,9 +7,18 @@ use std::path::PathBuf;
 fn next_to_current_exe(name: &str) -> Option<PathBuf> {
     let mut path = std::env::current_exe().ok()?;
     path.pop();
-    [path.join(name), path.join("../lib").join(name)]
-        .into_iter()
-        .find(|candidate| candidate.exists())
+    // `../lib/miniperf` is where utils/package-miniperf.sh installs these, and
+    // is the only one of the three that a released package uses; the other two
+    // serve a cargo target directory and a plain `lib` layout. Omitting it
+    // meant every shipped package resolved no shim at all and recorded nothing
+    // from them, silently.
+    [
+        path.join(name),
+        path.join("../lib/miniperf").join(name),
+        path.join("../lib").join(name),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.exists())
 }
 
 /// Path of the libc LD_PRELOAD shim, when built for this target.

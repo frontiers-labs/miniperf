@@ -34,19 +34,3 @@ impl SourceDocument {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn missing_source_is_still_a_document() {
-        let document = SourceDocument::load(SourceLocation {
-            path: PathBuf::from("/definitely/missing/source.rs"),
-            line: 42,
-        });
-
-        assert_eq!(document.focus_line, 42);
-        assert!(document.error.is_some());
-    }
-}

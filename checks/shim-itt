@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# The packaged ITT shim resolves the API a real ittnotify loader asks for, and
+# its task pairs reach the recording.
+#
+# No ITT-instrumented binary exists on a runner, so the fixture plays the part
+# of the loader: dlopen by path, resolve by symbol. That is the shim's actual
+# public surface, and an ABI slip breaks it silently.
+# shellcheck source=checks/lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+[[ "$(uname -s)" == Linux ]] || skip "not a Linux host"
+require_pmu
+
+shim="${MPERF_PACKAGE}/lib/miniperf/libmperf_itt.so"
+[[ -e "${shim}" ]] || fail "ITT shim not in the package"
+client="$(cc_fixture itt_client -ldl)" || fail "could not compile itt_client.c"
+
+dir="${CHECK_WORK}/rec-shim-itt"
+"${mperf}" record -s snapshot -o "${dir}" -- "${client}" "${shim}" \
+    >"${dir}.log" 2>&1 || { cat "${dir}.log" >&2; fail "record of the ITT client failed"; }
+
+# The fixture emits exactly 100 pairs. Asserting the count, not just presence,
+# is what catches a shim that drops or double-reports tasks.
+assert_sql "${dir}" "
+  SELECT COUNT(*) > 0 AS itt_events_recorded,
+         MAX(count) FILTER (WHERE name = 'flow_node') = 100 AS every_task_recorded,
+         MAX(total_ns) FILTER (WHERE name = 'flow_node') > 0 AS tasks_have_duration
+  FROM custom_events"
+note "ITT shim recorded 100 task pairs"

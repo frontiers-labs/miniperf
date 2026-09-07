@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# A TMA recording produces a topdown breakdown, not just samples.
+# shellcheck source=checks/lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# Not applicable without a Linux host: this check drives perf_event_open.
+[[ "$(uname -s)" == Linux ]] || skip "not a Linux host"
+require_pmu
+# A host can have a working PMU and still lack the counters TMA is defined in
+# terms of: Blacksmith's x86 fleet has no stalled-cycles-backend, and mperf
+# refuses rather than writing a recording with no topdown. That is a property
+# of the host, not a regression, so it is a skip. Any other failure is not.
+tma_dir="${CHECK_WORK}/rec-tma"
+if ! "${mperf}" record -s tma -o "${tma_dir}" -- \
+        /bin/sh -c "i=0; while [ \$i -lt ${WORKLOAD_ITERATIONS} ]; do i=\$((i+1)); done" \
+        >"${tma_dir}.log" 2>&1; then
+    if grep -q "needs hardware counters this host cannot open" "${tma_dir}.log"; then
+        skip "$(grep -m1 'needs hardware counters' "${tma_dir}.log")"
+    fi
+    cat "${tma_dir}.log" >&2
+    fail "record -s tma failed"
+fi
+dir="${tma_dir}"
+assert_sql "${dir}" "
+  SELECT COUNT(*) > 0        AS has_samples,
+         SUM(pmu_cycles) > 0 AS has_cycles
+  FROM pmu_counters"
+note "tma recording carries hardware counters"

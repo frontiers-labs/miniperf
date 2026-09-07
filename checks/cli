@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Argument handling and the subcommand surface, with no PMU required.
+# shellcheck source=checks/lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+"${mperf}" --help >/dev/null || fail "mperf --help failed"
+for sub in list doctor stat record query show events-export recover; do
+    "${mperf}" "${sub}" --help >/dev/null 2>&1 || fail "mperf ${sub} --help failed"
+done
+"${mperf}" list >/dev/null || fail "mperf list failed"
+"${mperf}" record -o /tmp/nowhere -- /bin/true >/dev/null 2>&1 \
+    && fail "record without -s should be rejected"
+"${mperf}" record -s nonsense -o /tmp/nowhere -- /bin/true >/dev/null 2>&1 \
+    && fail "record with an unknown scenario should be rejected"
+note "cli surface ok"

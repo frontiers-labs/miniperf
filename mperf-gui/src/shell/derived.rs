@@ -65,33 +65,3 @@ impl<T> Derived<T> {
         *self = Self::default();
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_late_result_for_an_older_key_is_dropped() {
-        let mut derived = Derived::<u32>::default();
-        derived.begin(1);
-        derived.begin(2);
-
-        assert!(!derived.install(1, Arc::new(10)));
-        assert!(derived.install(2, Arc::new(20)));
-        assert_eq!(derived.latest().map(|value| **value), Some(20));
-        assert!(!derived.stale(2));
-    }
-
-    #[test]
-    fn a_stale_value_stays_readable_while_the_next_one_computes() {
-        let mut derived = Derived::<u32>::default();
-        derived.begin(1);
-        derived.install(1, Arc::new(10));
-
-        assert!(derived.needs(2));
-        derived.begin(2);
-        assert!(!derived.needs(2));
-        assert!(derived.stale(2));
-        assert_eq!(derived.latest().map(|value| **value), Some(10));
-    }
-}

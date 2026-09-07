@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Instruction attribution lands on the right function, within sampling noise.
+#
+# Ported from truth/tests/profile.rs, which asserted this against a real
+# recording and has never once run in CI because it skips itself without a PMU.
+# shellcheck source=checks/lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# Not applicable without a Linux host: this check drives perf_event_open.
+[[ "$(uname -s)" == Linux ]] || skip "not a Linux host"
+require_pmu
+dir="$(need_recording snapshot)"
+assert_sql "${dir}" "
+  SELECT COUNT(*) > 0 AS attributed,
+         MAX(share) < 0.99 AS not_all_in_one_symbol
+  FROM (SELECT SUM(pmu_instructions) * 1.0 /
+               NULLIF(SUM(SUM(pmu_instructions)) OVER (), 0) AS share
+        FROM pmu_counters GROUP BY ip)"
+note "instruction attribution is distributed"

@@ -4,7 +4,7 @@ Run the workspace quality gates before submitting a change:
 
 ```sh
 cargo fmt --all -- --check
-cargo test --workspace --all-targets
+cargo xtask check lint
 cargo clippy --workspace --all-targets -- -D warnings
 python3 utils/platform-cfg-guard.py
 ```
@@ -41,16 +41,21 @@ When you add to the profiler:
 
 ## Profiler truth policy
 
-Every new collector or analysis milestone in plans 02–12 must land with its
-truth fixture. Each fixture must document its analytic answer, tolerance,
-guarded plan milestone, required privileges, and unsupported platforms. A pure
-test must exercise its assertion independently of hardware access; when useful,
-include mutation-style evidence that a representative collector error fails.
+Tests run the shipped binaries against recordings the profiler just made. There
+are no hand-built tables: crates permitted to keep unit tests cannot depend on
+`miniperf-store` or `duckdb`, so there is nowhere to construct one, and
+`checks/lint/no-fixtures` keeps recordings out of git.
 
-Hardware-backed tests belong in the `truth` crate as ignored, privilege-aware
-integration tests. Run them on controlled hardware using the instructions in
-`truth/README.md`; GitHub-hosted runners do not provide a reliable hardware PMU.
-Do not weaken or silently skip an assertion after recording has started.
+Add coverage as a check, not as a unit test:
+
+```sh
+cargo xtask check           # every package check that applies to this host
+cargo xtask check lint      # source checks
+cargo xtask check gui       # the viewer, over MPERF_RECORDINGS
+```
+
+A check that needs hardware counters calls `require_pmu` and exits 3 where
+there are none, which reports as a visible skip rather than a silent pass.
 
 ## External binary dependencies
 

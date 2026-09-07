@@ -147,7 +147,7 @@ impl Process {
                 if libc::execve(prog.as_ptr(), c_arg_ptrs.as_ptr(), c_env_ptrs.as_ptr()) == -1 {
                     // If we get here, exec failed
                     let err = std::io::Error::last_os_error();
-                    eprintln!("excecve failed: {}", err);
+                    eprintln!("execve failed: {err}");
                     libc::_exit(1);
                 }
             }

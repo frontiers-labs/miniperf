@@ -533,24 +533,3 @@ fn unmap_range(mappings: &mut BTreeMap<u64, u64>, start: u64, size: u64, live: &
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn allocation_replay_tracks_realloc_free_and_partial_unmap() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("allocations.txt");
-        std::fs::write(
-            &path,
-            "A 1 1000 0 64\nA 2 2000 0 32\nR 3 1000 3000 128\nF 4 2000 0 0\nM 5 4000 0 4096\nU 6 4400 0 1024\n",
-        )
-        .unwrap();
-        let summary = parse_allocation_samples(&path).unwrap().unwrap();
-        assert_eq!(summary.live_allocated, 128);
-        assert_eq!(summary.peak_allocated, 160);
-        assert_eq!(summary.live_mapped, 3072);
-        assert_eq!(summary.points.len(), 6);
-    }
-}

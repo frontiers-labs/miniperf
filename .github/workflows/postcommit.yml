@@ -14,3 +14,12 @@ concurrency:
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
+
+  # Needs the workflow, not a job inside it, so no stage depends on itself.
+  # Gated on the packages existing rather than on CI passing, so a red test
+  # stage does not suppress GUI coverage but a failed build does not queue a
+  # job with nothing to download.
+  gui:
+    needs: [ci]
+    if: ${{ !cancelled() && needs.ci.outputs.packaged == 'true' }}
+    uses: ./.github/workflows/gui.yml

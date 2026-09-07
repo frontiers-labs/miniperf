@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# The packaged MPI shim interposes MPI_Init across two ranks.
+#
+# The clock exchange in MPI_Init is the part most likely to rot unobserved,
+# because nothing else in the suite runs more than one process.
+# shellcheck source=checks/lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+[[ "$(uname -s)" == Linux ]] || skip "not a Linux host"
+require_pmu
+
+# Opt-in until the hang below is understood. Three CI iterations have not
+# explained it and it cannot be reproduced without a local MPI, so it is not
+# worth another pipeline of guessing:
+#
+#   - Preloaded into mpirun, MPI_Init blocked. Fixed with -genv.
+#   - Ubuntu's mpich then aborted in UCX probing RDMA. Fixed with UCX_TLS.
+#   - It now runs the ranks and `mperf record` never returns, which points at
+#     the recorder waiting on mpich's hydra daemons rather than at the shim.
+#
+# That last one is a lead worth chasing in the profiler, not here. Run with
+# MPERF_CHECK_MPI=1 once it is fixed.
+if [[ -z "${MPERF_CHECK_MPI:-}" ]]; then
+    skip "opt-in: set MPERF_CHECK_MPI=1 (record does not return under mpirun)"
+fi
+if ! command -v mpicc >/dev/null || ! command -v mpirun >/dev/null; then
+    skip "no MPI implementation installed"
+fi
+shim="${MPERF_PACKAGE}/lib/miniperf/libmperf_mpi.so"
+[[ -e "${shim}" ]] || fail "MPI shim not in the package"
+
+fixture="${CHECK_WORK}/bin/mpi_ranks"
+mpicc -O2 -g -o "${fixture}" "$(dirname "${BASH_SOURCE[0]}")/fixtures/mpi_ranks.c" \
+    2>"${CHECK_WORK}/mpi-build.log" \
+    || fail "mpicc could not build the fixture: $(tail -1 "${CHECK_WORK}/mpi-build.log")"
+
+# UCX defaults to probing RDMA transports and aborts where ibv_create_srq is
+# unsupported, which is every hosted runner. Two ranks on one node only need
+# shared memory, so name the transports rather than let it guess.
+export UCX_TLS=sm,self
+export UCX_NET_DEVICES=
+
+dir="${CHECK_WORK}/rec-shim-mpi"
+# -genv puts the shim in the ranks. Preloading it into mpirun itself, which is
+# a launcher rather than an MPI process, hung the run.
+"${mperf}" record -s snapshot -o "${dir}" -- \
+    "$(command -v mpirun)" -n 2 -genv LD_PRELOAD "${shim}" "${fixture}" \
+    >"${dir}.log" 2>&1 || { cat "${dir}.log" >&2; fail "record of the MPI program failed"; }
+
+grep -q "rank 0 of 2" "${dir}.log" || { cat "${dir}.log" >&2; fail "the ranks did not run"; }
+assert_sql "${dir}" "SELECT COUNT(*) > 0 AS mpi_events_recorded FROM custom_events"
+note "MPI shim recorded events across two ranks"

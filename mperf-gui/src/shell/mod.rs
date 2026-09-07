@@ -841,6 +841,32 @@ impl ShellView {
         self.views().len()
     }
 
+    /// The load failure the window is currently showing, if any.
+    ///
+    /// `--tour` reads this rather than loading a recording itself, so it can
+    /// only ever observe what a user would see.
+    pub fn load_error(&self) -> Option<&str> {
+        self.load_error.as_deref()
+    }
+
+    /// Whether a session finished loading.
+    pub fn has_session(&self) -> bool {
+        self.session.is_some()
+    }
+
+    /// Names of the tabs the window is currently offering.
+    pub fn view_names(&self) -> Vec<String> {
+        self.views()
+            .into_iter()
+            .map(|view| view.title().to_string())
+            .collect()
+    }
+
+    /// Switches to the tab at `ix`, exactly as clicking it does.
+    pub fn activate_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.set_active_tab(ix, cx);
+    }
+
     fn set_active_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.active_tab = ix;
         self.flame_hover = None;
