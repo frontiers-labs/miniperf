@@ -115,15 +115,24 @@ fn download(url: &str, file: &str, sha256: &str, cache: &Path) -> PathBuf {
     if out.is_file() && sha256_of(&out) == sha256 {
         return out;
     }
+    // The flags mirror `deps_curl` in utils/deps/common.sh, which a build
+    // script cannot source. `--retry-all-errors` is the load-bearing one:
+    // without it curl retries transient HTTP responses only, and a dropped TLS
+    // handshake fails the build on its first attempt.
     run(
         "curl",
         &[
             "--fail",
             "--location",
-            "--retry",
-            "3",
             "--silent",
             "--show-error",
+            "--connect-timeout",
+            "30",
+            "--retry",
+            "5",
+            "--retry-delay",
+            "2",
+            "--retry-all-errors",
             url,
             "--output",
             &out.to_string_lossy(),

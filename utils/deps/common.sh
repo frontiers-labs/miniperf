@@ -10,6 +10,17 @@ else
     deps_python=python
 fi
 
+# Downloads a pinned artifact. Every download in this repository goes through
+# here, because the obvious spelling is wrong in a way that only shows up as a
+# red build weeks later: `--retry N` covers transient HTTP responses and
+# timeouts, and nothing else. A TLS handshake that dies mid-connection exits 35
+# and is not retried at all, so one hiccup against a release CDN fails a
+# packaging job outright. `--retry-all-errors` is the flag that covers it.
+deps_curl() {
+    curl --fail --location --silent --show-error \
+        --connect-timeout 30 --retry 5 --retry-delay 2 --retry-all-errors "$@"
+}
+
 deps_manifest_get() {
     "${deps_python}" "${deps_repository_root}/utils/deps/manifest.py" get "$1"
 }

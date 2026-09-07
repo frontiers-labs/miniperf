@@ -54,8 +54,7 @@ bundle_directory="${build_root}/${bundle_name}"
 if [[ -n "${MINIPERF_QEMU_SOURCE_ARCHIVE:-}" ]]; then
     cp "${MINIPERF_QEMU_SOURCE_ARCHIVE}" "${archive}"
 else
-    curl --fail --location --retry 3 \
-        "https://download.qemu.org/qemu-${qemu_version}.tar.xz" \
+    deps_curl "https://download.qemu.org/qemu-${qemu_version}.tar.xz" \
         --output "${archive}"
 fi
 actual_sha256="$(deps_sha256 "${archive}")"

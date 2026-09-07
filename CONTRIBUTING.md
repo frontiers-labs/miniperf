@@ -92,6 +92,12 @@ at through `DUCKDB_LIB_DIR`. The first build on a machine therefore needs
 network access; afterwards a stamp file makes it a no-op. Nothing compiles
 DuckDB from source any more.
 
+Every one of those downloads goes through `deps_curl` in
+`utils/deps/common.sh`, which is the only place the retry policy lives.
+`curl --retry N` on its own retries transient HTTP responses and timeouts and
+nothing else, so a dropped TLS handshake fails a build outright;
+`checks/lint/pinned-downloads` rejects a `curl` written any other way.
+
 `utils/package-miniperf.sh` embeds the pinned DynamoRIO and qemu-user bundles
 under `lib/miniperf`, where `mperf` finds them relative to its own executable
 (`mperf/src/roofline/mod.rs`, `package_path`). `utils/verify-miniperf-package.sh`
