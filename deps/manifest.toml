@@ -10,7 +10,7 @@
 # generated its bindings from, because miniperf-store links the prebuilt
 # library against those pregenerated bindings. Bump both together.
 
-release = "deps-2026.08.24"
+release = "deps-2026.09.07"
 
 [upstream.duckdb]
 repository = "https://github.com/duckdb/duckdb.git"
@@ -40,44 +40,44 @@ qemu = ["linux-x86_64", "linux-aarch64", "linux-riscv64"]
 
 [artifacts.duckdb."linux-aarch64"]
 file = "miniperf-duckdb-1.5.5-linux-aarch64.tar.zst"
-sha256 = "58d71b789d81d3e8000e499423fb78c069fe1c77d1a0e677b64840fda056c19d"
+sha256 = "debf250dfda6c7d48f5dde83de23d0b8a83259557de2d1065918ba49d5fb3578"
 
 [artifacts.duckdb."linux-riscv64"]
 file = "miniperf-duckdb-1.5.5-linux-riscv64.tar.zst"
-sha256 = "74aa8c600e0dc22aa3428553b5ad0e3c0ac05dc0c380693525a6a4288c158256"
+sha256 = "51fb2f16fa95f8a5ff9c4d553ca18cb30b69f2cd32cf501307fb62f6a5a43481"
 
 [artifacts.duckdb."linux-x86_64"]
 file = "miniperf-duckdb-1.5.5-linux-x86_64.tar.zst"
-sha256 = "86fd68661633415258fdeb09ad4a1a345f436f45888e887df0a3e1723414e6a6"
+sha256 = "1afaf482c3930c350223c373e95e82ef682fb9588d9fe8dcd1bf1e859c0d3e61"
 
 [artifacts.duckdb."macos-aarch64"]
 file = "miniperf-duckdb-1.5.5-macos-aarch64.tar.zst"
-sha256 = "5c4d6d366bbbdd997dc80af6acb6ff660c2f3e43c20b9cee57ed7e2488ab1e30"
+sha256 = "d0948dd91f85b0b2bbce09f2c38d7dd1096f84f89fbb3419bf5ebea6d8a3fbbf"
 
 [artifacts.duckdb."windows-x86_64"]
 file = "miniperf-duckdb-1.5.5-windows-x86_64.zip"
-sha256 = "d42311672c9f15516b29ea530d04c063cc1a1c190a1951ba4925a65484236c80"
+sha256 = "79a699b371057f5f5fcb105ac5d776c63e1edb4a08018ab138a26cc6ae0a9969"
 
 [artifacts.dynamorio."linux-aarch64"]
-file = "miniperf-dynamorio-1fd3603b2133-linux-aarch64.tar.zst"
-sha256 = "21d83eb1c59d74e78182748919717b555b886bc1c176e52854b09af29c5342fb"
+file = "miniperf-dynamorio-1fd3603b2133-pb58f7a1b-linux-aarch64.tar.zst"
+sha256 = "c838d01f11a9fd4e84cf0471007db2927a68bcf4952742a35f5457811664c860"
 
 [artifacts.dynamorio."linux-riscv64"]
-file = "miniperf-dynamorio-1fd3603b2133-linux-riscv64.tar.zst"
-sha256 = "329d9dd03f46639d40dbaafc76aa3e8f72cd873448375a755b2047aeef1d299a"
+file = "miniperf-dynamorio-1fd3603b2133-pb58f7a1b-linux-riscv64.tar.zst"
+sha256 = "9f9d9fbd96d4ddabced61d533f142e83c6741bd9512acff6e05292d561b11e61"
 
 [artifacts.dynamorio."linux-x86_64"]
-file = "miniperf-dynamorio-1fd3603b2133-linux-x86_64.tar.zst"
-sha256 = "6ff440b4a7911483b404e299882df40e3a6f131242067cc11ddf21e1694b1cd3"
+file = "miniperf-dynamorio-1fd3603b2133-pb58f7a1b-linux-x86_64.tar.zst"
+sha256 = "efd914316914aaf3073601d06f5d17f8c28ed4a6902fd581680b25ac08599c6c"
 
 [artifacts.qemu."linux-aarch64"]
 file = "miniperf-qemu-user-11.0.2-linux-aarch64.tar.zst"
-sha256 = "f0c54e1ec18f226b68e98afcbcec7cb566617858f590c1a49031b86a8952262d"
+sha256 = "217a5ef63dbb237d5fc1d1d336d5a114adf78a4d413be55098340bfefcca4e5b"
 
 [artifacts.qemu."linux-riscv64"]
 file = "miniperf-qemu-user-11.0.2-linux-riscv64.tar.zst"
-sha256 = "412cb57c8aeb7e118b6395141bf9b59dc083f67c754f48ee29bf40658cf1acd1"
+sha256 = "f803cb7b4a711d5c89e95f83ef66827b9b8b5f0ead8d62987a50909f085920af"
 
 [artifacts.qemu."linux-x86_64"]
 file = "miniperf-qemu-user-11.0.2-linux-x86_64.tar.zst"
-sha256 = "9be7c18103cee411855d372597a8a3d343cb734e739e1b81f889d326b388e887"
+sha256 = "157c787bf7fbc32b5da6e07d15424cad2ee9f1db409a132fdc5f7e1a56576410"
