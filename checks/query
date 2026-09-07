@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# The JSON envelope and its guard rails.
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+require_pmu
+dir="$(need_recording snapshot)"
+"${mperf}" query -f json "${dir}" "SELECT 1 AS one" | grep -q '"schema_version"' \
+    || fail "json envelope missing schema_version"
+"${mperf}" query -f json "${dir}" "DROP TABLE hotspots" >/dev/null 2>&1 \
+    && fail "DDL should be rejected"
+note "query surface ok"

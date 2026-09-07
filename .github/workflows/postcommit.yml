@@ -14,3 +14,8 @@ concurrency:
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
+
+  gui:
+    needs: [ci]
+    if: ${{ !cancelled() }}
+    uses: ./.github/workflows/gui.yml

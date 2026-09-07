@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# A snapshot recording holds real counter data.
+#
+# The clock bound is the assertion with teeth: IPC does not move when every
+# counter shrinks together, which is exactly what kernel sample-rate throttling
+# does, and cycles over time_running catches it.
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+require_pmu
+dir="$(need_recording snapshot)"
+assert_sql "${dir}" "
+  SELECT COUNT(*) > 0                                              AS has_samples,
+         SUM(pmu_cycles) > 0                                       AS has_cycles,
+         SUM(pmu_instructions) > 0                                 AS has_instructions,
+         SUM(pmu_instructions) / SUM(pmu_cycles) BETWEEN 0.01 AND 16 AS ipc_plausible,
+         SUM(pmu_cycles) / SUM(time_running) BETWEEN 0.2 AND 8.0     AS clock_plausible
+  FROM pmu_counters"
+assert_sql "${dir}" "SELECT COUNT(*) > 0 AS has_hotspots FROM hotspots"
+note "snapshot recording carries hardware counters"

@@ -14,3 +14,11 @@ concurrency:
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
+
+  # Needs the workflow, not a job inside it, so the GUI pipeline is downstream
+  # of every recording without any stage depending on itself. `!cancelled()`
+  # keeps GUI coverage alive when a hardware flake reddens the test stage.
+  gui:
+    needs: [ci]
+    if: ${{ !cancelled() }}
+    uses: ./.github/workflows/gui.yml

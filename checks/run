@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Runs named checks against an unpacked package. Reports the PMU oracle's
+# verdict once, before anything else, so the placement is visible in the log.
+set -uo pipefail
+checks_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[[ $# -gt 0 ]] || { echo "usage: checks/run <name>..." >&2; exit 2; }
+
+export CHECK_WORK="${CHECK_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/mperf-checks.XXXXXX")}"
+mkdir -p "${CHECK_WORK}/bin"
+
+pmu=absent
+if [[ "$(uname -s)" == Linux ]]; then
+    if cc -O2 -o "${CHECK_WORK}/bin/pmu_oracle" "${checks_root}/fixtures/pmu_oracle.c" 2>/dev/null \
+       && "${CHECK_WORK}/bin/pmu_oracle"; then
+        pmu=present
+    fi
+fi
+printf 'PMU oracle: %s\n' "${pmu}"
+[[ -n "${GITHUB_OUTPUT:-}" ]] && printf 'pmu=%s\n' "${pmu}" >> "${GITHUB_OUTPUT}"
+[[ -n "${GITHUB_STEP_SUMMARY:-}" ]] && {
+    printf '- PMU oracle: **%s** (%s)\n' "${pmu}" \
+        "$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/.*: //' || uname -m)" \
+        >> "${GITHUB_STEP_SUMMARY}"
+}
+
+status=0
+for name in "$@"; do
+    printf '\n== %s\n' "${name}"
+    CHECK_WORK="${CHECK_WORK}" "${checks_root}/${name}"
+    case $? in
+        0) printf 'ok: %s\n' "${name}" ;;
+        3) printf 'skipped: %s\n' "${name}" ;;
+        *) printf 'FAILED: %s\n' "${name}"; status=1 ;;
+    esac
+done
+exit "${status}"

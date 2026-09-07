@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# The viewer opens every recording this run produced and renders every tab.
+#
+# Drives the shipped binary through its production path: the same ShellView a
+# user gets, the same load, the same tab switch the click handler calls. There
+# is no test-only load path to drift from it.
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+: "${MPERF_RECORDINGS:?set MPERF_RECORDINGS to a directory of recordings}"
+
+# Tabs each scenario must offer. Expectations belong in the check; inputs come
+# from the profiler.
+required_for() {
+    case "$1" in
+        snapshot) printf 'Summary\nHotspots\nFlame Graph\nResources\n' ;;
+        tma)      printf 'Summary\nHotspots\nTop-Down\n' ;;
+        *)        printf 'Summary\n' ;;
+    esac
+}
+
+launch() {
+    if [[ "$(uname -s)" == Linux ]]; then xvfb-run -a "$@"; else "$@"; fi
+}
+
+visited=0
+while IFS= read -r info; do
+    dir="$(dirname "${info}")"
+    scenario="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["scenario"].lower())' "${info}")"
+    note "touring ${scenario} (${dir})"
+    log="${CHECK_WORK}/tour-${scenario}.log"
+    launch "${mperf_gui}" --tour "${dir}" >"${log}" 2>&1 \
+        || { cat "${log}" >&2; fail "the viewer could not display the ${scenario} recording"; }
+    grep -qi panic "${log}" && { cat "${log}" >&2; fail "the viewer panicked on ${scenario}"; }
+    while IFS= read -r tab; do
+        [[ -z "${tab}" ]] && continue
+        grep -qF "tour: rendered ${tab}" "${log}" \
+            || { cat "${log}" >&2; fail "${scenario} did not offer the ${tab} tab"; }
+    done < <(required_for "${scenario}")
+    visited=$((visited + 1))
+done < <(find "${MPERF_RECORDINGS}" -name info.json)
+
+[[ "${visited}" -gt 0 ]] || fail "no recordings found under ${MPERF_RECORDINGS}"
+note "toured ${visited} recording(s)"

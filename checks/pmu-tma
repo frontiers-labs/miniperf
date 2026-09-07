@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# A TMA recording produces a topdown breakdown, not just samples.
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+require_pmu
+dir="$(need_recording tma)"
+assert_sql "${dir}" "
+  SELECT COUNT(*) > 0        AS has_samples,
+         SUM(pmu_cycles) > 0 AS has_cycles
+  FROM pmu_counters"
+note "tma recording carries hardware counters"

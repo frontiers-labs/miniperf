@@ -1,8 +1,12 @@
 name: Reusable CI
 
-# Cheap checks gate expensive ones: formatting and a workspace `cargo check`
-# must pass before any platform builds or tests start, and everything must
-# pass before packaging runs.
+# Three stages. Cheap source checks gate the builds; the builds produce the
+# release packages; the tests run those packages on hardware and publish the
+# recordings they made. No stage compiles anything the next one needs beyond
+# its artifacts, and no job depends on another job in its own stage.
+#
+# Nothing here names a check or a runner label: both matrices come from
+# `cargo xtask matrix`, so the workflow cannot drift from xtask/src/registry.rs.
 
 on:
   workflow_call:
@@ -12,185 +16,47 @@ on:
         required: false
         default: ''
         type: string
+    outputs:
+      gui_matrix:
+        description: Runner matrix for the GUI pipeline
+        value: ${{ jobs.lint.outputs.gui }}
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  quick:
-    name: ${{ matrix.task }}
+  lint:
+    name: lint
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - task: fmt
-            command: cargo fmt --all -- --check
-            cache: 'false'
-          - task: check
-            command: cargo check --workspace --all-targets
-            # `cargo check` emits .rmeta and no .rlib, so this entry cannot
-            # serve the build and test jobs; it keeps its own.
-            cache-key: check-x86_64-unknown-linux-gnu
-          # A hand-edited or half-published manifest would only surface at
-          # packaging time, on one platform, hours later.
-          - task: deps-manifest
-            command: python3 utils/deps/manifest.py check
-            cache: 'false'
-          # Platform breakage is otherwise found by a different CI leg, hours
-          # later; this makes it a red build on every target in seconds.
-          - task: platform-cfg
-            command: python3 utils/platform-cfg-guard.py
-            cache: 'false'
+    outputs:
+      package: ${{ steps.matrix.outputs.package }}
+      test: ${{ steps.matrix.outputs.test }}
+      gui: ${{ steps.matrix.outputs.gui }}
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: ./.github/actions/rust
         with:
           target: x86_64-unknown-linux-gnu
           components: clippy, rustfmt
-          cache-key: ${{ matrix.cache-key }}
-          cache: ${{ matrix.cache || 'true' }}
-      - run: ${{ matrix.command }}
+          cache-key: lint-x86_64-unknown-linux-gnu
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: cargo xtask check lint
+      - id: matrix
+        run: |
+          {
+            echo "package=$(cargo xtask matrix package)"
+            echo "test=$(cargo xtask matrix test)"
+            echo "gui=$(cargo xtask matrix gui)"
+          } >> "$GITHUB_OUTPUT"
 
-  verify:
-    name: ${{ matrix.task }} (${{ matrix.platform }})
-    needs: quick
-    # `cache-key` is cache identity, not job identity: jobs that compile the
-    # same artifacts for the same target share one entry. build and test share
-    # `dev-<target>` because `--all-targets` makes them compile the identical
-    # set. clippy keeps its own, because RUSTC_WORKSPACE_WRAPPER=clippy-driver
-    # gives every workspace crate a different fingerprint; so do the libprof
-    # feature and doc jobs, which build other feature sets and rustdoc output.
-    # Whichever job of a pair finishes first stores the entry and the other
-    # skips storing, so only ever share a key between interchangeable outputs.
+  build:
+    name: build (${{ matrix.platform }})
+    needs: lint
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: linux-x86_64
-            runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            task: build
-            cache-key: dev-x86_64-unknown-linux-gnu
-            command: cargo build --workspace --all-targets
-          - platform: linux-x86_64
-            runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            task: test
-            cache-key: dev-x86_64-unknown-linux-gnu
-            command: sudo sysctl -w kernel.perf_event_paranoid=-1 && cargo test --workspace --all-targets
-          # Event tables are compiled in per host architecture, so a test that
-          # asserts an invariant across every shipped table sees only the
-          # runner's own tables and passes without checking anything. The
-          # sampling-group invariants are exactly that kind of test, and the
-          # RISC-V tables are where they last broke.
-          - platform: linux-x86_64
-            runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            task: test-event-tables
-            command: cargo test -p libprof --lib --features events-x86-64,events-aarch64,events-riscv64
-          - platform: linux-x86_64
-            runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            task: clippy
-            cache-key: clippy-x86_64-unknown-linux-gnu
-            command: cargo clippy --workspace --all-targets -- -D warnings
-          - platform: linux-x86_64
-            runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            task: libprof-features
-            cache-key: libprof-x86_64-unknown-linux-gnu
-            command: cargo check -p libprof --no-default-features && cargo clippy -p libprof --all-features --all-targets -- -D warnings
-          - platform: linux-x86_64
-            runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            task: libprof-docs
-            cache-key: docs-x86_64-unknown-linux-gnu
-            command: RUSTDOCFLAGS="-D warnings" cargo doc -p libprof -p miniperf-pmu-data --all-features --no-deps
-          - platform: linux-aarch64
-            runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            task: clippy
-            cache-key: clippy-aarch64-unknown-linux-gnu
-            command: cargo clippy --workspace --all-targets -- -D warnings
-          - platform: linux-riscv64
-            runner: ubuntu-24.04
-            target: riscv64gc-unknown-linux-gnu
-            task: build
-            cache-key: dev-riscv64gc-unknown-linux-gnu
-            command: cargo build -p mperf -p miniperf-collector-core -p miniperf-shim-libc --target riscv64gc-unknown-linux-gnu
-          - platform: macos-aarch64
-            runner: macos-14
-            target: aarch64-apple-darwin
-            task: build
-            cache-key: dev-aarch64-apple-darwin
-            command: cargo build --workspace --all-targets
-          - platform: macos-aarch64
-            runner: macos-14
-            target: aarch64-apple-darwin
-            task: test
-            cache-key: dev-aarch64-apple-darwin
-            command: MPERF_NO_PMU=1 cargo test --workspace --all-targets
-          - platform: macos-aarch64
-            runner: macos-14
-            target: aarch64-apple-darwin
-            task: clippy
-            cache-key: clippy-aarch64-apple-darwin
-            command: cargo clippy --workspace --all-targets -- -D warnings
-          # Windows ships the GUI only, so it builds the viewer and what it
-          # needs rather than the whole workspace.
-          - platform: windows-x86_64
-            runner: windows-2022
-            target: x86_64-pc-windows-msvc
-            task: build
-            cache-key: dev-x86_64-pc-windows-msvc
-            command: cargo build -p mperf-gui -p miniperf-store
-          - platform: windows-x86_64
-            runner: windows-2022
-            target: x86_64-pc-windows-msvc
-            task: clippy
-            cache-key: clippy-x86_64-pc-windows-msvc
-            command: cargo clippy -p mperf-gui -p miniperf-store --all-targets -- -D warnings
-    runs-on: ${{ matrix.runner }}
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: ./.github/actions/rust
-        with:
-          target: ${{ matrix.target }}
-          components: clippy, rustfmt
-          cache-key: ${{ matrix.cache-key }}
-      - name: Run ${{ matrix.task }}
-        env:
-          CC_riscv64gc_unknown_linux_gnu: riscv64-linux-gnu-gcc
-          CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER: riscv64-linux-gnu-gcc
-        run: ${{ matrix.command }}
-
-  package:
-    name: Package (${{ matrix.platform }})
-    needs: verify
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: linux-x86_64
-            runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - platform: linux-aarch64
-            runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-          - platform: linux-riscv64
-            runner: ubuntu-24.04
-            target: riscv64gc-unknown-linux-gnu
-          - platform: macos-aarch64
-            runner: macos-14
-            target: aarch64-apple-darwin
-          - platform: windows-x86_64
-            runner: windows-2022
-            target: x86_64-pc-windows-msvc
-    runs-on: ${{ matrix.runner }}
+        include: ${{ fromJSON(needs.lint.outputs.package) }}
     defaults:
       run:
         shell: bash
@@ -200,7 +66,7 @@ jobs:
         with:
           target: ${{ matrix.target }}
           cache-key: package-${{ matrix.target }}
-      - name: Build package
+      - name: Build the package
         env:
           CC_riscv64gc_unknown_linux_gnu: riscv64-linux-gnu-gcc
           CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER: riscv64-linux-gnu-gcc
@@ -215,3 +81,47 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${{ inputs.release_tag }}" dist/* --clobber
+
+  test:
+    name: test (${{ matrix.label }})
+    needs: [lint, build]
+    runs-on: ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.lint.outputs.test) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v4
+        with:
+          name: miniperf-${{ matrix.platform }}
+          path: dist
+      - name: Unpack
+        id: unpack
+        run: |
+          mkdir -p pkg
+          tar -C pkg -xf dist/*.tar.* 
+          root="$(find pkg -maxdepth 1 -mindepth 1 -type d | head -1)"
+          echo "root=$(cd "$root" && pwd)" >> "$GITHUB_OUTPUT"
+      - name: Install check dependencies
+        if: join(matrix.apt, ' ') != ''
+        run: sudo apt-get update && sudo apt-get install -y ${{ join(matrix.apt, ' ') }}
+      - name: Allow perf
+        if: matrix.os == 'linux'
+        run: sudo sysctl -w kernel.perf_event_paranoid=-1
+      - name: Run checks
+        id: checks
+        env:
+          MPERF_PACKAGE: ${{ steps.unpack.outputs.root }}
+          CHECK_WORK: ${{ github.workspace }}/check-work
+        run: checks/run ${{ join(matrix.checks, ' ') }}
+      - name: Publish the recordings these checks made
+        if: matrix.records && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recordings-${{ matrix.label }}
+          path: check-work/rec-*
+          if-no-files-found: ignore

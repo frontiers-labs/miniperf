@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# doctor runs, and its hardware-counter verdict agrees with the oracle.
+#
+# Disagreement in either direction is a failure: doctor claiming a PMU that is
+# not there means a recording would be silently empty, and doctor denying one
+# that is there means capability probing regressed.
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+out="${CHECK_WORK}/doctor.txt"
+"${mperf}" doctor > "${out}" 2>&1
+grep -q "hardware counters" "${out}" || { cat "${out}" >&2; fail "no hardware counters row"; }
+
+if [[ "$(uname -s)" == Linux ]]; then
+    grep -q "perf_event_paranoid" "${out}" || fail "no perf_event_paranoid row"
+    if pmu_oracle >/dev/null 2>&1; then
+        grep -q "cpu-cycles opens" "${out}" \
+            || { cat "${out}" >&2; fail "oracle says present, doctor says absent"; }
+        note "oracle present, doctor agrees"
+    else
+        grep -q "cannot be opened" "${out}" \
+            || { cat "${out}" >&2; fail "oracle says absent, doctor claims a PMU"; }
+        note "oracle absent, doctor agrees"
+    fi
+fi
