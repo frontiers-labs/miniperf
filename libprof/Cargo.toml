@@ -2,13 +2,13 @@
 # recordings. See checks/lint/test-policy.
 [package]
 name = "libprof"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.85"
 description = "Local profiling sources: PMU counting and sampling, precise memory, host telemetry and resource monitoring"
 license = "LGPL-3.0-only"
-repository = "https://github.com/alexbatashev/miniperf"
-homepage = "https://github.com/alexbatashev/miniperf"
+repository = "https://github.com/frontiers-labs/miniperf"
+homepage = "https://github.com/frontiers-labs/miniperf"
 readme = "README.md"
 keywords = ["performance", "profiling", "perf", "pmu", "telemetry"]
 categories = ["development-tools::profiling"]

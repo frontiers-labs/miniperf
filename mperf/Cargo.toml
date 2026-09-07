@@ -2,11 +2,11 @@
 # recordings. See checks/lint/test-policy.
 [package]
 name = "mperf"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "GPL-3.0-or-later"
 description = "Cross-platform sampling profiler and performance analysis toolkit"
-repository = "https://github.com/alexbatashev/miniperf"
+repository = "https://github.com/frontiers-labs/miniperf"
 readme = "../README.md"
 default-run = "mperf"
 

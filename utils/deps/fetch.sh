@@ -28,7 +28,7 @@ mkdir -p "${cache}" "${destination}"
 archive="${cache}/${file}"
 
 if [[ ! -f "${archive}" ]] || [[ "$(deps_sha256 "${archive}")" != "${expected_sha256}" ]]; then
-    deps_curl "https://github.com/alexbatashev/miniperf/releases/download/${release}/${file}" \
+    deps_curl "https://github.com/frontiers-labs/miniperf/releases/download/${release}/${file}" \
         --output "${archive}.partial"
     actual_sha256="$(deps_sha256 "${archive}.partial")"
     if [[ "${actual_sha256}" != "${expected_sha256}" ]]; then
