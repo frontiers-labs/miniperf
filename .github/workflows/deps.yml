@@ -86,6 +86,7 @@ jobs:
           REFRESH: ${{ inputs.refresh_upstream || github.event_name == 'schedule' }}
         run: |
           set -euo pipefail
+          source utils/deps/common.sh
           get() { python3 utils/deps/manifest.py get "$1"; }
 
           # DuckDB is deliberately not auto-bumped: miniperf-store links the
@@ -99,14 +100,13 @@ jobs:
           if [[ "${REFRESH}" == true ]]; then
             dynamorio_revision="$(gh api repos/DynamoRIO/dynamorio/commits/master --jq .sha)"
             qemu_version="$(
-              curl --fail --silent --show-error https://download.qemu.org/ |
+              deps_curl https://download.qemu.org/ |
                 grep -oE 'qemu-[0-9]+\.[0-9]+\.[0-9]+\.tar\.xz' |
                 sed -e 's/^qemu-//' -e 's/\.tar\.xz$//' |
                 sort --version-sort |
                 tail -n 1
             )"
-            curl --fail --location --retry 3 --silent --show-error \
-              "https://download.qemu.org/qemu-${qemu_version}.tar.xz" --output qemu.tar.xz
+            deps_curl "https://download.qemu.org/qemu-${qemu_version}.tar.xz" --output qemu.tar.xz
             qemu_sha256="$(sha256sum qemu.tar.xz | awk '{ print $1 }')"
             rm -f qemu.tar.xz
           fi

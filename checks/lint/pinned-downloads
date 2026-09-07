@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Downloads go through deps_curl, which is where the retry policy lives.
+#
+# The obvious spelling is wrong in a way nothing catches until a build goes
+# red: `--retry N` covers transient HTTP responses and timeouts and nothing
+# else, so a TLS handshake that dies mid-connection exits 35 on the first
+# attempt. Six call sites had copied that spelling. One helper, one policy.
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
+
+# Sources that can actually run something, so prose describing the policy is
+# not mistaken for breaking it. third_party/libduckdb-sys is an unmodified
+# upstream copy and is not ours to lint.
+status=0
+loose="$(git grep -nE '(^|[^_[:alnum:]])curl[[:space:]]+-' -- \
+    '*.sh' '*.rs' 'checks/*' '.github/*' \
+    ':!*.md' ':!utils/deps/common.sh' ':!checks/lint/pinned-downloads' \
+    ':!third_party/libduckdb-sys/*' || true)"
+if [[ -n "${loose}" ]]; then
+    printf 'FAIL: use deps_curl (utils/deps/common.sh), not curl directly:\n%s\n' \
+        "${loose}" >&2
+    status=1
+fi
+
+# The one site that cannot source shell is a cargo build script, so it repeats
+# the flags. Assert the load-bearing one survives.
+prefetch=third_party/duckdb-prefetch/build.rs
+if ! grep -q -- '--retry-all-errors' "${prefetch}"; then
+    printf 'FAIL: %s downloads without --retry-all-errors\n' "${prefetch}" >&2
+    status=1
+fi
+
+if [[ "${status}" -eq 0 ]]; then
+    echo "  downloads retry connection failures"
+fi
+exit "${status}"
