@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# The packaged OMPT tool is loaded by a real OpenMP runtime and its regions
+# reach the recording.
+#
+# Needs LLVM's libomp: libgomp does not implement the OMPT interface, so this
+# skips where only GCC's runtime is installed rather than reporting a pass.
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+[[ "$(uname -s)" == Linux ]] || skip "not a Linux host"
+require_pmu
+
+command -v clang >/dev/null || skip "clang is not installed; libgomp does not implement OMPT"
+shim="${MPERF_PACKAGE}/lib/miniperf/libmperf_ompt.so"
+[[ -e "${shim}" ]] || fail "OMPT shim not in the package"
+
+fixture="${CHECK_WORK}/bin/omp_regions"
+clang -O2 -g -fopenmp -o "${fixture}" \
+    "$(dirname "${BASH_SOURCE[0]}")/fixtures/omp_regions.c" 2>"${CHECK_WORK}/omp-build.log" \
+    || skip "clang cannot build with -fopenmp here: $(tail -1 "${CHECK_WORK}/omp-build.log")"
+
+dir="${CHECK_WORK}/rec-shim-ompt"
+OMP_NUM_THREADS=4 OMP_TOOL_LIBRARIES="${shim}" \
+    "${mperf}" record -s snapshot -o "${dir}" -- "${fixture}" \
+    >"${dir}.log" 2>&1 || { cat "${dir}.log" >&2; fail "record of the OpenMP program failed"; }
+
+assert_sql "${dir}" "
+  SELECT COUNT(*) > 0 AS ompt_events_recorded,
+         SUM(count) > 0 AS regions_counted
+  FROM custom_events"
+note "OMPT shim recorded parallel regions"

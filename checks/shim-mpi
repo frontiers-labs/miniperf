@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# The packaged MPI shim interposes MPI_Init across two ranks.
+#
+# The clock exchange in MPI_Init is the part most likely to rot unobserved,
+# because nothing else in the suite runs more than one process.
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+[[ "$(uname -s)" == Linux ]] || skip "not a Linux host"
+require_pmu
+
+command -v mpicc >/dev/null && command -v mpirun >/dev/null || skip "no MPI implementation installed"
+shim="${MPERF_PACKAGE}/lib/miniperf/libmperf_mpi.so"
+[[ -e "${shim}" ]] || fail "MPI shim not in the package"
+
+fixture="${CHECK_WORK}/bin/mpi_ranks"
+mpicc -O2 -g -o "${fixture}" "$(dirname "${BASH_SOURCE[0]}")/fixtures/mpi_ranks.c" \
+    2>"${CHECK_WORK}/mpi-build.log" \
+    || fail "mpicc could not build the fixture: $(tail -1 "${CHECK_WORK}/mpi-build.log")"
+
+dir="${CHECK_WORK}/rec-shim-mpi"
+LD_PRELOAD="${shim}" \
+    "${mperf}" record -s snapshot -o "${dir}" -- \
+    mpirun -n 2 "${fixture}" \
+    >"${dir}.log" 2>&1 || { cat "${dir}.log" >&2; fail "record of the MPI program failed"; }
+
+grep -q "rank 0 of 2" "${dir}.log" || { cat "${dir}.log" >&2; fail "the ranks did not run"; }
+assert_sql "${dir}" "SELECT COUNT(*) > 0 AS mpi_events_recorded FROM custom_events"
+note "MPI shim recorded events across two ranks"

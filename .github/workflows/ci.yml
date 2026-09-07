@@ -110,6 +110,14 @@ jobs:
           tar -C pkg -xf dist/*.tar.* 
           root="$(find pkg -maxdepth 1 -mindepth 1 -type d | head -1)"
           echo "root=$(cd "$root" && pwd)" >> "$GITHUB_OUTPUT"
+      # The OMPT and MPI shims are only observable through a runtime that
+      # implements them: libgomp has no OMPT interface, so without clang and
+      # libomp those checks would skip on every run forever, which is no
+      # better than not having them.
+      - name: Install the runtimes the shim checks need
+        if: matrix.os == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y clang libomp-dev mpich
+
       - name: Allow perf
         if: matrix.os == 'linux'
         run: sudo sysctl -w kernel.perf_event_paranoid=-1
