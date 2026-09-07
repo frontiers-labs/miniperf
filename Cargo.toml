@@ -17,7 +17,6 @@ members = [
     "shmem",
     "store",
     "symbolize",
-    "truth",
     "utils/event-import",
     "utils/qemu-roofline",
     "utils/roofline-core",

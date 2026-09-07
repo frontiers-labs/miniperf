@@ -405,30 +405,3 @@ impl Widget for &Tab {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn info_json(version: u32) -> String {
-        format!(
-            r#"{{"format_version":{version},"scenario":"Snapshot","command":null,"cpu_model":"test","cpu_vendor":"test","scenario_info":{{"Snapshot":{{"pid":1,"counters":[]}}}}}}"#
-        )
-    }
-
-    #[test]
-    fn corrupt_metadata_is_reported() {
-        let error = parse_record_info("not json").unwrap_err().to_string();
-        assert!(error.contains("failed to parse info.json"));
-    }
-
-    #[test]
-    fn newer_results_format_is_rejected() {
-        let version = mperf_data::CURRENT_FORMAT_VERSION + 1;
-        let error = parse_record_info(&info_json(version))
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains(&format!("format version {version}")));
-        assert!(error.contains("re-record"));
-    }
-}

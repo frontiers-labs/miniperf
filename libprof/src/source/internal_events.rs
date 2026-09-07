@@ -66,7 +66,13 @@ fn collector_library_path() -> Option<PathBuf> {
     };
     let mut path = std::env::current_exe().ok()?;
     path.pop();
-    [path.join(library), path.join("../lib").join(library)]
-        .into_iter()
-        .find(|candidate| candidate.exists())
+    // `../lib/miniperf` is the released package layout; without it a packaged
+    // mperf found no collector and every shim silently recorded nothing.
+    [
+        path.join(library),
+        path.join("../lib/miniperf").join(library),
+        path.join("../lib").join(library),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.exists())
 }

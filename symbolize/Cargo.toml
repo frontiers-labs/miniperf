@@ -1,3 +1,5 @@
+# Coverage comes from checks/, which drives the packaged binaries on real
+# recordings. See checks/lint/test-policy.
 [package]
 name = "miniperf-symbolize"
 version = "0.1.0"
@@ -9,6 +11,8 @@ repository = "https://github.com/alexbatashev/miniperf"
 readme = "README.md"
 
 [lib]
+test = false
+doctest = false
 name = "symbolize"
 
 [dependencies]

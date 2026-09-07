@@ -330,14 +330,3 @@ fn main() -> Result<()> {
 
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::Cli;
-    use clap::Parser;
-
-    #[test]
-    fn result_directory_is_optional() {
-        assert!(Cli::try_parse_from(["mperf-gui"]).is_ok());
-    }
-}

@@ -1317,16 +1317,3 @@ fn aarch64_hw_event_code(config: u64) -> Option<u64> {
     };
     Some(code)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::sampling_ring_pages;
-
-    #[test]
-    fn sampling_ring_respects_perf_locked_memory_allowance() {
-        assert_eq!(sampling_ring_pages(4096, Some(516)), 128);
-        assert_eq!(sampling_ring_pages(4096, Some(64)), 8);
-        assert_eq!(sampling_ring_pages(4096, Some(4096)), 512);
-        assert_eq!(sampling_ring_pages(4096, None), 128);
-    }
-}

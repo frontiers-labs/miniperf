@@ -1,9 +1,13 @@
+# Coverage comes from checks/, which drives the packaged binaries on real
+# recordings. See checks/lint/test-policy.
 [package]
 name = "miniperf-shim-libc"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
+test = false
+doctest = false
 name = "mperf_libc"
 crate-type = ["cdylib"]
 

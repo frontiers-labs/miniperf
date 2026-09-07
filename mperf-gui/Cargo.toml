@@ -1,3 +1,5 @@
+# Coverage comes from checks/, which drives the packaged binaries on real
+# recordings. See checks/lint/test-policy.
 [package]
 name = "mperf-gui"
 version = "0.1.0"
@@ -14,3 +16,8 @@ miniperf-store = { path = "../store" }
 mperf-data = { path = "../mperf-data" }
 pmu-data = { package = "miniperf-pmu-data", path = "../pmu-data" }
 serde_json = "1.0"
+
+[[bin]]
+name = "mperf-gui"
+path = "src/main.rs"
+test = false

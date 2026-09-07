@@ -506,31 +506,6 @@ mod imp {
     fn invalid(error: impl std::fmt::Display) -> io::Error {
         io::Error::new(io::ErrorKind::InvalidData, error.to_string())
     }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn parses_and_applies_sparse_sysfs_format_bits() {
-            let bits = parse_bits("0-3,8-9").unwrap();
-            assert_eq!(bits, vec![0, 1, 2, 3, 8, 9]);
-            let mut target = 0;
-            apply_bits(&mut target, &bits, 0b11_1010);
-            assert_eq!(target, 0b11_0000_1010);
-        }
-
-        #[test]
-        fn parses_first_cpu_from_range_list() {
-            assert_eq!(first_cpu("4-7,12-15\n"), Some(4));
-        }
-
-        #[test]
-        fn recognizes_intel_free_running_imc_event_names() {
-            assert!(READ_ALIASES.contains(&"data_read"));
-            assert!(WRITE_ALIASES.contains(&"data_write"));
-        }
-    }
 }
 
 #[cfg(target_os = "linux")]

@@ -21,8 +21,12 @@ note() { printf '  %s\n' "$*"; }
 cc_fixture() {
     local name="$1"; shift
     local out="${CHECK_WORK}/bin/${name}"
-    [[ -x "${out}" ]] || cc -O2 -g -fno-omit-frame-pointer -o "${out}" \
-        "${checks_root}/fixtures/${name}.c" "$@" || fail "could not compile ${name}.c"
+    if [[ ! -x "${out}" ]]; then
+        # Compilation failure must not leave a caller holding an empty path:
+        # `fail` inside a command substitution exits only the subshell.
+        cc -O2 -g -fno-omit-frame-pointer -o "${out}" \
+            "${checks_root}/fixtures/${name}.c" "$@" >&2 || return 1
+    fi
     printf '%s' "${out}"
 }
 
@@ -78,7 +82,10 @@ except Exception:
 if not rows:
     sys.exit("query returned zero rows")
 row = rows[0]
-bad = [k for k, v in row.items() if v is not True]
+# DuckDB reports booleans as 1/0 through the JSON envelope, so accept either.
+def holds(value):
+    return value is True or value == 1
+bad = [k for k, v in row.items() if not holds(v)]
 if bad:
     sys.exit("assertions failed: " + ", ".join(bad) + "\nrow: " + json.dumps(row, indent=2))
 ' || fail "$(printf 'SQL assertion failed\n%s' "${sql}")"

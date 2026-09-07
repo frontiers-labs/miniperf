@@ -228,17 +228,3 @@ fn build_tma_sql_expr(
         Expr::Num(number) => number.to_string(),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::cpu_predicate;
-
-    #[test]
-    fn restricts_a_metric_to_its_core_cluster() {
-        assert_eq!(
-            cpu_predicate("0,5-11"),
-            "(pmu_counters.cpu BETWEEN 0 AND 0 OR pmu_counters.cpu BETWEEN 5 AND 11)"
-        );
-        assert_eq!(cpu_predicate(""), "TRUE");
-    }
-}

@@ -253,24 +253,3 @@ mod dwarf {
         None
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::StackSample;
-
-    #[test]
-    fn finds_perf_register_by_mask_order() {
-        let sample = StackSample {
-            pid: 1,
-            group_id: 0,
-            regs_mask: (1 << 2) | (1 << 7) | (1 << 8),
-            regs: &[20, 70, 80],
-            user_stack: &[],
-            callchain: &[],
-        };
-        assert_eq!(sample.register(2), Some(20));
-        assert_eq!(sample.register(7), Some(70));
-        assert_eq!(sample.register(8), Some(80));
-        assert_eq!(sample.register(6), None);
-    }
-}

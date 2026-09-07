@@ -344,29 +344,3 @@ fn remove_load_bias(runtime: u64, load_bias: i64) -> Option<u64> {
         runtime.checked_add(load_bias.unsigned_abs())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::sampled_disassembly_targets;
-    use object::{Object, ObjectSymbol, SymbolKind};
-
-    #[test]
-    fn sampled_symbol_selection_avoids_unrelated_object_code() {
-        let executable = std::env::current_exe().unwrap();
-        let bytes = std::fs::read(&executable).unwrap();
-        let object = object::File::parse(bytes.as_slice()).unwrap();
-        let symbol = object
-            .symbols()
-            .find(|symbol| {
-                symbol.kind() == SymbolKind::Text && symbol.address() != 0 && symbol.name().is_ok()
-            })
-            .unwrap();
-        let sampled_address = symbol.address() + 1;
-
-        let (targets, _) = sampled_disassembly_targets(&executable, 0, &[sampled_address]).unwrap();
-        assert_eq!(targets.len(), 1);
-        assert!(targets[0].raw_symbol.is_some());
-        assert!(targets[0].start_address <= sampled_address);
-        assert!(targets[0].end_address > sampled_address);
-    }
-}

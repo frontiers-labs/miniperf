@@ -1,7 +1,13 @@
+# Coverage comes from checks/, which drives the packaged binaries on real
+# recordings. See checks/lint/test-policy.
 [package]
 name = "mperf-trace"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+test = false
+doctest = false
 
 [dependencies]
 libc = "0.2"

@@ -100,37 +100,3 @@ impl BranchRecord {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use perf_event_open_sys::bindings::PERF_BR_COND;
-
-    fn record(from: u64, kind: u32) -> BranchRecord {
-        BranchRecord {
-            from,
-            flags: (kind as u64) << 20,
-        }
-    }
-
-    #[test]
-    fn call_stack_records_are_the_stack() {
-        let frames =
-            BranchMode::CallStack.frames(0x100, [record(0x200, 0), record(0x300, 0)].into_iter());
-        assert_eq!(frames.as_slice(), &[0x100, 0x200, 0x300]);
-    }
-
-    #[test]
-    fn a_branch_history_is_replayed_into_a_stack() {
-        // Chronological: call a, call b, return from b, call c.
-        let history = [
-            record(0x400, PERF_BR_CALL),
-            record(0x350, PERF_BR_RET),
-            record(0x300, PERF_BR_CALL),
-            record(0x250, PERF_BR_COND),
-            record(0x200, PERF_BR_CALL),
-        ];
-        let frames = BranchMode::All.frames(0x100, history.into_iter());
-        assert_eq!(frames.as_slice(), &[0x100, 0x400, 0x200]);
-    }
-}

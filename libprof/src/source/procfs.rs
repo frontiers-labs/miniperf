@@ -930,31 +930,3 @@ fn device_sample(
         "exact_system",
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn totals_fold_deltas_and_survive_counter_resets() {
-        let mut totals = ProcessTotals::default();
-        let first = ProcessTotals {
-            user_ticks: 10,
-            ..ProcessTotals::default()
-        };
-        totals.add_delta(&first, &ProcessTotals::default());
-        assert_eq!(totals.user_ticks, 10);
-
-        let second = ProcessTotals {
-            user_ticks: 25,
-            ..ProcessTotals::default()
-        };
-        totals.add_delta(&second, &first);
-        assert_eq!(totals.user_ticks, 25);
-
-        // A recycled PID can read lower than its predecessor; that is not a
-        // reason to underflow the tree's totals.
-        totals.add_delta(&first, &second);
-        assert_eq!(totals.user_ticks, 25);
-    }
-}

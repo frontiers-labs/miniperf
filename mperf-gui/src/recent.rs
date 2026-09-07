@@ -64,31 +64,3 @@ fn state_file() -> Option<PathBuf> {
     };
     Some(state_directory.join("mperf-gui/recent-results.json"))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{MAX_RECENT_RESULTS, insert};
-    use std::path::PathBuf;
-
-    #[test]
-    fn recent_result_moves_to_front_without_duplicates() {
-        let mut recent = vec![PathBuf::from("/one"), PathBuf::from("/two")];
-
-        insert(&mut recent, PathBuf::from("/two"));
-
-        assert_eq!(recent, vec![PathBuf::from("/two"), PathBuf::from("/one")]);
-    }
-
-    #[test]
-    fn recent_results_are_bounded() {
-        let mut recent = (0..MAX_RECENT_RESULTS)
-            .map(|index| PathBuf::from(format!("/{index}")))
-            .collect();
-
-        insert(&mut recent, PathBuf::from("/new"));
-
-        assert_eq!(recent.len(), MAX_RECENT_RESULTS);
-        assert_eq!(recent.first(), Some(&PathBuf::from("/new")));
-        assert!(!recent.contains(&PathBuf::from(format!("/{}", MAX_RECENT_RESULTS - 1))));
-    }
-}

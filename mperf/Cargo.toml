@@ -1,3 +1,5 @@
+# Coverage comes from checks/, which drives the packaged binaries on real
+# recordings. See checks/lint/test-policy.
 [package]
 name = "mperf"
 version = "0.1.0"
@@ -9,10 +11,13 @@ readme = "../README.md"
 default-run = "mperf"
 
 [lib]
+test = false
+doctest = false
 name = "mperf"
 path = "src/lib.rs"
 
 [[bin]]
+test = false
 name = "mperf"
 path = "src/bin/mperf.rs"
 

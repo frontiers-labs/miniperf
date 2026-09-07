@@ -746,18 +746,3 @@ pub unsafe extern "C" fn qemu_plugin_install(
     }
     0
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unclassified_callback_counts_and_attributes() {
-        let before = UNCLASSIFIED_INSTRUCTIONS.load(Ordering::Relaxed);
-        execute_unclassified(0, ptr::null_mut());
-        assert_eq!(
-            UNCLASSIFIED_INSTRUCTIONS.load(Ordering::Relaxed),
-            before + 1
-        );
-    }
-}

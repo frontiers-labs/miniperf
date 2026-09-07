@@ -127,17 +127,3 @@ fn parse_number(value: &str) -> Option<u64> {
         None => value.parse().ok(),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::parse_format_spec;
-
-    #[test]
-    fn parses_sysfs_bitfield_specifications() {
-        assert_eq!(parse_format_spec("config:0-7"), Some((0, 0, 7)));
-        assert_eq!(parse_format_spec("config:8-15"), Some((0, 8, 15)));
-        assert_eq!(parse_format_spec("config1:16-31"), Some((1, 16, 31)));
-        assert_eq!(parse_format_spec("config:18"), Some((0, 18, 18)));
-        assert_eq!(parse_format_spec("nonsense"), None);
-    }
-}

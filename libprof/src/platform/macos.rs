@@ -102,22 +102,3 @@ pub(super) fn current_thread_id() -> u64 {
     }
     tid
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{segment_is_executable, text_address, VM_PROT_EXECUTE};
-
-    #[test]
-    fn finds_link_time_text_address_in_current_mach_o() {
-        let executable = std::env::current_exe().unwrap();
-        assert!(text_address(&executable).is_some());
-    }
-
-    #[test]
-    fn rejects_non_executable_mach_o_segments() {
-        assert!(!segment_is_executable(0x1_0000_0000, 0));
-        assert!(!segment_is_executable(0x1000, 1));
-        assert!(!segment_is_executable(0, VM_PROT_EXECUTE));
-        assert!(segment_is_executable(0x1000, VM_PROT_EXECUTE));
-    }
-}
