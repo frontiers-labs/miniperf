@@ -8,9 +8,14 @@
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 
+# Sources that can actually run something, so prose describing the policy is
+# not mistaken for breaking it. third_party/libduckdb-sys is an unmodified
+# upstream copy and is not ours to lint.
 status=0
 loose="$(git grep -nE '(^|[^_[:alnum:]])curl[[:space:]]+-' -- \
-    ':!utils/deps/common.sh' ':!checks/lint/pinned-downloads' || true)"
+    '*.sh' '*.rs' 'checks/*' '.github/*' \
+    ':!*.md' ':!utils/deps/common.sh' ':!checks/lint/pinned-downloads' \
+    ':!third_party/libduckdb-sys/*' || true)"
 if [[ -n "${loose}" ]]; then
     printf 'FAIL: use deps_curl (utils/deps/common.sh), not curl directly:\n%s\n' \
         "${loose}" >&2
