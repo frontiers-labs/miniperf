@@ -51,7 +51,18 @@ else
         package_crates+=(-p mperf-gui)
     fi
     if [[ "${platform}" == linux-* ]]; then
-        package_crates+=(-p miniperf-shim-libc -p miniperf-qemu-roofline)
+        # Every shim ships. They are pure-Rust cdylibs with one libc
+        # dependency, and a shim the user cannot find is a feature they cannot
+        # use: the tracing and roofline guides both hand out LD_PRELOAD and
+        # OMP_TOOL_LIBRARIES paths that only resolve inside the package.
+        package_crates+=(
+            -p miniperf-shim-libc
+            -p miniperf-shim-ompt
+            -p miniperf-shim-itt
+            -p miniperf-shim-mpi
+            -p miniperf-shim-cupti
+            -p miniperf-qemu-roofline
+        )
     fi
 fi
 
@@ -66,6 +77,18 @@ mkdir -p "${package_root}/share/doc/miniperf"
 install -m 0644 "${repository_root}/README.md" "${package_root}/share/doc/miniperf/README.md"
 install -m 0644 "${repository_root}/LICENSE" "${package_root}/share/doc/miniperf/LICENSE"
 
+# The manual tracing API. docs/src/guide/tracing.md tells users to compile
+# against these, and until now they existed only in a source checkout.
+if [[ "${platform}" != windows-* ]]; then
+    mkdir -p "${package_root}/include" "${package_root}/share/miniperf"
+    install -m 0644 \
+        "${repository_root}/collector-core/include/mperf_trace.h" \
+        "${package_root}/include/mperf_trace.h"
+    install -m 0644 \
+        "${repository_root}/collector-core/stub/mperf_trace_stub.c" \
+        "${package_root}/share/miniperf/mperf_trace_stub.c"
+fi
+
 if [[ "${platform}" == windows-* ]]; then
     install -m 0755 "${release_directory}/mperf-gui.exe" "${package_root}/mperf-gui.exe"
 else
@@ -77,6 +100,10 @@ if [[ "${platform}" == linux-* ]]; then
     for library in \
         libmperf_collector.so \
         libmperf_libc.so \
+        libmperf_ompt.so \
+        libmperf_itt.so \
+        libmperf_mpi.so \
+        libmperf_cupti.so \
         libminiperf_qemu_roofline.so; do
         install -m 0755 "${release_directory}/${library}" "${package_root}/lib/miniperf/${library}"
     done

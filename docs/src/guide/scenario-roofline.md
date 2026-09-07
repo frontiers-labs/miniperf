@@ -49,7 +49,8 @@ With the QEMU backend the recording also contains the `memory_*` tables describe
 To use the `compiler` backend, build the LLVM pass as described in [Install miniperf](install.md), then compile your program with it and link the trace stub:
 
 ```sh
-clang -O3 -g source.c collector-core/stub/mperf_trace_stub.c -o workload \
+# $MINIPERF is the unpacked package root.
+clang -O3 -g source.c "$MINIPERF/share/miniperf/mperf_trace_stub.c" -o workload \
   -Xclang -fpass-plugin=target/clang_plugin/lib/miniperf_plugin.so -ldl
 mperf record -s roofline -o results/compiler -- ./workload
 ```

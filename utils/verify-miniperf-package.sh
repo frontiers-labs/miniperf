@@ -17,10 +17,16 @@ case "${platform}" in
             bin/mperf
             lib/miniperf/libmperf_collector.so
             lib/miniperf/libmperf_libc.so
+            lib/miniperf/libmperf_ompt.so
+            lib/miniperf/libmperf_itt.so
+            lib/miniperf/libmperf_mpi.so
+            lib/miniperf/libmperf_cupti.so
             lib/miniperf/libminiperf_qemu_roofline.so
             lib/miniperf/libdr_roofline.so
             lib/miniperf/dynamorio/bin64/drrun
             lib/miniperf/qemu/bin/qemu-riscv64
+            include/mperf_trace.h
+            share/miniperf/mperf_trace_stub.c
         )
         ;;
     linux-*)
@@ -29,10 +35,16 @@ case "${platform}" in
             bin/mperf-gui
             lib/miniperf/libmperf_collector.so
             lib/miniperf/libmperf_libc.so
+            lib/miniperf/libmperf_ompt.so
+            lib/miniperf/libmperf_itt.so
+            lib/miniperf/libmperf_mpi.so
+            lib/miniperf/libmperf_cupti.so
             lib/miniperf/libminiperf_qemu_roofline.so
             lib/miniperf/libdr_roofline.so
             lib/miniperf/dynamorio/bin64/drrun
             lib/miniperf/qemu/bin/qemu-riscv64
+            include/mperf_trace.h
+            share/miniperf/mperf_trace_stub.c
         )
         ;;
     macos-*)
@@ -42,6 +54,8 @@ case "${platform}" in
             bin/mperf
             bin/mperf-gui
             lib/miniperf/libmperf_collector.dylib
+            include/mperf_trace.h
+            share/miniperf/mperf_trace_stub.c
             mperf-gui.app/Contents/Info.plist
             mperf-gui.app/Contents/MacOS/mperf-gui
             mperf-gui.app/Contents/PkgInfo

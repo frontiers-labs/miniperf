@@ -6,7 +6,7 @@ Trace points are identified by a stable hash of their name and source location, 
 
 ## C and C++
 
-Include `collector-core/include/mperf_trace.h` and compile the stub `collector-core/stub/mperf_trace_stub.c` into your program. Every call is a no-op unless the process runs under `mperf record`, so you can leave the instrumentation in production builds.
+Include `include/mperf_trace.h` and compile the stub `share/miniperf/mperf_trace_stub.c` into your program; both ship in the miniperf package. Every call is a no-op unless the process runs under `mperf record`, so you can leave the instrumentation in production builds.
 
 ```c
 #include <mperf_trace.h>
@@ -19,7 +19,8 @@ void step(int iteration, double residual) {
 ```
 
 ```sh
-cc -O2 -g -I collector-core/include app.c collector-core/stub/mperf_trace_stub.c -o app -ldl
+# $MINIPERF is the unpacked package root.
+cc -O2 -g -I "$MINIPERF/include" app.c "$MINIPERF/share/miniperf/mperf_trace_stub.c" -o app -ldl
 ```
 
 The macros register the trace point on first use with `__func__`, `__FILE__`, and `__LINE__`. For a span in C, or for cross-thread and explicitly parented spans, use the functions directly:

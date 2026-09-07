@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# The tracing API a user compiles against actually records.
+#
+# Uses the header and stub from the package, not from the source tree, because
+# the package is what a user has. Shipping the files is not the same as them
+# working.
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+[[ "$(uname -s)" == Linux ]] || skip "not a Linux host"
+require_pmu
+
+header_dir="${MPERF_PACKAGE}/include"
+stub="${MPERF_PACKAGE}/share/miniperf/mperf_trace_stub.c"
+[[ -f "${header_dir}/mperf_trace.h" ]] || fail "mperf_trace.h not in the package"
+[[ -f "${stub}" ]] || fail "mperf_trace_stub.c not in the package"
+
+traced="${CHECK_WORK}/bin/trace_capi"
+cc -O2 -g -I "${header_dir}" -o "${traced}" \
+    "$(dirname "${BASH_SOURCE[0]}")/fixtures/trace_capi.c" "${stub}" -ldl \
+    || fail "the shipped header and stub do not compile"
+
+dir="${CHECK_WORK}/rec-trace-capi"
+"${mperf}" record -s snapshot -o "${dir}" -- "${traced}" >"${dir}.log" 2>&1 \
+    || { cat "${dir}.log" >&2; fail "record of the traced program failed"; }
+
+# The fixture emits exactly 64 of each kind and counts 0..63, so the totals are
+# known rather than merely non-zero: a shim that recorded a fraction of the
+# calls would still pass a `> 0` assertion.
+assert_sql "${dir}" "
+  SELECT COUNT(*) FILTER (WHERE kind = 'span')     = 1  AS span_recorded,
+         COUNT(*) FILTER (WHERE kind = 'counter')  = 1  AS counter_recorded,
+         COUNT(*) FILTER (WHERE kind = 'instant')  = 1  AS instant_recorded,
+         MAX(count) FILTER (WHERE name = 'check_span')          = 64   AS every_span_seen,
+         MAX(total_value) FILTER (WHERE name = 'check_counter') = 2016 AS counter_values_exact,
+         MAX(total_ns) FILTER (WHERE name = 'check_span')       > 0    AS spans_have_duration
+  FROM custom_events"
+note "the shipped tracing API recorded spans, counters and instants"
