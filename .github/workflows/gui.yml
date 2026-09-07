@@ -39,7 +39,9 @@ jobs:
           merge-multiple: true
       - name: Unpack
         id: unpack
-        run: echo "root=$(utils/unpack-package.sh dist pkg)" >> "$GITHUB_OUTPUT"
+        run: |
+          root="$(utils/unpack-package.sh dist pkg)"
+          echo "root=${root}" >> "$GITHUB_OUTPUT"
       - name: Install a display and a software renderer
         if: matrix.os == 'linux'
         run: |

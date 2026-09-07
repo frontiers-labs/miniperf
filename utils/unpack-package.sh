@@ -11,20 +11,33 @@ set -euo pipefail
 source_directory="${1:?usage: unpack-package.sh <dist-dir> <dest-dir>}"
 destination="${2:?usage: unpack-package.sh <dist-dir> <dest-dir>}"
 
-tarball="$(find "${source_directory}" -name '*.tar.*' ! -name '*.sha256' | head -1)"
-[[ -n "${tarball}" ]] || { echo "no package archive in ${source_directory}" >&2; exit 1; }
+# Windows packages are a .zip; every other platform is a .tar.gz.
+archive="$(find "${source_directory}" \( -name '*.tar.*' -o -name '*.zip' \) ! -name '*.sha256' | head -1)"
+[[ -n "${archive}" ]] || {
+    echo "no package archive in ${source_directory}; it holds:" >&2
+    ls -la "${source_directory}" >&2
+    exit 1
+}
 
-if [[ -f "${tarball}.sha256" ]]; then
+if [[ -f "${archive}.sha256" ]]; then
     if command -v sha256sum >/dev/null; then
-        (cd "$(dirname "${tarball}")" && sha256sum -c "$(basename "${tarball}").sha256" >/dev/null)
+        (cd "$(dirname "${archive}")" && sha256sum -c "$(basename "${archive}").sha256" >/dev/null)
     else
         # macOS ships shasum rather than sha256sum.
-        (cd "$(dirname "${tarball}")" && shasum -a 256 -c "$(basename "${tarball}").sha256" >/dev/null)
+        (cd "$(dirname "${archive}")" && shasum -a 256 -c "$(basename "${archive}").sha256" >/dev/null)
     fi
 fi
 
 mkdir -p "${destination}"
-tar -C "${destination}" -xf "${tarball}"
+case "${archive}" in
+    *.zip) unzip -q -o "${archive}" -d "${destination}" ;;
+    *)     tar -C "${destination}" -xf "${archive}" ;;
+esac
+
 root="$(find "${destination}" -maxdepth 1 -mindepth 1 -type d | head -1)"
-[[ -n "${root}" ]] || { echo "the archive contained no package directory" >&2; exit 1; }
+if [[ -z "${root}" ]]; then
+    # shutil.make_archive writes the Windows package's contents at the archive
+    # root rather than under a directory.
+    root="${destination}"
+fi
 (cd "${root}" && pwd)

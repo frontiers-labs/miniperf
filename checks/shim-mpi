@@ -19,6 +19,12 @@ mpicc -O2 -g -o "${fixture}" "$(dirname "${BASH_SOURCE[0]}")/fixtures/mpi_ranks.
     2>"${CHECK_WORK}/mpi-build.log" \
     || fail "mpicc could not build the fixture: $(tail -1 "${CHECK_WORK}/mpi-build.log")"
 
+# UCX defaults to probing RDMA transports and aborts where ibv_create_srq is
+# unsupported, which is every hosted runner. Two ranks on one node only need
+# shared memory, so name the transports rather than let it guess.
+export UCX_TLS=sm,self
+export UCX_NET_DEVICES=
+
 dir="${CHECK_WORK}/rec-shim-mpi"
 # -genv puts the shim in the ranks. Preloading it into mpirun itself, which is
 # a launcher rather than an MPI process, hung the run.
