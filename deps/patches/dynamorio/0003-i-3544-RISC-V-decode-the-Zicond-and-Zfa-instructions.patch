@@ -1,0 +1,220 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: miniperf <miniperf@localhost>
+Date: Sun, 6 Sep 2026 21:01:05 +0300
+Subject: [PATCH 3/3] i#3544 RISC-V: decode the Zicond and Zfa instructions
+
+Ubuntu's riscv64 glibc executes czero.eqz in _int_malloc and fli.d when
+formatting a double, so a decoder without Zicond and Zfa turns any ordinary
+program into SIGILL under DynamoRIO once it allocates or prints.
+
+Zicond is two R-format instructions. Zfa needs one new field: fli takes a
+constant-table index in the rs1 slot, reported as the index rather than the
+constant it names. The half and quad forms are listed alongside single and
+double: decoding does not depend on the host implementing Zfh or Q, and a
+format the decoder does not expect would otherwise reach the application as
+an illegal instruction.
+
+RV32-only fmvh.x.d and fmvp.d.x are deliberately absent.
+---
+ core/ir/riscv64/codec.c            | 32 ++++++++++++++++++++++++++
+ core/ir/riscv64/codec.h            |  4 ++++
+ core/ir/riscv64/codec.py           | 10 +++++++++
+ core/ir/riscv64/isl/README.md      |  1 +
+ core/ir/riscv64/isl/zfa.txt        | 36 ++++++++++++++++++++++++++++++
+ core/ir/riscv64/isl/zicond.txt     |  5 +++++
+ make/CMake_riscv64_gen_codec.cmake |  2 ++
+ 7 files changed, 90 insertions(+)
+ create mode 100644 core/ir/riscv64/isl/zfa.txt
+ create mode 100644 core/ir/riscv64/isl/zicond.txt
+
+diff --git a/core/ir/riscv64/codec.c b/core/ir/riscv64/codec.c
+index f9bf31796..227aadf9a 100644
+--- a/core/ir/riscv64/codec.c
++++ b/core/ir/riscv64/codec.c
+@@ -1418,6 +1418,24 @@ decode_csh_imm_opnd(dcontext_t *dc, uint32_t inst, int op_sz, byte *pc, byte *or
+     return true;
+ }
+ 
++/* Decode the constant index of an fli instruction, which occupies the rs1
++ * slot:
++ * |31    20|19   15|14  12|11  7|6      0|
++ * |  ...   | index |  ... | rd  | opcode |
++ *           ^-----^
++ * The index selects one of 32 constants defined by the Zfa specification;
++ * the value is reported as-is rather than as the constant it names.
++ */
++static bool
++decode_fli_imm_opnd(dcontext_t *dc, uint32_t inst, int op_sz, byte *pc, byte *orig_pc,
++                    int idx, instr_t *out)
++{
++    int32_t imm = GET_FIELD(inst, 19, 15);
++    opnd_t opnd = opnd_add_flags(opnd_create_immed_int(imm, op_sz), DR_OPND_IMM_PRINT_DECIMAL);
++    instr_set_src(out, idx, opnd);
++    return true;
++}
++
+ /* Array of operand decode functions indexed by riscv64_fld_t.
+  *
+  * NOTE: After benchmarking, perhaps this could be placed in the same section as
+@@ -1500,6 +1518,7 @@ opnd_dec_func_t opnd_decoders[] = {
+     [RISCV64_FLD_CLH_IMM] = decode_clh_imm_opnd,
+     [RISCV64_FLD_CSB_IMM] = decode_csb_imm_opnd,
+     [RISCV64_FLD_CSH_IMM] = decode_csh_imm_opnd,
++    [RISCV64_FLD_FLI_IMM] = decode_fli_imm_opnd,
+     [RISCV64_FLD_I_S_RS1_DISP] = decode_v_s_rs1_disp_opnd,
+ };
+ 
+@@ -2989,6 +3008,18 @@ encode_csh_imm_opnd(instr_t *instr, byte *pc, int idx, uint32_t *out, decode_inf
+     return true;
+ }
+ 
++/* Encode the constant index of an fli instruction. See decode_fli_imm_opnd()
++ * for the field layout.
++ */
++static bool
++encode_fli_imm_opnd(instr_t *instr, byte *pc, int idx, uint32_t *out, decode_info_t *di)
++{
++    opnd_t opnd = instr_get_src(instr, idx);
++    int32_t imm = opnd_get_immed_int(opnd);
++    *out |= SET_FIELD(imm, 19, 15);
++    return true;
++}
++
+ /* Array of operand encode functions indexed by riscv64_fld_t. */
+ opnd_enc_func_t opnd_encoders[] = {
+     [RISCV64_FLD_NONE] = encode_none_opnd,
+@@ -3067,6 +3098,7 @@ opnd_enc_func_t opnd_encoders[] = {
+     [RISCV64_FLD_CLH_IMM] = encode_clh_imm_opnd,
+     [RISCV64_FLD_CSB_IMM] = encode_csb_imm_opnd,
+     [RISCV64_FLD_CSH_IMM] = encode_csh_imm_opnd,
++    [RISCV64_FLD_FLI_IMM] = encode_fli_imm_opnd,
+     [RISCV64_FLD_I_S_RS1_DISP] = encode_implicit_opnd,
+ };
+ 
+diff --git a/core/ir/riscv64/codec.h b/core/ir/riscv64/codec.h
+index da21fbef4..c30239b9b 100644
+--- a/core/ir/riscv64/codec.h
++++ b/core/ir/riscv64/codec.h
+@@ -78,7 +78,9 @@ typedef enum {
+     RISCV64_ISA_EXT_SVINVAL,
+     RISCV64_ISA_EXT_SYSTEM,
+     RISCV64_ISA_EXT_ZCB,
++    RISCV64_ISA_EXT_ZFA,
+     RISCV64_ISA_EXT_ZICBOM,
++    RISCV64_ISA_EXT_ZICOND,
+     RISCV64_ISA_EXT_ZICBOP,
+     RISCV64_ISA_EXT_ZICBOZ,
+     RISCV64_ISA_EXT_ZICSR,
+@@ -275,6 +277,8 @@ typedef enum {
+     RISCV64_FLD_CLH_IMM,
+     RISCV64_FLD_CSB_IMM,
+     RISCV64_FLD_CSH_IMM,
++    /* Zfa extension fields. */
++    RISCV64_FLD_FLI_IMM,
+     RISCV64_FLD_CNT, /* Keep this last */
+ } riscv64_fld_t;
+ 
+diff --git a/core/ir/riscv64/codec.py b/core/ir/riscv64/codec.py
+index d43645236..5e1e24c3b 100755
+--- a/core/ir/riscv64/codec.py
++++ b/core/ir/riscv64/codec.py
+@@ -849,6 +849,16 @@ class Field(str, Enum):
+                'The register-relative memory location of a 2-byte access '
+                '(reg+imm: imm & 0x1 == 0).'
+                )
++    # Zfa extension fields.
++    FLI_IMM = (78,
++               'imm',
++               False,
++               False,
++               True,
++               'OPSZ_5b',
++               '',
++               'The constant index in an FLI instruction (inst[19:15]).'
++               )
+ 
+     def __str__(self) -> str:
+         return self.name.lower().replace("fp", "(fp)")
+diff --git a/core/ir/riscv64/isl/README.md b/core/ir/riscv64/isl/README.md
+index e5edcdadb..04d0f30f1 100644
+--- a/core/ir/riscv64/isl/README.md
++++ b/core/ir/riscv64/isl/README.md
+@@ -75,6 +75,7 @@ For non-compressed instructions:
+ - shamt5
+ - shamt6
+ - csr_imm
++- fli_imm
+ - i_imm
+ - s_imm
+ - b_imm
+diff --git a/core/ir/riscv64/isl/zfa.txt b/core/ir/riscv64/isl/zfa.txt
+new file mode 100644
+index 000000000..9017bf671
+--- /dev/null
++++ b/core/ir/riscv64/isl/zfa.txt
+@@ -0,0 +1,36 @@
++# "Zfa" Standard Extension for Additional Floating-Point Instructions.
++# Version 1.0
++#
++# The half and quad forms are decodable whether or not the host implements
++# Zfh or Q: a decoder that only knows the formats it expects to see turns an
++# unexpected one into SIGILL for the application.
++
++fli.s       | r | fli_imm rd(fp)          | 111100000001.....000.....1010011
++fli.d       | r | fli_imm rd(fp)          | 111100100001.....000.....1010011
++fli.h       | r | fli_imm rd(fp)          | 111101000001.....000.....1010011
++fli.q       | r | fli_imm rd(fp)          | 111101100001.....000.....1010011
++fminm.s     | r | rs2(fp) rs1(fp) rd(fp)  | 0010100..........010.....1010011
++fmaxm.s     | r | rs2(fp) rs1(fp) rd(fp)  | 0010100..........011.....1010011
++fminm.d     | r | rs2(fp) rs1(fp) rd(fp)  | 0010101..........010.....1010011
++fmaxm.d     | r | rs2(fp) rs1(fp) rd(fp)  | 0010101..........011.....1010011
++fminm.h     | r | rs2(fp) rs1(fp) rd(fp)  | 0010110..........010.....1010011
++fmaxm.h     | r | rs2(fp) rs1(fp) rd(fp)  | 0010110..........011.....1010011
++fminm.q     | r | rs2(fp) rs1(fp) rd(fp)  | 0010111..........010.....1010011
++fmaxm.q     | r | rs2(fp) rs1(fp) rd(fp)  | 0010111..........011.....1010011
++fround.s    | r | rs1(fp) rm rd(fp)       | 010000000100.............1010011
++froundnx.s  | r | rs1(fp) rm rd(fp)       | 010000000101.............1010011
++fround.d    | r | rs1(fp) rm rd(fp)       | 010000100100.............1010011
++froundnx.d  | r | rs1(fp) rm rd(fp)       | 010000100101.............1010011
++fround.h    | r | rs1(fp) rm rd(fp)       | 010001000100.............1010011
++froundnx.h  | r | rs1(fp) rm rd(fp)       | 010001000101.............1010011
++fround.q    | r | rs1(fp) rm rd(fp)       | 010001100100.............1010011
++froundnx.q  | r | rs1(fp) rm rd(fp)       | 010001100101.............1010011
++fcvtmod.w.d | r | rs1(fp) rm rd           | 110000101000.....001.....1010011
++fleq.s      | r | rs2(fp) rs1(fp) rd      | 1010000..........100.....1010011
++fltq.s      | r | rs2(fp) rs1(fp) rd      | 1010000..........101.....1010011
++fleq.d      | r | rs2(fp) rs1(fp) rd      | 1010001..........100.....1010011
++fltq.d      | r | rs2(fp) rs1(fp) rd      | 1010001..........101.....1010011
++fleq.h      | r | rs2(fp) rs1(fp) rd      | 1010010..........100.....1010011
++fltq.h      | r | rs2(fp) rs1(fp) rd      | 1010010..........101.....1010011
++fleq.q      | r | rs2(fp) rs1(fp) rd      | 1010011..........100.....1010011
++fltq.q      | r | rs2(fp) rs1(fp) rd      | 1010011..........101.....1010011
+diff --git a/core/ir/riscv64/isl/zicond.txt b/core/ir/riscv64/isl/zicond.txt
+new file mode 100644
+index 000000000..183d25bb3
+--- /dev/null
++++ b/core/ir/riscv64/isl/zicond.txt
+@@ -0,0 +1,5 @@
++# "Zicond" Standard Extension for Integer Conditional Operations.
++# Version 1.0
++
++czero.eqz | r | rs2 rs1 rd | 0000111..........101.....0110011
++czero.nez | r | rs2 rs1 rd | 0000111..........111.....0110011
+diff --git a/make/CMake_riscv64_gen_codec.cmake b/make/CMake_riscv64_gen_codec.cmake
+index 77f2138e5..cab9ae42f 100644
+--- a/make/CMake_riscv64_gen_codec.cmake
++++ b/make/CMake_riscv64_gen_codec.cmake
+@@ -71,11 +71,13 @@ add_custom_command(
+           ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/system.txt
+           ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/zcb.txt
+           ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/v.txt
++          ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/zfa.txt
+           ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/xtheadcmo.txt
+           ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/xtheadsync.txt
+           ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/zicbom.txt
+           ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/zicbop.txt
+           ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/zicboz.txt
++          ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/zicond.txt
+           ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/zicsr.txt
+           ${PROJECT_SOURCE_DIR}/core/ir/${ARCH_NAME}/isl/zifencei.txt
+   COMMAND ${Python3_EXECUTABLE}

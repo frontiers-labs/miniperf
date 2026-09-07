@@ -54,3 +54,18 @@ The counters are system-wide. The same `memcpy` benchmark measures 2081 MB read 
 ## Roofline on RISC-V
 
 RVV accounting in the QEMU plugin uses the executed instruction's runtime `vl`, `vstart`, SEW, and mask state, so changing `vlen` changes lane capacity without changing the accounting rule. Run Roofline recordings on the RISC-V host itself. Automatic mode refuses to present emulator time from an x86 host as RISC-V hardware performance. See [Roofline](../guide/scenario-roofline.md).
+
+**DynamoRIO accounting.** The DynamoRIO backend runs on riscv64 with the patches in `deps/patches/dynamorio`, which the bundle build applies to the pinned revision. Three gaps made it unusable without them, and each one is upstreamable on its own:
+
+- `drx_buf` refills its buffers from a guard-page fault, and the RISC-V arm of that path was an unconditional "not implemented" assert, so the miniperf client died at its first buffer wrap, around 450 instructions in.
+- The decoder covered neither Zcb, Zicond nor Zfa. DynamoRIO delivers SIGILL to the application for an instruction it cannot decode, and Ubuntu's riscv64 glibc executes `c.lbu` in `__tunables_init`, `czero.eqz` in `_int_malloc` and `fli.d` when formatting a double — so every process died before `main`, or at its first allocation or `printf`.
+
+A userspace built for a newer profile than the decoder knows fails this way on any host. Before blaming the backend on a new board, list what it cannot decode in the binaries a run will actually execute:
+
+```sh
+cmake -S utils/dr-decode-coverage -B build/dr-decode -DDynamoRIO_DIR=<bundle>/dynamorio/cmake
+cmake --build build/dr-decode
+utils/dr-decode-coverage/report.py --probe build/dr-decode/dr_decode_probe /lib/riscv64-linux-gnu/libc.so.6 ./workload
+```
+
+Vector accounting costs a clean call per RVV instruction, so a vector-heavy loop accounts more slowly than a scalar one: on a SpacemiT X100, an RVV SpMV accounts at roughly 12 Minst/s against about 100 Minst/s for scalar code. Both beat the QEMU plugin by orders of magnitude.

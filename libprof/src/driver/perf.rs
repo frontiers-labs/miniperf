@@ -45,38 +45,10 @@ use super::{
 /// counter multiplexing is supported.
 pub struct PerfCountingDriver {
     native_handles: Vec<NativeCounterHandle>,
-    /// Physical PMU counters this driver holds, published through
-    /// [`hardware_counters_held_for_counting`] while it lives.
-    reserved: usize,
-}
-
-/// Physical PMU counters held by counting drivers in this process.
-///
-/// A counting event occupies a hardware counter for its whole lifetime, and a
-/// sampling group sized to the rest of the PMU is still accepted by
-/// `perf_event_open` and then never scheduled. Sizing sampling groups around
-/// the counting drivers already open keeps that from happening, but it only
-/// holds when the counting driver is opened first; the guarantee that it never
-/// happens silently is [`PerfSamplingDriver::groups_scheduled`].
-static COUNTING_DRIVER_COUNTERS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
-pub(super) fn hardware_counters_held_for_counting() -> usize {
-    COUNTING_DRIVER_COUNTERS.load(Ordering::Relaxed)
-}
-
-fn reserve_counting_counters(counters: &[Counter]) -> usize {
-    let reserved = counters
-        .iter()
-        .filter(|counter| !counter.is_software())
-        .count();
-    COUNTING_DRIVER_COUNTERS.fetch_add(reserved, Ordering::Relaxed);
-    reserved
 }
 
 impl Drop for PerfCountingDriver {
     fn drop(&mut self) {
-        COUNTING_DRIVER_COUNTERS.fetch_sub(self.reserved, Ordering::Relaxed);
         for handle in &self.native_handles {
             unsafe { close(handle.fd) };
         }
@@ -122,7 +94,7 @@ unsafe impl Send for UnsafeMmap {}
 unsafe impl Sync for UnsafeMmap {}
 
 impl PerfCountingDriver {
-    pub fn new(counters: Vec<Counter>, pid: Option<i32>) -> Result<Self, Error> {
+    pub fn new(counters: Vec<Counter>, pid: Option<i32>, pinned: bool) -> Result<Self, Error> {
         // On a heterogeneous (big.LITTLE) host we open every hardware counter on
         // each cluster's PMU so a migrating task is faithfully counted wherever
         // it runs. `host_core_pmus` returns more than one entry only in that
@@ -146,12 +118,9 @@ impl PerfCountingDriver {
             }
         }
 
-        let native_handles = binding::direct(&counters, &mut attrs, pid)?;
+        let native_handles = binding::direct(&counters, &mut attrs, pid, pinned)?;
 
-        Ok(PerfCountingDriver {
-            native_handles,
-            reserved: reserve_counting_counters(&counters),
-        })
+        Ok(PerfCountingDriver { native_handles })
     }
 
     /// Open each PMU counter once per core cluster (faithful per-core counting).
@@ -236,12 +205,7 @@ impl PerfCountingDriver {
             ));
         }
 
-        Ok(PerfCountingDriver {
-            native_handles,
-            // A task runs on one cluster at a time, so the per-cluster copies
-            // of a counter occupy one physical counter between them.
-            reserved: reserve_counting_counters(&counters),
-        })
+        Ok(PerfCountingDriver { native_handles })
     }
 }
 
@@ -384,6 +348,12 @@ impl SamplingDriver for PerfSamplingDriver {
             }
         }
         counters
+    }
+
+    fn sample_rate(&self) -> Option<(u64, u64)> {
+        let effective = binding::LAST_SAMPLE_FREQ.load(Ordering::Relaxed);
+        let requested = binding::LAST_SAMPLE_FREQ_REQUESTED.load(Ordering::Relaxed);
+        (effective > 0 && requested > 0).then_some((effective, requested))
     }
 
     fn start(&mut self, callback: Arc<dyn Sink>) -> Result<(), Error> {

@@ -97,6 +97,15 @@ impl ResolvedPass {
         statuses
     }
 
+    /// The sampling rate the host ceiling forced the pass down to, and the one
+    /// it asked for. `None` when the pass sampled at the rate it wanted.
+    pub fn lowered_sample_rate(&self) -> Option<(u64, u64)> {
+        self.sources
+            .iter()
+            .find_map(|source| source.as_any().downcast_ref::<PmuSamplingSource>())
+            .and_then(|source| source.lowered_sample_rate())
+    }
+
     /// Counters the pass's PMU sampling source actually opened.
     pub fn recorded_counters(&self) -> Vec<(mperf_data::EventType, String)> {
         self.sources

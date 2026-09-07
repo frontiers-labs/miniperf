@@ -10,13 +10,18 @@ pub fn direct(
     counters: &[Counter],
     attrs: &mut [perf_event_attr],
     pid: Option<i32>,
+    pinned: bool,
 ) -> Result<Vec<NativeCounterHandle>, Error> {
     let mut handles: Vec<NativeCounterHandle> = vec![];
 
     for (cntr, attr) in std::iter::zip(counters, attrs) {
-        // cycles and instructions are typically fixed counters and thus always on
+        // cycles and instructions are typically fixed counters and thus always
+        // on. A pinned event owns its counter for the whole run, so a caller
+        // that runs alongside a sampling group must opt out: on a PMU with a
+        // fixed event-to-counter map, a pinned event starves every group that
+        // names it.
         match cntr {
-            Counter::Cycles | Counter::Instructions => attr.set_pinned(1),
+            Counter::Cycles | Counter::Instructions if pinned => attr.set_pinned(1),
             _ => attr.set_pinned(0),
         };
         let new_fd = unsafe {
@@ -115,12 +120,18 @@ pub fn grouped_on_cpu(
         _ => false,
     });
 
+    // A family whose leader event is the one `Counter::Cycles` already
+    // resolves to needs no separate ring owner: cycles is it. Opening one
+    // anyway would name the same PMU event twice, and a PMU with a fixed
+    // event-to-counter map accepts that group and then never schedules it.
+    let has_leader = leader_cntr.is_some();
+
     // The NMI watchdog permanently occupies one hardware counter. A sampling
     // group sized to the full PMU then never schedules and silently produces
     // zero samples, so shrink every group by the counters the kernel keeps.
     let max_counters_in_group = info
         .and_then(|info| info.max_counters)
-        .unwrap_or_else(|| if leader.is_some() { 2 } else { 3 })
+        .unwrap_or(if has_leader { 2 } else { 3 })
         .saturating_sub(reserved_hardware_counters())
         .max(1);
 
@@ -141,12 +152,29 @@ pub fn grouped_on_cpu(
             )
         })?;
 
-    let leader_attrs = zip(counters, attrs.iter())
+    let mut leader_attrs = zip(counters, attrs.iter())
         .find(|(cntr, _)| leader_cntr == Some(*cntr))
         .map(|(_, attrs)| attrs)
         .cloned();
 
     let group_plan = sampling_group_plan(counters, leader_cntr, max_counters_in_group);
+
+    // Every group in the plan opens its own sampling leader on this CPU, so the
+    // rate each one may ask for depends on how many there are.
+    let sample_freq = group_sample_freq(
+        cycles_attrs.sample_freq,
+        group_plan.len(),
+        host_max_sample_rate(),
+    );
+    LAST_SAMPLE_FREQ_REQUESTED.store(
+        cycles_attrs.sample_freq,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    LAST_SAMPLE_FREQ.store(sample_freq, std::sync::atomic::Ordering::Relaxed);
+    cycles_attrs.sample_freq = sample_freq;
+    if let Some(attrs) = leader_attrs.as_mut() {
+        attrs.sample_freq = sample_freq;
+    }
     let software_indices = counters
         .iter()
         .enumerate()
@@ -158,7 +186,7 @@ pub fn grouped_on_cpu(
     // The ring owner carries the sampling configuration for its whole group.
     // Every other member is read through it, so nothing else is left able to
     // overflow.
-    if leader.is_some() {
+    if has_leader {
         make_counting_member(&mut cycles_attrs);
     }
     make_counting_member(&mut instr_attrs);
@@ -171,7 +199,7 @@ pub fn grouped_on_cpu(
     }
 
     for group in group_plan {
-        let cycles_leader_fd = if leader.is_some() {
+        let cycles_leader_fd = if has_leader {
             let mut leader_attr = leader_attrs.ok_or_else(|| {
                 Error::InvalidConfiguration("configured sampling leader is missing".to_owned())
             })?;
@@ -188,19 +216,13 @@ pub fn grouped_on_cpu(
         let cycles_fd =
             unsafe { sys::perf_event_open(&mut cycles_attrs, pid, cpu, cycles_leader_fd, 0) };
 
-        let leader_fd = if leader.is_some() {
+        let leader_fd = if has_leader {
             cycles_leader_fd
         } else {
             cycles_fd
         };
 
-        push_handle(
-            &mut handles,
-            cycles_fd,
-            Counter::Cycles,
-            leader.is_none(),
-            cpu,
-        )?;
+        push_handle(&mut handles, cycles_fd, Counter::Cycles, !has_leader, cpu)?;
 
         let instr_fd = unsafe { sys::perf_event_open(&mut instr_attrs, pid, cpu, leader_fd, 0) };
 
@@ -495,20 +517,82 @@ fn close_handles(handles: &[NativeCounterHandle]) {
     }
 }
 
+/// The frequency the last opened sampling plan settled on, and what it was
+/// asked for. Read by the driver so a lowered rate reaches the user instead of
+/// quietly changing what a recording means.
+pub static LAST_SAMPLE_FREQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static LAST_SAMPLE_FREQ_REQUESTED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// The host's ceiling on samples per second per CPU, from
+/// `perf_event_max_sample_rate`.
+fn host_max_sample_rate() -> Option<u64> {
+    std::fs::read_to_string("/proc/sys/kernel/perf_event_max_sample_rate")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .filter(|rate| *rate > 0)
+}
+
+/// The per-group sampling frequency to ask for, given how many sampling groups
+/// this plan opens on one CPU.
+///
+/// Every group has its own sampling leader, so `groups` leaders at `requested`
+/// Hz ask the CPU for `groups * requested` interrupts a second. Past
+/// `perf_event_max_sample_rate` the kernel throttles, and throttling stops the
+/// whole group while its `time_running` keeps accruing: the counters then
+/// accumulate almost nothing and the recording is quietly off by orders of
+/// magnitude rather than merely sparse. Measured on a 48-core Zen with a
+/// 1000 Hz cap, a TMA recording asking 3x1000 Hz reported 4.3M cycles for a
+/// 3-second run that actually retired 8.8G.
+///
+/// Four fifths of the ceiling leaves room for the other sampling events a
+/// scenario may open, such as precise memory sampling.
+fn group_sample_freq(requested: u64, groups: usize, max_rate: Option<u64>) -> u64 {
+    let Some(max_rate) = max_rate else {
+        return requested;
+    };
+    let groups = groups.max(1) as u64;
+    let budget = (max_rate * 4 / 5 / groups).max(1);
+    requested.min(budget)
+}
+
 /// Hardware counters no sampling group can use: one for an active NMI
-/// watchdog, plus whatever counting drivers this process already holds on the
-/// target.
+/// watchdog, which the kernel holds for as long as it is enabled.
+///
+/// Counters a concurrent counting driver holds are deliberately not subtracted
+/// here. Shrinking the per-group budget does not reduce PMU pressure, it
+/// raises it: every group the plan splits into re-opens cycles and
+/// instructions, so k groups cost `2k + optional` counters where one group
+/// costs `2 + optional`. Scenarios that count and sample at once (mem,
+/// roofline) split into eight three-event groups on a 14-counter PMU and then
+/// nothing was scheduled at all. The kernel time-slices an over-subscribed
+/// group set on its own, and `MeasurementQuality::Scaled` already reports the
+/// resulting scaling.
 fn reserved_hardware_counters() -> usize {
-    let nmi_watchdog = std::fs::read_to_string("/proc/sys/kernel/nmi_watchdog")
+    std::fs::read_to_string("/proc/sys/kernel/nmi_watchdog")
         .map(|value| value.trim() == "1")
-        .unwrap_or(false) as usize;
-    nmi_watchdog + super::hardware_counters_held_for_counting()
+        .unwrap_or(false) as usize
 }
 
 #[cfg(test)]
 mod tests {
-    use super::sampling_group_plan;
+    use super::{group_sample_freq, sampling_group_plan};
     use crate::Counter;
+
+    #[test]
+    fn sampling_rate_stays_under_the_host_ceiling() {
+        // One group may use four fifths of the ceiling; three groups split it,
+        // because each one interrupts the CPU at its own rate.
+        assert_eq!(group_sample_freq(1000, 1, Some(1000)), 800);
+        assert_eq!(group_sample_freq(1000, 3, Some(1000)), 266);
+        // A host that allows more than we ask for does not raise the rate.
+        assert_eq!(group_sample_freq(1000, 1, Some(100_000)), 1000);
+        assert_eq!(group_sample_freq(1000, 3, Some(100_000)), 1000);
+        // An unreadable ceiling leaves the request alone rather than guessing.
+        assert_eq!(group_sample_freq(1000, 4, None), 1000);
+        // A ceiling too small to divide still yields a usable rate.
+        assert_eq!(group_sample_freq(1000, 8, Some(4)), 1);
+    }
 
     #[test]
     fn software_counters_have_one_authoritative_hardware_group() {

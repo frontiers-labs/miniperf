@@ -16,6 +16,7 @@ mod platform;
 mod platform_memory;
 mod process;
 mod quick;
+mod sampling_probe;
 mod sink;
 mod source;
 mod topdown;
@@ -50,6 +51,7 @@ pub use process::Process;
 #[cfg(feature = "symbolize")]
 pub use quick::{top_symbols, SymbolCount};
 pub use quick::{QuickSampler, SampleBatch};
+pub use sampling_probe::{probe_sampling_group, SamplingProbe};
 pub use sink::{
     MemSample, ProcAddr, ProcessInfo, Record, ResourceSample, Sample, Sink, SourceStatus, UserRegs,
 };
