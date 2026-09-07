@@ -11,4 +11,10 @@ done
     && fail "record without -s should be rejected"
 "${mperf}" record -s nonsense -o /tmp/nowhere -- /bin/true >/dev/null 2>&1 \
     && fail "record with an unknown scenario should be rejected"
+# A record that fails leaves nothing to open: the directory it made goes with
+# it, or the viewer gets half a recording and the retry gets "already exists".
+failed_recording="${CHECK_WORK}/record-dead-pid"
+"${mperf}" record -s snapshot -p 4294967295 -o "${failed_recording}" >/dev/null 2>&1 \
+    && fail "record against a pid that does not exist should fail"
+[[ -e "${failed_recording}" ]] && fail "a failed recording left ${failed_recording} behind"
 note "cli surface ok"

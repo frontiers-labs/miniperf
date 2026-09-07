@@ -19,10 +19,22 @@ plugin="${repository_root}/target/release/libminiperf_qemu_roofline.so"
 riscv_compiler="${RISCV_CC:-riscv64-linux-gnu-gcc}"
 x86_compiler="${X86_CC:-cc}"
 readelf_tool="${READELF:-readelf}"
-x86_fixture="${repository_root}/utils/qemu-roofline/tests/fixtures/x86-sse2-smoke.S"
-rvv_fixture="${repository_root}/utils/qemu-roofline/tests/fixtures/rvv-smoke.S"
+x86_fixture="${repository_root}/utils/qemu-roofline/fixtures/x86-sse2-smoke.S"
+rvv_fixture="${repository_root}/utils/qemu-roofline/fixtures/rvv-smoke.S"
 temporary_directory="$(mktemp -d /tmp/miniperf-qemu-verify.XXXXXX)"
 trap 'rm -rf "${temporary_directory}"' EXIT
+
+# Read from the parser rather than pinned here. mperf is the only thing that
+# has to understand a capture, and the copy this check used to keep went stale
+# the moment the format moved, which no bundle build noticed for two releases.
+cfg_reader="${repository_root}/mperf/src/roofline/qemu.rs"
+supported_cfg_versions="$(
+    grep -oE 'version != "[0-9]+"' "${cfg_reader}" | grep -oE '[0-9]+'
+)"
+if [[ -z "${supported_cfg_versions}" ]]; then
+    printf 'cannot tell which CFG versions %s accepts\n' "${cfg_reader}" >&2
+    exit 1
+fi
 
 required_symbols=(
     qemu_plugin_tb_vaddr
@@ -105,10 +117,13 @@ validate_capture() {
             "${architecture}" "${counters[rvv_state_errors]}" "${counters[unclassified_instructions]}" >&2
         return 1
     fi
-    local cfg_header
+    local cfg_header cfg_version
     cfg_header="$(head -n 1 "${cfg_path}")"
-    if [[ "${cfg_header}" != 'miniperf-qemu-cfg=4' ]]; then
-        printf '%s capture has an unsupported CFG format: %s\n' "${architecture}" "${cfg_header}" >&2
+    cfg_version="${cfg_header#miniperf-qemu-cfg=}"
+    if [[ "${cfg_version}" == "${cfg_header}" ]] ||
+        ! grep -qxF "${cfg_version}" <<<"${supported_cfg_versions}"; then
+        printf '%s capture has a CFG version mperf does not read: %s\n' \
+            "${architecture}" "${cfg_header}" >&2
         return 1
     fi
     if ! grep -Eq '^cache [1-9][0-9]* [1-9][0-9]* [1-9][0-9]* write-back-write-allocate$' "${cfg_path}" || \
@@ -129,6 +144,15 @@ for executable in "${required_executables[@]}"; do
         exit 1
     fi
 done
+
+if (( ! symbols_only )); then
+    for fixture in "${x86_fixture}" "${rvv_fixture}"; do
+        if [[ ! -f "${fixture}" ]]; then
+            printf 'verification fixture is missing: %s\n' "${fixture}" >&2
+            exit 1
+        fi
+    done
+fi
 
 check_qemu_api "${bundle_directory}/bin/qemu-x86_64"
 check_qemu_api "${bundle_directory}/bin/qemu-riscv64"
