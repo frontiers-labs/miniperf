@@ -56,14 +56,47 @@ if [[ "$(uname -s)" == Linux && "${1:-}" != lint ]]; then
         >> "${GITHUB_STEP_SUMMARY}"
 fi
 
+# No check may run without a deadline. A hung check burns paid runner minutes
+# until the job's own timeout fires, which is the difference between a 40
+# second job and a 25 minute one. Implemented with a watchdog rather than
+# timeout(1), which macOS does not ship.
+run_with_deadline() {
+    local seconds="$1"; shift
+    # `set -m` gives both the check and the watchdog their own process group,
+    # so each can be killed with its descendants. Killing only the leader
+    # leaves a `sleep` holding the output pipe open, which is the same hang
+    # wearing a hat, and it is why this function is written out rather than
+    # being a call to timeout(1) that macOS does not ship anyway.
+    set -m
+    "$@" &
+    local child=$!
+    # The watchdog must not share stdout, or its own sleep keeps the pipe open.
+    (
+        sleep "${seconds}"
+        kill -TERM -"${child}" 2>/dev/null || kill -TERM "${child}" 2>/dev/null
+        sleep 5
+        kill -KILL -"${child}" 2>/dev/null || kill -KILL "${child}" 2>/dev/null
+    ) >/dev/null 2>&1 &
+    local watchdog=$!
+    set +m
+
+    wait "${child}"
+    local code=$?
+    kill -TERM -"${watchdog}" 2>/dev/null || kill -TERM "${watchdog}" 2>/dev/null
+    wait "${watchdog}" 2>/dev/null
+    return "${code}"
+}
+
 status=0
 for path in "${selected[@]}"; do
     name="$(basename "${path}")"
     printf '\n== %s\n' "${name}"
-    "${path}"
+    run_with_deadline "${CHECK_TIMEOUT_SECONDS:-300}" "${path}"
     case $? in
         0) printf 'ok: %s\n' "${name}" ;;
         3) printf 'skipped: %s\n' "${name}" ;;
+        143|137) printf 'FAILED: %s (exceeded %ss and was killed)\n' \
+                    "${name}" "${CHECK_TIMEOUT_SECONDS:-300}"; status=1 ;;
         *) printf 'FAILED: %s\n' "${name}"; status=1 ;;
     esac
 done

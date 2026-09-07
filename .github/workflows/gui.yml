@@ -15,6 +15,7 @@ jobs:
   tour:
     name: tour (${{ matrix.label }})
     runs-on: ${{ matrix.label }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:

@@ -29,6 +29,7 @@ jobs:
   lint:
     name: lint
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: ./.github/actions/rust
@@ -42,6 +43,7 @@ jobs:
   build:
     name: build (${{ matrix.platform }})
     needs: lint
+    timeout-minutes: 45
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -80,6 +82,7 @@ jobs:
   test:
     name: test (${{ matrix.label }})
     needs: [lint, build]
+    timeout-minutes: 15
     runs-on: ${{ matrix.label }}
     strategy:
       fail-fast: false
@@ -110,8 +113,11 @@ jobs:
       # implements them: libgomp has no OMPT interface, so without clang and
       # libomp those checks would skip on every run forever, which is no
       # better than not having them.
+      # Only on the free reference runner: neither shim is architecture
+      # specific, so covering them once is enough, and apt on the paid runner
+      # is time nobody is buying anything with.
       - name: Install the runtimes the shim checks need
-        if: matrix.os == 'linux'
+        if: matrix.label == 'ubuntu-24.04-arm'
         run: sudo apt-get update && sudo apt-get install -y clang libomp-dev mpich
 
       - name: Allow perf
