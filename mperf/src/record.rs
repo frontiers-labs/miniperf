@@ -139,45 +139,46 @@ pub async fn do_record(
 
     let (dispatcher, join_handle) = EventDispatcher::new(output_directory);
 
-    let (info, collectors) = match scenario {
+    // Held, not propagated: the writer thread owns files under the output
+    // directory, so it has to be shut down before anything acts on a failure.
+    // Returning straight out of here left it flushing into a directory the
+    // caller was already tearing down, and the truncated segment it wrote was
+    // indistinguishable from a recording.
+    let recorded = match scenario {
         Scenario::Snapshot => snapshot(
             dispatcher.clone(),
             pid,
             &command,
             output_directory,
             duration,
-        )?,
-        Scenario::Mem => {
-            if pid.is_some() {
-                anyhow::bail!("record mem requires a command and does not support --pid");
-            }
-            (
-                roofline::record_memory(
-                    &roofline_options,
-                    dispatcher.clone(),
-                    &command,
-                    output_directory,
-                )
-                .await?,
-                Vec::new(),
-            )
-        }
-        Scenario::Roofline => (
-            roofline::record(
-                &roofline_options,
-                dispatcher.clone(),
-                &command,
-                output_directory,
-            )
-            .await?,
-            Vec::new(),
         ),
-        Scenario::TMA => topdown(dispatcher.clone(), &command, output_directory)?,
+        Scenario::Mem if pid.is_some() => Err(anyhow::anyhow!(
+            "record mem requires a command and does not support --pid"
+        )),
+        Scenario::Mem => roofline::record_memory(
+            &roofline_options,
+            dispatcher.clone(),
+            &command,
+            output_directory,
+        )
+        .await
+        .map(|info| (info, Vec::new())),
+        Scenario::Roofline => roofline::record(
+            &roofline_options,
+            dispatcher.clone(),
+            &command,
+            output_directory,
+        )
+        .await
+        .map(|info| (info, Vec::new())),
+        Scenario::TMA => topdown(dispatcher.clone(), &command, output_directory),
     };
 
     drop(dispatcher);
 
     join_handle.join().await;
+
+    let (info, collectors) = recorded?;
 
     let json_command = if !command.is_empty() {
         Some(command.clone())

@@ -186,7 +186,7 @@ pub async fn run() -> Result<()> {
             }
             std::fs::create_dir_all(&output_directory)?;
             let output_directory = PathBuf::from_str(&output_directory)?;
-            do_record(
+            let recorded = do_record(
                 scenario,
                 &output_directory,
                 pid,
@@ -194,7 +194,15 @@ pub async fn run() -> Result<()> {
                 roofline,
                 duration,
             )
-            .await
+            .await;
+            // Without info.json there is no recording here, only whatever
+            // segments the dispatcher had opened when the run failed. Keeping
+            // that directory hands the viewer files it cannot open and makes
+            // the obvious retry, the same `-o` path, refuse to run.
+            if recorded.is_err() && !output_directory.join("info.json").exists() {
+                let _ = std::fs::remove_dir_all(&output_directory);
+            }
+            recorded
         }
         Commands::Show { result_directory } => tui::tui_main(Path::new(&result_directory)).await,
         Commands::Recover { result_directory } => {

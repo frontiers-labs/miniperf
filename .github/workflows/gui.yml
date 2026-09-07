@@ -32,11 +32,13 @@ jobs:
         with:
           name: miniperf-${{ matrix.platform }}
           path: dist
+      # One directory per uploading job, not merged: every runner records the
+      # same scenario names, so merging files them into one tree where a
+      # refused run's leftovers can land on top of another host's recording.
       - uses: actions/download-artifact@v4
         with:
           pattern: recordings-*
           path: recordings
-          merge-multiple: true
       - name: Unpack
         id: unpack
         run: |
