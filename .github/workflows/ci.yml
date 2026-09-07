@@ -105,11 +105,7 @@ jobs:
           path: dist
       - name: Unpack
         id: unpack
-        run: |
-          mkdir -p pkg
-          tar -C pkg -xf dist/*.tar.* 
-          root="$(find pkg -maxdepth 1 -mindepth 1 -type d | head -1)"
-          echo "root=$(cd "$root" && pwd)" >> "$GITHUB_OUTPUT"
+        run: echo "root=$(utils/unpack-package.sh dist pkg)" >> "$GITHUB_OUTPUT"
       # The OMPT and MPI shims are only observable through a runtime that
       # implements them: libgomp has no OMPT interface, so without clang and
       # libomp those checks would skip on every run forever, which is no

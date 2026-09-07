@@ -38,11 +38,7 @@ jobs:
           merge-multiple: true
       - name: Unpack
         id: unpack
-        run: |
-          mkdir -p pkg
-          tar -C pkg -xf dist/*.tar.*
-          root="$(find pkg -maxdepth 1 -mindepth 1 -type d | head -1)"
-          echo "root=$(cd "$root" && pwd)" >> "$GITHUB_OUTPUT"
+        run: echo "root=$(utils/unpack-package.sh dist pkg)" >> "$GITHUB_OUTPUT"
       - name: Install a display and a software renderer
         if: matrix.os == 'linux'
         run: sudo apt-get update && sudo apt-get install -y xvfb mesa-vulkan-drivers
