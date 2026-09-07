@@ -4,6 +4,7 @@
 # The clock bound is the assertion with teeth: IPC does not move when every
 # counter shrinks together, which is exactly what kernel sample-rate throttling
 # does, and cycles over time_running catches it.
+# shellcheck source=checks/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # Not applicable without a Linux host: this check drives perf_event_open.
 [[ "$(uname -s)" == Linux ]] || skip "not a Linux host"

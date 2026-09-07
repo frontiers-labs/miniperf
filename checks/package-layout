@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # The package contains what users and every later check depend on.
+# shellcheck source=checks/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 platform="$(cat "${MPERF_PACKAGE}/MANIFEST.txt" >/dev/null 2>&1 && echo ok || echo missing)"
 [[ "${platform}" == ok ]] || fail "MANIFEST.txt missing from ${MPERF_PACKAGE}"

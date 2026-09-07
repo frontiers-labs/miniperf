@@ -4,6 +4,7 @@
 # Uses the header and stub from the package, not from the source tree, because
 # the package is what a user has. Shipping the files is not the same as them
 # working.
+# shellcheck source=checks/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 [[ "$(uname -s)" == Linux ]] || skip "not a Linux host"
 require_pmu

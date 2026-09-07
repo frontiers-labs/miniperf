@@ -4,6 +4,7 @@
 # Disagreement in either direction is a failure: doctor claiming a PMU that is
 # not there means a recording would be silently empty, and doctor denying one
 # that is there means capability probing regressed.
+# shellcheck source=checks/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 out="${CHECK_WORK}/doctor.txt"
 "${mperf}" doctor > "${out}" 2>&1

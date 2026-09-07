@@ -5,6 +5,7 @@
 # No ITT-instrumented binary exists on a runner, so the fixture plays the part
 # of the loader: dlopen by path, resolve by symbol. That is the shim's actual
 # public surface, and an ABI slip breaks it silently.
+# shellcheck source=checks/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 [[ "$(uname -s)" == Linux ]] || skip "not a Linux host"
 require_pmu

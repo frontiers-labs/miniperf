@@ -4,6 +4,7 @@
 #
 # Needs LLVM's libomp: libgomp does not implement the OMPT interface, so this
 # skips where only GCC's runtime is installed rather than reporting a pass.
+# shellcheck source=checks/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 [[ "$(uname -s)" == Linux ]] || skip "not a Linux host"
 require_pmu

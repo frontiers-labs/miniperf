@@ -3,11 +3,14 @@
 #
 # The clock exchange in MPI_Init is the part most likely to rot unobserved,
 # because nothing else in the suite runs more than one process.
+# shellcheck source=checks/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 [[ "$(uname -s)" == Linux ]] || skip "not a Linux host"
 require_pmu
 
-command -v mpicc >/dev/null && command -v mpirun >/dev/null || skip "no MPI implementation installed"
+if ! command -v mpicc >/dev/null || ! command -v mpirun >/dev/null; then
+    skip "no MPI implementation installed"
+fi
 shim="${MPERF_PACKAGE}/lib/miniperf/libmperf_mpi.so"
 [[ -e "${shim}" ]] || fail "MPI shim not in the package"
 

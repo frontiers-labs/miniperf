@@ -17,7 +17,9 @@ for binary in mperf mperf-gui; do
     cp -f "target/debug/${binary}" "${stage}/bin/${binary}"
 done
 for library in target/debug/libmperf_collector.so target/debug/libmperf_libc.so; do
-    [ -e "${library}" ] && cp -f "${library}" "${stage}/lib/miniperf/" || true
+    if [ -e "${library}" ]; then
+        cp -f "${library}" "${stage}/lib/miniperf/"
+    fi
 done
 
 MPERF_PACKAGE="$(cd "${stage}" && pwd)" exec checks/run cli pmu-snapshot query

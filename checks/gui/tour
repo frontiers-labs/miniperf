@@ -4,6 +4,7 @@
 # Drives the shipped binary through its production path: the same ShellView a
 # user gets, the same load, the same tab switch the click handler calls. There
 # is no test-only load path to drift from it.
+# shellcheck source=checks/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 : "${MPERF_RECORDINGS:?set MPERF_RECORDINGS to a directory of recordings}"
 

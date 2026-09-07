@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # A TMA recording produces a topdown breakdown, not just samples.
+# shellcheck source=checks/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # Not applicable without a Linux host: this check drives perf_event_open.
 [[ "$(uname -s)" == Linux ]] || skip "not a Linux host"

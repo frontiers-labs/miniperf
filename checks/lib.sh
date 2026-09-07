@@ -9,9 +9,15 @@ CHECK_WORK="${CHECK_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/mperf-check.XXXXXX")}"
 mkdir -p "${CHECK_WORK}/bin"
 checks_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# shellcheck disable=SC2034  # read by the checks that source this file
 mperf="${MPERF_PACKAGE}/bin/mperf"
-mperf_gui="${MPERF_PACKAGE}/bin/mperf-gui"
-[[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]] && mperf_gui="${MPERF_PACKAGE}/mperf-gui.exe"
+# Windows packages ship the viewer at the root rather than under bin/.
+# shellcheck disable=SC2034  # read by the checks that source this file
+if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
+    mperf_gui="${MPERF_PACKAGE}/mperf-gui.exe"
+else
+    mperf_gui="${MPERF_PACKAGE}/bin/mperf-gui"
+fi
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 skip() { printf 'SKIP: %s\n' "$*" >&2; exit 3; }
@@ -45,8 +51,10 @@ require_pmu() {
 
 # The workload every recording check profiles. Counted, not timed: $SECONDS is
 # a bashism and /bin/sh is dash here, where a timed loop exits instantly.
+WORKLOAD_ITERATIONS=900000
 workload() {
-    printf '%s\n' "/bin/sh" "-c" "i=0; while [ \$i -lt ${1:-900000} ]; do i=\$((i+1)); done"
+    printf '%s\n' "/bin/sh" "-c" \
+        "i=0; while [ \$i -lt ${WORKLOAD_ITERATIONS} ]; do i=\$((i+1)); done"
 }
 
 # Records <scenario> once into CHECK_WORK and echoes the directory. Memoised on

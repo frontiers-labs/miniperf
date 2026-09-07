@@ -5,6 +5,7 @@
 # Deliberately load-only, and named so. Nothing beyond this can be asserted
 # honestly on a runner with no CUDA device, and pretending otherwise would be
 # the kind of test this suite exists to remove.
+# shellcheck source=checks/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 [[ "$(uname -s)" == Linux ]] || skip "not a Linux host"
 

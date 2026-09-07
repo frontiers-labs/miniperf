@@ -5,5 +5,5 @@
 # depend on miniperf-store or duckdb, so a hand-built pmu_counters table has no
 # crate left to compile in. Everything else carries no tests at all.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 python3 utils/test-policy.py
