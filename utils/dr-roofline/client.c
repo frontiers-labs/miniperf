@@ -545,7 +545,7 @@ parse_str_option(int argc, const char *argv[], const char *name,
 DR_EXPORT void
 dr_client_main(client_id_t id, int argc, const char *argv[])
 {
-    dr_set_client_name("miniperf dr-roofline", "https://github.com/alexbatashev");
+    dr_set_client_name("miniperf dr-roofline", "https://github.com/frontiers-labs");
 
 #if defined(X86)
     target = RC_TARGET_X86;

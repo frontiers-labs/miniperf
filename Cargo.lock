@@ -2234,7 +2234,7 @@ dependencies = [
 
 [[package]]
 name = "event-import"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "miniperf-pmu-data",
  "serde_json",
@@ -3933,7 +3933,7 @@ dependencies = [
 
 [[package]]
 name = "libprof"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "cfg-if",
@@ -4204,7 +4204,7 @@ checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
 name = "miniperf-collector-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "libc",
@@ -4215,18 +4215,18 @@ dependencies = [
 
 [[package]]
 name = "miniperf-duckdb-prefetch"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "miniperf-pmu-data"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "miniperf-qemu-roofline"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "miniperf-roofline-core",
@@ -4234,7 +4234,7 @@ dependencies = [
 
 [[package]]
 name = "miniperf-roofline-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -4242,42 +4242,42 @@ dependencies = [
 
 [[package]]
 name = "miniperf-shim-cupti"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "miniperf-shim-itt"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "miniperf-shim-libc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "miniperf-shim-mpi"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "miniperf-shim-ompt"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "miniperf-shims"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "miniperf-store",
@@ -4286,7 +4286,7 @@ dependencies = [
 
 [[package]]
 name = "miniperf-store"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "arrow",
@@ -4301,7 +4301,7 @@ dependencies = [
 
 [[package]]
 name = "miniperf-symbolize"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "addr2line",
  "crc32fast",
@@ -4362,7 +4362,7 @@ dependencies = [
 
 [[package]]
 name = "mperf"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "addr2line",
  "anyhow",
@@ -4403,7 +4403,7 @@ dependencies = [
 
 [[package]]
 name = "mperf-data"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "miniperf-pmu-data",
@@ -4415,7 +4415,7 @@ dependencies = [
 
 [[package]]
 name = "mperf-gui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -4428,7 +4428,7 @@ dependencies = [
 
 [[package]]
 name = "mperf-trace"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
 ]
@@ -6282,7 +6282,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "shmem"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
 ]
@@ -8487,7 +8487,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "serde_json",

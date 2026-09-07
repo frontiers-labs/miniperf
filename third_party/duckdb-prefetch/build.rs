@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const REPOSITORY: &str = "https://github.com/alexbatashev/miniperf";
+const REPOSITORY: &str = "https://github.com/frontiers-labs/miniperf";
 
 fn main() {
     let workspace = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets it"))
