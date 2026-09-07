@@ -51,4 +51,4 @@ jobs:
           MPERF_PACKAGE: ${{ steps.unpack.outputs.root }}
           MPERF_RECORDINGS: ${{ github.workspace }}/recordings
           CHECK_WORK: ${{ github.workspace }}/check-work
-        run: checks/run gui-tour
+        run: checks/run gui

@@ -2,7 +2,7 @@
 # No recordings in git. A committed recording is a mock with a git hash: it
 # goes green while the schema moves underneath it.
 set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 found="$(git ls-files | grep -E '\.parquet$|(^|/)info\.json$' || true)"
 if [[ -n "${found}" ]]; then
     printf 'FAIL: recordings are committed:\n%s\n' "${found}" >&2

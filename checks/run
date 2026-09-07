@@ -1,32 +1,55 @@
 #!/usr/bin/env bash
-# Runs named checks against an unpacked package. Reports the PMU oracle's
-# verdict once, before anything else, so the placement is visible in the log.
+# Runs checks. What applies to this host is decided here, on the host.
+#
+#   checks/run            every package check that applies
+#   checks/run lint       source checks
+#   checks/run gui        viewer checks over MPERF_RECORDINGS
+#   checks/run NAME ...   named checks, wherever they live
+#
+# Exit 3 from a check means "does not apply here" and is not a failure. Only
+# the PMU oracle, which links nothing from miniperf, can cause one.
 set -uo pipefail
 checks_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-[[ $# -gt 0 ]] || { echo "usage: checks/run <name>..." >&2; exit 2; }
-
 export CHECK_WORK="${CHECK_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/mperf-checks.XXXXXX")}"
 mkdir -p "${CHECK_WORK}/bin"
 
-pmu=absent
-if [[ "$(uname -s)" == Linux ]]; then
+resolve() {
+    for candidate in "${checks_root}/$1" "${checks_root}/lint/$1" "${checks_root}/gui/$1"; do
+        [[ -x "${candidate}" ]] && { printf '%s' "${candidate}"; return 0; }
+    done
+    return 1
+}
+
+selected=()
+case "${1:-}" in
+    ""|all)  mapfile -t selected < <(find "${checks_root}" -maxdepth 1 -type f -perm -u+x ! -name run | sort) ;;
+    lint|gui) mapfile -t selected < <(find "${checks_root}/$1" -maxdepth 1 -type f -perm -u+x | sort) ;;
+    *)       for name in "$@"; do
+                 path="$(resolve "${name}")" || { echo "unknown check: ${name}" >&2; exit 2; }
+                 selected+=("${path}")
+             done ;;
+esac
+
+# Reported once, before anything runs, so a placement without counters is
+# visible in the log and in the job summary rather than inferred from skips.
+if [[ "$(uname -s)" == Linux && "${1:-}" != lint ]]; then
+    pmu=absent
     if cc -O2 -o "${CHECK_WORK}/bin/pmu_oracle" "${checks_root}/fixtures/pmu_oracle.c" 2>/dev/null \
        && "${CHECK_WORK}/bin/pmu_oracle"; then
         pmu=present
     fi
-fi
-printf 'PMU oracle: %s\n' "${pmu}"
-[[ -n "${GITHUB_OUTPUT:-}" ]] && printf 'pmu=%s\n' "${pmu}" >> "${GITHUB_OUTPUT}"
-[[ -n "${GITHUB_STEP_SUMMARY:-}" ]] && {
-    printf '- PMU oracle: **%s** (%s)\n' "${pmu}" \
+    printf 'PMU oracle: %s\n' "${pmu}"
+    [[ -n "${GITHUB_OUTPUT:-}" ]] && printf 'pmu=%s\n' "${pmu}" >> "${GITHUB_OUTPUT}"
+    [[ -n "${GITHUB_STEP_SUMMARY:-}" ]] && printf -- '- PMU oracle: **%s** (%s)\n' "${pmu}" \
         "$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/.*: //' || uname -m)" \
         >> "${GITHUB_STEP_SUMMARY}"
-}
+fi
 
 status=0
-for name in "$@"; do
+for path in "${selected[@]}"; do
+    name="$(basename "${path}")"
     printf '\n== %s\n' "${name}"
-    CHECK_WORK="${CHECK_WORK}" "${checks_root}/${name}"
+    "${path}"
     case $? in
         0) printf 'ok: %s\n' "${name}" ;;
         3) printf 'skipped: %s\n' "${name}" ;;

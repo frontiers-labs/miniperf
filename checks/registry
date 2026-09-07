@@ -1,6 +1,0 @@
-#!/usr/bin/env bash
-# checks/ and the xtask registry describe the same set of checks.
-set -uo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
-cargo run --quiet --package xtask -- matrix test >/dev/null || exit 1
-python3 utils/registry-guard.py

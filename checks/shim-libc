@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # The packaged libc shim interposes and its events reach the recording.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# Not applicable without a Linux host: this check drives perf_event_open.
+[[ "$(uname -s)" == Linux ]] || skip "not a Linux host"
 require_pmu
 shim="${MPERF_PACKAGE}/lib/miniperf/libmperf_libc.so"
 [[ -e "${shim}" ]] || fail "libc shim not in the package"

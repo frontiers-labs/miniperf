@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # The JSON envelope and its guard rails.
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# Not applicable without a Linux host: this check drives perf_event_open.
+[[ "$(uname -s)" == Linux ]] || skip "not a Linux host"
 require_pmu
 dir="$(need_recording snapshot)"
 "${mperf}" query -f json "${dir}" "SELECT 1 AS one" | grep -q '"schema_version"' \

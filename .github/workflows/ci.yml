@@ -5,8 +5,9 @@ name: Reusable CI
 # recordings they made. No stage compiles anything the next one needs beyond
 # its artifacts, and no job depends on another job in its own stage.
 #
-# Nothing here names a check or a runner label: both matrices come from
-# `cargo xtask matrix`, so the workflow cannot drift from xtask/src/registry.rs.
+# The matrices below are plain GitHub config, because that is all they are.
+# Which checks apply to a runner is decided by the checks themselves when they
+# run: a check that needs a PMU or a Linux host says so and exits 3 there.
 
 on:
   workflow_call:
@@ -17,9 +18,9 @@ on:
         default: ''
         type: string
     outputs:
-      gui_matrix:
-        description: Runner matrix for the GUI pipeline
-        value: ${{ jobs.lint.outputs.gui }}
+      packaged:
+        description: Whether every package was built, so downstream pipelines have artifacts
+        value: ${{ jobs.build.result == 'success' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -28,10 +29,6 @@ jobs:
   lint:
     name: lint
     runs-on: ubuntu-24.04
-    outputs:
-      package: ${{ steps.matrix.outputs.package }}
-      test: ${{ steps.matrix.outputs.test }}
-      gui: ${{ steps.matrix.outputs.gui }}
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: ./.github/actions/rust
@@ -41,13 +38,6 @@ jobs:
           cache-key: lint-x86_64-unknown-linux-gnu
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
       - run: cargo xtask check lint
-      - id: matrix
-        run: |
-          {
-            echo "package=$(cargo xtask matrix package)"
-            echo "test=$(cargo xtask matrix test)"
-            echo "gui=$(cargo xtask matrix gui)"
-          } >> "$GITHUB_OUTPUT"
 
   build:
     name: build (${{ matrix.platform }})
@@ -56,7 +46,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.lint.outputs.package) }}
+        include:
+          - { platform: linux-x86_64,   target: x86_64-unknown-linux-gnu,     runner: ubuntu-24.04 }
+          - { platform: linux-aarch64,  target: aarch64-unknown-linux-gnu,    runner: ubuntu-24.04-arm }
+          - { platform: linux-riscv64,  target: riscv64gc-unknown-linux-gnu,  runner: ubuntu-24.04 }
+          - { platform: macos-aarch64,  target: aarch64-apple-darwin,         runner: macos-14 }
+          - { platform: windows-x86_64, target: x86_64-pc-windows-msvc,       runner: windows-2022 }
     defaults:
       run:
         shell: bash
@@ -89,7 +84,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.lint.outputs.test) }}
+        include:
+          # ubuntu-24.04 x86 has no PMU, so its hardware checks skip themselves
+          # and it covers the CLI and package surface. ubuntu-24.04-arm is free
+          # and has 7 counters, so it is the reference PMU runner. The single
+          # Blacksmith job is the only paid one, and exists because x86 event
+          # tables are compiled per architecture.
+          - { label: ubuntu-24.04,                 platform: linux-x86_64,   os: linux }
+          - { label: ubuntu-24.04-arm,             platform: linux-aarch64,  os: linux }
+          - { label: blacksmith-2vcpu-ubuntu-2404, platform: linux-x86_64,   os: linux }
+          - { label: macos-14,                     platform: macos-aarch64,  os: macos }
     defaults:
       run:
         shell: bash
@@ -106,9 +110,6 @@ jobs:
           tar -C pkg -xf dist/*.tar.* 
           root="$(find pkg -maxdepth 1 -mindepth 1 -type d | head -1)"
           echo "root=$(cd "$root" && pwd)" >> "$GITHUB_OUTPUT"
-      - name: Install check dependencies
-        if: join(matrix.apt, ' ') != ''
-        run: sudo apt-get update && sudo apt-get install -y ${{ join(matrix.apt, ' ') }}
       - name: Allow perf
         if: matrix.os == 'linux'
         run: sudo sysctl -w kernel.perf_event_paranoid=-1
@@ -117,9 +118,9 @@ jobs:
         env:
           MPERF_PACKAGE: ${{ steps.unpack.outputs.root }}
           CHECK_WORK: ${{ github.workspace }}/check-work
-        run: checks/run ${{ join(matrix.checks, ' ') }}
+        run: checks/run
       - name: Publish the recordings these checks made
-        if: matrix.records && always()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: recordings-${{ matrix.label }}
