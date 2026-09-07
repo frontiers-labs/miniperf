@@ -51,11 +51,10 @@ require_pmu() {
 
 # The workload every recording check profiles. Counted, not timed: $SECONDS is
 # a bashism and /bin/sh is dash here, where a timed loop exits instantly.
+# The workload every recording check profiles. Counted, not timed: $SECONDS is
+# a bashism and /bin/sh is dash on Debian and Ubuntu, where a timed loop exits
+# instantly and every check then fails on an empty recording.
 WORKLOAD_ITERATIONS=900000
-workload() {
-    printf '%s\n' "/bin/sh" "-c" \
-        "i=0; while [ \$i -lt ${WORKLOAD_ITERATIONS} ]; do i=\$((i+1)); done"
-}
 
 # Records <scenario> once into CHECK_WORK and echoes the directory. Memoised on
 # info.json existing, so a check can run alone and reruns are free.
@@ -64,7 +63,11 @@ need_recording() {
     local dir="${CHECK_WORK}/rec-${scenario}"
     if [[ ! -f "${dir}/info.json" ]]; then
         local -a cmd
-        if [[ $# -gt 0 ]]; then cmd=("$@"); else mapfile -t cmd < <(workload); fi
+        if [[ $# -gt 0 ]]; then
+            cmd=("$@")
+        else
+            cmd=(/bin/sh -c "i=0; while [ \$i -lt ${WORKLOAD_ITERATIONS} ]; do i=\$((i+1)); done")
+        fi
         "${mperf}" record -s "${scenario}" -o "${dir}" -- "${cmd[@]}" >"${dir}.log" 2>&1 \
             || { cat "${dir}.log" >&2; fail "record -s ${scenario} failed"; }
     fi

@@ -8,5 +8,8 @@ if ! command -v shellcheck >/dev/null; then
     echo "SKIP: shellcheck is not installed" >&2
     exit 3
 fi
-mapfile -t targets < <(git ls-files 'checks/*' 'utils/*.sh' | grep -v '^checks/fixtures/')
+targets=()
+while IFS= read -r target; do
+    targets+=("${target}")
+done < <(git ls-files 'checks/*' 'utils/*.sh' | grep -v '^checks/fixtures/')
 shellcheck --shell=bash --external-sources "${targets[@]}"

@@ -41,7 +41,10 @@ jobs:
         run: echo "root=$(utils/unpack-package.sh dist pkg)" >> "$GITHUB_OUTPUT"
       - name: Install a display and a software renderer
         if: matrix.os == 'linux'
-        run: sudo apt-get update && sudo apt-get install -y xvfb mesa-vulkan-drivers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb mesa-vulkan-drivers \
+                                  libxkbcommon-x11-0 libxkbcommon0 libxcb1
       - name: Tour every recording
         env:
           MPERF_PACKAGE: ${{ steps.unpack.outputs.root }}

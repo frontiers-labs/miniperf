@@ -18,9 +18,22 @@ required_for() {
     esac
 }
 
+# The viewer needs a real window. A developer machine already has one; CI
+# supplies Xvfb. Neither is a reason to pretend the check passed.
 launch() {
-    if [[ "$(uname -s)" == Linux ]]; then xvfb-run -a "$@"; else "$@"; fi
+    if [[ "$(uname -s)" != Linux ]]; then
+        "$@"
+    elif [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+        "$@"
+    else
+        xvfb-run -a "$@"
+    fi
 }
+
+if [[ "$(uname -s)" == Linux && -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] \
+   && ! command -v xvfb-run >/dev/null; then
+    skip "no display and no xvfb-run"
+fi
 
 visited=0
 while IFS= read -r info; do

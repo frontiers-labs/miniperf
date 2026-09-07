@@ -22,7 +22,7 @@ mpicc -O2 -g -o "${fixture}" "$(dirname "${BASH_SOURCE[0]}")/fixtures/mpi_ranks.
 dir="${CHECK_WORK}/rec-shim-mpi"
 LD_PRELOAD="${shim}" \
     "${mperf}" record -s snapshot -o "${dir}" -- \
-    mpirun -n 2 "${fixture}" \
+    "$(command -v mpirun)" -n 2 "${fixture}" \
     >"${dir}.log" 2>&1 || { cat "${dir}.log" >&2; fail "record of the MPI program failed"; }
 
 grep -q "rank 0 of 2" "${dir}.log" || { cat "${dir}.log" >&2; fail "the ranks did not run"; }
