@@ -1,6 +1,6 @@
 use anyhow::Result;
 use comfy_table::{Cell, Color, ContentArrangement, Table};
-use libprof::{Capabilities, Mechanism, probe_sampling_group};
+use libprof::{Capabilities, Mechanism, SamplingProbe, probe_sampling_group};
 use mperf_data::Scenario;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -116,14 +116,6 @@ fn paranoid_check(caps: &Capabilities) -> Check {
     }
 }
 
-/// Whether a scenario's sampling group is schedulable here, tested the way a
-/// recording does it: build the group, sample a live child, count what comes
-/// back.
-///
-/// `cpu-cycles opens` is not that test. A group the PMU cannot host is still
-/// accepted by `perf_event_open` and then never scheduled, which produces a
-/// recording with no `pmu_*` columns and no error, so this check has to run
-/// the real thing and insist on real samples.
 /// The host's ceiling on samples per second, which every sampling group on a
 /// CPU shares.
 ///
@@ -133,11 +125,8 @@ fn paranoid_check(caps: &Capabilities) -> Check {
 /// counters come back orders of magnitude low rather than merely sparse. The
 /// profiler lowers its own rate to stay under the ceiling, so this reports what
 /// that costs rather than a failure.
-fn sample_rate_ceiling_check() -> Check {
-    let Some(rate) = std::fs::read_to_string("/proc/sys/kernel/perf_event_max_sample_rate")
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-    else {
+fn sample_rate_ceiling_check(rate: Option<u64>) -> Check {
+    let Some(rate) = rate else {
         return check(
             "sampling rate ceiling",
             "perf_event_max_sample_rate is unreadable",
@@ -166,7 +155,15 @@ fn sample_rate_ceiling_check() -> Check {
     )
 }
 
-fn sampling_group_check(scenario: Scenario) -> Check {
+/// Whether a scenario's sampling group is schedulable here, tested the way a
+/// recording does it: build the group, sample a live child, count what comes
+/// back.
+///
+/// `cpu-cycles opens` is not that test. A group the PMU cannot host is still
+/// accepted by `perf_event_open` and then never scheduled, which produces a
+/// recording with no `pmu_*` columns and no error, so this check has to run
+/// the real thing and insist on real samples.
+fn sampling_group_check(scenario: Scenario, probe: &Result<SamplingProbe, String>) -> Check {
     let label = match scenario {
         Scenario::Snapshot => "snapshot",
         Scenario::Mem => "mem",
@@ -174,9 +171,7 @@ fn sampling_group_check(scenario: Scenario) -> Check {
         Scenario::TMA => "tma",
     };
     let name = format!("sampling group ({label})");
-    let counters = crate::source::scenario_counters(scenario);
-    let counters = counters.as_slice();
-    let probe = match probe_sampling_group(counters, 200) {
+    let probe = match probe {
         Ok(probe) => probe,
         Err(error) => {
             return check(
@@ -420,16 +415,46 @@ fn mechanism_check(mechanism: Mechanism, caps: &Capabilities) -> Check {
     check(feature, status, severity, action)
 }
 
-fn checks(caps: &Capabilities, tooling: &Tooling) -> Vec<Check> {
+/// What only a live run can tell us: the host's sampling ceiling, and what a
+/// scenario's real group produced. Measured once at the boundary so the check
+/// table stays a function of its inputs.
+struct HostProbe {
+    max_sample_rate: Option<u64>,
+    groups: Vec<(Scenario, Result<SamplingProbe, String>)>,
+}
+
+impl HostProbe {
+    fn measure() -> Self {
+        HostProbe {
+            max_sample_rate: std::fs::read_to_string("/proc/sys/kernel/perf_event_max_sample_rate")
+                .ok()
+                .and_then(|value| value.trim().parse().ok()),
+            groups: [Scenario::Snapshot, Scenario::TMA]
+                .into_iter()
+                .map(|scenario| {
+                    let counters = crate::source::scenario_counters(scenario);
+                    let probe =
+                        probe_sampling_group(&counters, 200).map_err(|error| error.to_string());
+                    (scenario, probe)
+                })
+                .collect(),
+        }
+    }
+}
+
+fn checks(caps: &Capabilities, tooling: &Tooling, host: &HostProbe) -> Vec<Check> {
     let mut checks = vec![
         paranoid_check(caps),
         hardware_counter_check(caps),
-        sample_rate_ceiling_check(),
-        sampling_group_check(Scenario::Snapshot),
-        sampling_group_check(Scenario::TMA),
-        kernel_symbol_check(caps),
-        nmi_watchdog_check(caps),
+        sample_rate_ceiling_check(host.max_sample_rate),
     ];
+    checks.extend(
+        host.groups
+            .iter()
+            .map(|(scenario, probe)| sampling_group_check(*scenario, probe)),
+    );
+    checks.push(kernel_symbol_check(caps));
+    checks.push(nmi_watchdog_check(caps));
     checks.extend(bpf_checks(caps, tooling));
     checks.extend(
         applicable_mechanisms(caps)
@@ -465,7 +490,7 @@ pub fn do_doctor() -> Result<()> {
     } else {
         format!("{vendor} {model}")
     };
-    let checks = checks(&caps, &Tooling::probe());
+    let checks = checks(&caps, &Tooling::probe(), &HostProbe::measure());
 
     println!(
         "mperf doctor - {cpu} ({}), kernel {}\n",
@@ -489,7 +514,7 @@ pub fn do_doctor() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libprof::PmuDevice;
+    use libprof::{Counter, PmuDevice};
 
     fn pmu(name: &str) -> PmuDevice {
         PmuDevice {
@@ -509,6 +534,24 @@ mod tests {
             nmi_watchdog: Some(true),
             pmus: vec![pmu("cpu")],
             ..Capabilities::default()
+        }
+    }
+
+    fn healthy_host() -> HostProbe {
+        let counters = vec![Counter::Cycles, Counter::Instructions];
+        HostProbe {
+            max_sample_rate: Some(10_000),
+            groups: [Scenario::Snapshot, Scenario::TMA]
+                .into_iter()
+                .map(|scenario| {
+                    let probe = SamplingProbe {
+                        requested: counters.clone(),
+                        opened: counters.clone(),
+                        samples: 100,
+                    };
+                    (scenario, Ok(probe))
+                })
+                .collect(),
         }
     }
 
@@ -584,7 +627,7 @@ mod tests {
 
     #[test]
     fn missing_hardware_features_never_block() {
-        let checks = checks(&intel_host(), &full_tooling());
+        let checks = checks(&intel_host(), &full_tooling(), &healthy_host());
         for mechanism in applicable_mechanisms(&intel_host()) {
             let check = find(&checks, mechanism_feature(mechanism));
             assert_ne!(check.severity, Severity::Blocker, "{}", check.feature);
@@ -609,7 +652,7 @@ mod tests {
 
     #[test]
     fn ebpf_and_tooling_gaps_block() {
-        let bare = checks(&intel_host(), &Tooling::default());
+        let bare = checks(&intel_host(), &Tooling::default(), &healthy_host());
         assert_eq!(find(&bare, "bpftrace").severity, Severity::Blocker);
         assert_eq!(
             find(&bare, "eBPF collection (snapshot)").severity,
@@ -624,7 +667,7 @@ mod tests {
             is_root: true,
             ..intel_host()
         };
-        let privileged = checks(&root, &full_tooling());
+        let privileged = checks(&root, &full_tooling(), &healthy_host());
         assert!(
             !privileged
                 .iter()

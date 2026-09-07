@@ -20,7 +20,7 @@ include!(concat!(env!("OUT_DIR"), "/events.rs"));
 
 /// Every event table shipped with the profiler, for invariants that must hold
 /// across all of them rather than only the host's.
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub fn families() -> impl Iterator<Item = (&'static str, &'static CPUFamily)> {
     CPU_FAMILIES
         .iter()

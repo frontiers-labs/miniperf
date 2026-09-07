@@ -131,7 +131,7 @@ pub fn grouped_on_cpu(
     // zero samples, so shrink every group by the counters the kernel keeps.
     let max_counters_in_group = info
         .and_then(|info| info.max_counters)
-        .unwrap_or_else(|| if has_leader { 2 } else { 3 })
+        .unwrap_or(if has_leader { 2 } else { 3 })
         .saturating_sub(reserved_hardware_counters())
         .max(1);
 
