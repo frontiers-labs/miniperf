@@ -1,8 +1,8 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use mperf_data::{CpuClockSource, RecordInfo, ScenarioInfo};
 use std::{collections::HashSet, fs::File, path::Path, rc::Rc, sync::Arc};
 
-use libprof::{Process, Record, SessionContext, Sink};
+use libprof::{Process, Record, SessionContext, Sink, probe_sampling_group};
 
 use crate::{
     Scenario, counter_selection::get_tma_counter_groups, event_dispatcher::EventDispatcher,
@@ -27,6 +27,46 @@ fn warn_if_sample_rate_lowered(pass: &crate::source::ResolvedPass) {
     }
 }
 
+/// How long the pre-flight group probe samples for, in milliseconds.
+///
+/// Matches `mperf doctor`, which probes the same groups: short enough to be
+/// invisible next to a profiling run, long enough that a working PMU always
+/// delivers samples.
+const GROUP_PROBE_MILLIS: u64 = 200;
+
+/// Refuses to record a scenario whose sampling group carries no hardware
+/// counter.
+///
+/// Such a run still exits 0 and still writes every parquet file, but the
+/// recording has no `pmu_*` columns: no IPC, no topdown, no counter-weighted
+/// hotspots. Every question the scenario exists to answer comes back empty from
+/// a file that looks complete, which is worse than no recording at all. The
+/// group is probed rather than the host capability, because a host can open
+/// `cycles` on its own and still refuse the scenario's group.
+fn reject_software_only_group(scenario: Scenario) -> Result<()> {
+    let counters = crate::source::scenario_counters(scenario);
+    let probe = probe_sampling_group(&counters, GROUP_PROBE_MILLIS).with_context(|| {
+        format!(
+            "could not probe the {} sampling group; run `mperf doctor` for the cause on this host",
+            scenario_name(scenario)
+        )
+    })?;
+
+    if probe.collapsed_to_software() {
+        bail!(
+            "no hardware counter opened for the {} scenario, so this recording would carry \
+             software events only and no pmu_* data.\n\
+             Run `mperf doctor` for the cause on this host.",
+            scenario_name(scenario)
+        );
+    }
+    Ok(())
+}
+
+fn scenario_name(scenario: Scenario) -> String {
+    format!("{scenario:?}").to_lowercase()
+}
+
 pub async fn do_record(
     scenario: Scenario,
     output_directory: &Path,
@@ -48,6 +88,13 @@ pub async fn do_record(
             .map(|rejected| format!(" ({})", rejected.reason))
             .unwrap_or_default()
     );
+
+    // Snapshot and TMA exist to report hardware counters. Mem and Roofline keep
+    // their primary artifact, the instrumentation trace, without a PMU, so they
+    // are not rejected here.
+    if matches!(scenario, Scenario::Snapshot | Scenario::TMA) {
+        reject_software_only_group(scenario)?;
+    }
 
     let cpu_info = if scenario == Scenario::Mem
         && roofline::uses_native_performance(&roofline_options, &command)?
