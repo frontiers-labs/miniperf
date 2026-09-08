@@ -4,7 +4,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -335,7 +335,7 @@ fn dynamorio_method(automatic: bool, executable: PathBuf) -> SelectedMethod {
             quality: "hybrid-binary".to_string(),
             reason: "native timing with DynamoRIO binary accounting".to_string(),
             warnings: vec![
-                "per-loop throughput is published only when native timing has at most 10% estimated 95% sampling error; lower-confidence loops retain accounting but are not plotted".to_string(),
+                "per-loop throughput is a native sampling estimate; timing_relative_error is its estimated 95% sampling error and timing_quality names the band".to_string(),
                 "native timing and DynamoRIO accounting come from separate executions".to_string(),
             ],
         },
@@ -354,7 +354,7 @@ fn qemu_method(automatic: bool, native: bool, executable: PathBuf) -> SelectedMe
             "native timing with QEMU operation accounting, shared-LLC traffic modeling, and dynamic binary loop discovery"
                 .to_string(),
             vec![
-                "per-loop throughput is published only when native timing has at most 10% estimated 95% sampling error; lower-confidence loops retain accounting but are not plotted".to_string(),
+                "per-loop throughput is a native sampling estimate; timing_relative_error is its estimated 95% sampling error and timing_quality names the band".to_string(),
                 "native timing and QEMU accounting come from separate executions".to_string(),
                 "memory traffic is a deterministic host-LLC model, not a hardware memory-controller measurement".to_string(),
                 "the cache model uses write allocation/RFO and dirty writeback; non-temporal stores are conservative".to_string(),
@@ -586,17 +586,6 @@ async fn profile_command(
         std::thread::spawn(move || sample_memory_timeline(pid, &path, stop))
     });
     let counters = crate::source::scenario_counters(Scenario::Roofline);
-    // Shares the PMU with the sampling groups below. Pinned, it would own the
-    // only counter able to count instructions wherever the event-to-counter
-    // map is fixed (RISC-V sscofpmf), and every sampling group naming
-    // instructions would be accepted and then never scheduled — a recording
-    // with no hardware counters at all.
-    let mut instruction_counter = libprof::CountingDriverBuilder::new()
-        .counters(&[Counter::Instructions])
-        .shared_with_sampler()
-        .process(Some(&process))
-        .build()
-        .ok();
     let mut driver = libprof::SamplingDriverBuilder::new()
         .counters(&counters)
         .process(&process)
@@ -628,25 +617,15 @@ async fn profile_command(
     let mut precise_memory = precise_memory_source.map(|(source, directory)| {
         start_precise_memory(source, dispatcher.clone(), &directory, &process)
     });
-    driver.start(dispatcher)?;
-    if let Some(counter) = instruction_counter.as_mut()
-        && counter.start().is_err()
-    {
-        instruction_counter = None;
-    }
+    let tally = Arc::new(InstructionTally {
+        sink: dispatcher,
+        instructions: AtomicU64::new(0),
+    });
+    driver.start(tally.clone())?;
 
     let start_ns = monotonic_timestamp()?;
     process.cont();
     process.wait()?;
-    let instructions = if let Some(counter) = instruction_counter.as_mut() {
-        counter.stop()?;
-        counter
-            .counters()?
-            .get(Counter::Instructions)
-            .map_or(0, |value| value.value)
-    } else {
-        0
-    };
     sampler_stop.store(true, Ordering::Relaxed);
     if let Some(thread) = rss_thread {
         thread
@@ -694,8 +673,37 @@ async fn profile_command(
             .iter()
             .map(|counter| (counter_to_event_ty(counter), counter.name().to_string()))
             .collect(),
-        instructions,
+        instructions: tally.instructions.load(Ordering::Relaxed),
     })
+}
+
+/// Sums the instructions the sampler saw, so the accounting pass can be
+/// checked against the timed run without a second counter group. A second
+/// group would share the PMU with the sampling group by taking turns, and
+/// where the event-to-counter map is fixed (RISC-V sscofpmf) that blacks out
+/// the sampler for half of every multiplexing interval. A sample counts only
+/// while its group is scheduled; scaling by enabled over running time
+/// recovers the rest.
+struct InstructionTally {
+    sink: Arc<EventDispatcher>,
+    instructions: AtomicU64,
+}
+
+impl libprof::Sink for InstructionTally {
+    fn record(&self, record: libprof::Record) {
+        if let libprof::Record::Sample(sample) = &record
+            && sample.counter == Counter::Instructions
+        {
+            let scale = if sample.time_running > 0 {
+                sample.time_enabled as f64 / sample.time_running as f64
+            } else {
+                1.0
+            };
+            self.instructions
+                .fetch_add((sample.value as f64 * scale) as u64, Ordering::Relaxed);
+        }
+        self.sink.record(record);
+    }
 }
 
 /// Precise memory sampling for the timed run, where the host provides it.

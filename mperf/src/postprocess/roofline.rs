@@ -777,7 +777,6 @@ fn collect_binary_loops(
             (true, Some(error)) if error <= 0.20 => "low-confidence",
             _ => "insufficient-samples",
         };
-        let timed = quality == "high-confidence";
         rows.push(LoopRow {
             module_offset: Some(loop_info.module_offset),
             function_name: loop_info
@@ -786,8 +785,8 @@ fn collect_binary_loops(
             file_name: loop_info.file.unwrap_or_default(),
             line: loop_info.line.unwrap_or_default() as i64,
             trip_count: Some(loop_info.trip_count),
-            duration_ns: timed.then(|| timing.wall_ns()),
-            cpu_time_ns: timed.then_some(timing.cpu_ns),
+            duration_ns: (sample_count > 0).then(|| timing.wall_ns()),
+            cpu_time_ns: (sample_count > 0).then_some(timing.cpu_ns),
             thread_count: timing.threads,
             accounting_threads: (!loop_info.threads.is_empty())
                 .then_some(loop_info.threads.len() as u32),

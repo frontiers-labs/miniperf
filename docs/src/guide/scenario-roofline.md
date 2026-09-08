@@ -31,7 +31,7 @@ For a cross-architecture executable, for example a RISC-V binary on an x86 host,
 
 ## Loop timing
 
-Native PMU samples are matched to loop address ranges after the run. A loop gets a plotted throughput only when its estimated 95 % timing error is at most 10 %. Loops with too few samples keep their operation counts and appear with `timing_quality = 'insufficient-samples'`. Make the run long enough that the loops you care about collect hundreds of samples at 1000 Hz. Repeating the kernel a few hundred times inside the program is the usual fix.
+Native PMU samples are matched to loop address ranges after the run. Every loop that collected at least one sample gets a throughput, and `timing_relative_error` says how far to trust it: the estimated 95 % sampling error of its wall-clock time, about 1.96 over the square root of the sample count, where samples from threads running the loop at the same time count once. `timing_quality` names the band: `high-confidence` at most 10 %, `low-confidence` at most 20 %, `insufficient-samples` above that. The viewer fades loops below high confidence. A loop that never got a sample keeps its operation counts and has no throughput. To tighten the error, make the run longer: a loop needs about 400 samples of wall-clock time at 1000 Hz for 10 %, so repeating the kernel a few hundred times inside the program is the usual fix.
 
 Loops in shared libraries and the dynamic loader are excluded.
 

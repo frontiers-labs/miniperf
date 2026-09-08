@@ -14,7 +14,7 @@ use std::{
 };
 
 use addr2line::Loader;
-use object::{Object, ObjectSegment};
+use object::{Object, ObjectSection, ObjectSegment, ObjectSymbol, SectionKind, SymbolKind};
 
 /// A mapped object in one sampled process.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -123,8 +123,73 @@ struct Module {
 /// Process-aware symbol resolver backed by native objects and perf JIT maps.
 pub struct Resolver {
     modules: HashMap<u32, Vec<Module>>,
-    loaders: Vec<Loader>,
+    loaders: Vec<(Loader, SymbolTable)>,
     perf_maps: HashMap<u32, PerfMap>,
+}
+
+/// Function symbols with the address range each one covers, sorted by start.
+///
+/// A stripped shared object keeps only its exported symbols, so the nearest
+/// preceding name can sit thousands of bytes before an address that belongs
+/// to some static function in between. A symbol claims an address only within
+/// its size; a symbol without a size extends to the next one.
+struct SymbolTable(Vec<(u64, u64, String)>);
+
+impl SymbolTable {
+    fn from_object(object: &object::File) -> Self {
+        let mut symbols = object
+            .symbols()
+            .chain(object.dynamic_symbols())
+            .filter(|symbol| symbol.is_definition() && symbol.address() != 0)
+            .filter(|symbol| match symbol.kind() {
+                SymbolKind::Text => true,
+                // An untyped label counts only inside code, and not the
+                // `$x`/`$d` mapping symbols AArch64 and RISC-V sprinkle there.
+                SymbolKind::Unknown => {
+                    !symbol.name().is_ok_and(|name| name.starts_with('$'))
+                        && symbol
+                            .section_index()
+                            .and_then(|index| object.section_by_index(index).ok())
+                            .is_some_and(|section| section.kind() == SectionKind::Text)
+                }
+                _ => false,
+            })
+            .filter_map(|symbol| {
+                let name = symbol.name().ok().filter(|name| !name.is_empty())?;
+                Some((symbol.address(), symbol.size(), name.to_owned()))
+            })
+            .collect::<Vec<_>>();
+        symbols.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+        symbols.dedup_by(|a, b| a.0 == b.0);
+        Self::from_sorted(symbols)
+    }
+
+    fn from_sorted(symbols: Vec<(u64, u64, String)>) -> Self {
+        let starts = symbols.iter().map(|symbol| symbol.0).collect::<Vec<_>>();
+        Self(
+            symbols
+                .into_iter()
+                .enumerate()
+                .map(|(index, (start, size, name))| {
+                    let end = if size > 0 {
+                        start.saturating_add(size)
+                    } else {
+                        starts.get(index + 1).copied().unwrap_or(u64::MAX)
+                    };
+                    (start, end, name)
+                })
+                .collect(),
+        )
+    }
+
+    fn find(&self, address: u64) -> Option<&str> {
+        let index = self
+            .0
+            .partition_point(|symbol| symbol.0 <= address)
+            .checked_sub(1)?;
+        let (_, end, name) = &self.0[index];
+        (address < *end).then_some(name.as_str())
+    }
 }
 
 impl Resolver {
@@ -158,9 +223,17 @@ impl Resolver {
             pids.insert(map.pid);
             let loader = *loader_by_path.entry(map.path.clone()).or_insert_with(|| {
                 let debug_path = find_debug_file(&map.path, &cache);
+                let symbols = fs::read(&debug_path)
+                    .ok()
+                    .and_then(|bytes| {
+                        object::File::parse(bytes.as_slice())
+                            .ok()
+                            .map(|object| SymbolTable::from_object(&object))
+                    })
+                    .unwrap_or(SymbolTable(Vec::new()));
                 Loader::new(debug_path).ok().map(|loader| {
                     let index = loaders.len();
-                    loaders.push(loader);
+                    loaders.push((loader, symbols));
                     index
                 })
             });
@@ -218,7 +291,8 @@ impl Resolver {
         }) else {
             return Vec::new();
         };
-        let Some(loader) = module.loader.and_then(|index| self.loaders.get(index)) else {
+        let Some((loader, symbols)) = module.loader.and_then(|index| self.loaders.get(index))
+        else {
             return Vec::new();
         };
         let relative = ip
@@ -230,7 +304,24 @@ impl Resolver {
                 return frames;
             }
         }
-        Vec::new()
+        let function = match symbols.find(relative) {
+            Some(symbol) => addr2line::demangle_auto(Cow::Borrowed(symbol), None).into_owned(),
+            None => {
+                let module_name = module
+                    .map
+                    .path
+                    .file_name()
+                    .map(|name| name.to_string_lossy())
+                    .unwrap_or_default();
+                format!("{module_name}+{relative:#x}")
+            }
+        };
+        vec![Frame {
+            function,
+            file: None,
+            line: None,
+            module: Some(module.map.path.clone()),
+        }]
     }
 
     /// Returns the mapped module containing `ip`.
@@ -319,16 +410,6 @@ fn resolve_loader(loader: &Loader, address: u64, module: &Path) -> Vec<Frame> {
                     module: Some(module.to_path_buf()),
                 });
             }
-        }
-    }
-    if resolved.is_empty() {
-        if let Some(symbol) = loader.find_symbol(address) {
-            resolved.push(Frame {
-                function: addr2line::demangle_auto(Cow::Borrowed(symbol), None).into_owned(),
-                file: None,
-                line: None,
-                module: Some(module.to_path_buf()),
-            });
         }
     }
     resolved
@@ -488,4 +569,24 @@ pub fn current_process_symbol(ip: u64) -> Option<String> {
 #[cfg(not(unix))]
 pub fn current_process_symbol(_ip: u64) -> Option<String> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SymbolTable;
+
+    #[test]
+    fn sized_symbols_do_not_claim_the_gap_after_them() {
+        let table = SymbolTable::from_sorted(vec![
+            (0x100, 0x20, "exported".to_owned()),
+            (0x400, 0, "label".to_owned()),
+            (0x600, 0x10, "next".to_owned()),
+        ]);
+        assert_eq!(table.find(0x110), Some("exported"));
+        assert_eq!(table.find(0x120), None);
+        assert_eq!(table.find(0x3ff), None);
+        assert_eq!(table.find(0x5ff), Some("label"));
+        assert_eq!(table.find(0x610), None);
+        assert_eq!(table.find(0x10), None);
+    }
 }
