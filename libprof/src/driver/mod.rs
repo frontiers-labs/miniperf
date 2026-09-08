@@ -272,21 +272,6 @@ impl CountingDriverBuilder {
         self
     }
 
-    /// Lets the counters share the PMU with a sampling group instead of
-    /// holding their counter for the whole run.
-    ///
-    /// Cycles and instructions are pinned by default, which is what a
-    /// standalone `stat` wants. Pinned events own their counter permanently,
-    /// and where the event-to-counter map is fixed (RISC-V sscofpmf) that
-    /// starves every sampling group naming the same event: the group is
-    /// accepted and then never scheduled, so the recording silently loses
-    /// every hardware counter. Any counting driver that runs while a sampler
-    /// is open must ask for this.
-    pub fn shared_with_sampler(mut self) -> Self {
-        self.pinned = false;
-        self
-    }
-
     /// Selects a child process, or the current thread when `None`.
     pub fn process(mut self, process: Option<&Process>) -> Self {
         self.pid = process.map(|p| p.pid());

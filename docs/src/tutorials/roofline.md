@@ -35,7 +35,7 @@ Calibrating host Roofline ceilings...
 Host ceilings: 124.22 GFLOP/s FP64, 18.67 GB/s memory (4 Rayon threads)
 Single-thread ceilings: 31.87 GFLOP/s FP64, 8.57 GB/s memory
 Roofline method: native timing with DynamoRIO binary accounting
-Warning: per-loop throughput is published only when native timing has at most 10% estimated 95% sampling error; lower-confidence loops retain accounting but are not plotted
+Warning: per-loop throughput is a native sampling estimate; timing_relative_error is its estimated 95% sampling error and timing_quality names the band
 Warning: native timing and DynamoRIO accounting come from separate executions
 Run 1: collecting native performance data for 'examples/spmv-crs/build/spmv-avx2'
 ...
@@ -54,19 +54,19 @@ The kernel's own output reports 2.4 GFLOP/s at an intensity of 0.095 by its algo
 ## The first mistake: too few samples
 
 ```sh
-mperf query roofline-avx2 'SELECT function_name, line, vector_double_ops / 1e9 AS gflops, vector_double_ai AS ai, timing_quality FROM roofline ORDER BY line'
+mperf query roofline-avx2 'SELECT function_name, line, timing_quality FROM roofline ORDER BY line'
 ```
 
 ```
-┌───────────────┬──────┬────────┬──────────┬──────────────────────┐
-│ function_name ┆ line ┆ gflops ┆    ai    ┆    timing_quality    │
-╞═══════════════╪══════╪════════╪══════════╪══════════════════════╡
-│ main          ┆   82 ┆ NULL   ┆ 0.000000 ┆ insufficient-samples │
-│ main          ┆   88 ┆ NULL   ┆ 0.000000 ┆ insufficient-samples │
+┌───────────────┬──────┬──────────────────────┐
+│ function_name ┆ line ┆    timing_quality    │
+╞═══════════════╪══════╪══════════════════════╡
+│ main          ┆   82 ┆ insufficient-samples │
+│ main          ┆   88 ┆ insufficient-samples │
 ...
 ```
 
-Every loop is `insufficient-samples`. The run took 0.14 seconds, so at 1000 samples per second the kernel loop collected a hundred-odd samples, and the estimated timing error was above the 10 % gate. Loops that fail the gate keep their accounting and lose their throughput, so nothing gets plotted.
+Every loop is `insufficient-samples`. The run took 0.14 seconds, so at 1000 samples per second the kernel loop collected a hundred-odd samples, and the estimated timing error was above 20 %. The loops still get a throughput and the viewer still plots them, faded, but a point with a 25 % error bar on each axis is a rough sketch, not a measurement.
 
 The fix is a longer run. Give the example 2000 repetitions and record again into a new directory:
 

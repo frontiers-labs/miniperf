@@ -16,6 +16,7 @@ ALLOWED = {
     "mperf-data",
     "shmem",
     "miniperf-roofline-core",
+    "miniperf-symbolize",
     "event-import",
 }
 FORBIDDEN_FOR_ALLOWED = {"miniperf-store", "libduckdb-sys", "duckdb"}
