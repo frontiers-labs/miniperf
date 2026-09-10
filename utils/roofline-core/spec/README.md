@@ -7,7 +7,7 @@ upstream revision, and `LICENSE` contains TIR's Apache-2.0 license.
 Refresh all three files from a clean TIR checkout:
 
 ```sh
-utils/qemu-roofline/update-tmdl-spec.sh /path/to/tir
+utils/roofline-core/update-tmdl-spec.sh /path/to/tir
 ```
 
 The QEMU plugin parses the JSON only while building and generates a static

@@ -67,39 +67,55 @@ pub fn generate(input: impl AsRef<Path>, output: impl AsRef<Path>) -> Result<(),
         .get("files")
         .and_then(Value::as_array)
         .ok_or("TMDL document has no files array")?;
-    for item in files
+    let items = files
         .iter()
         .filter_map(|file| file.get("items").and_then(Value::as_array))
         .flatten()
+        .collect::<Vec<_>>();
+    let templates = items
+        .iter()
+        .filter(|item| item.get("kind").and_then(Value::as_str) == Some("template"))
+        .filter_map(|item| Some((item.get("name")?.as_str()?, *item)))
+        .collect::<BTreeMap<_, _>>();
+    for item in items
+        .iter()
+        .copied()
         .filter(|item| item.get("kind").and_then(Value::as_str) == Some("instruction"))
     {
         let mnemonic = string_parameter(item, "MNEMONIC")
+            .or_else(|| {
+                let template = templates.get(item.get("template")?.as_str()?)?;
+                string_parameter(template, "MNEMONIC")
+            })
             .ok_or("TMDL instruction has no string MNEMONIC parameter")?;
         let opname = string_parameter(item, "OPNAME");
         let operation_name = opname.unwrap_or(mnemonic);
         if !operation_names.insert(operation_name.to_owned()) {
             return Err(format!("duplicate TMDL operation name '{operation_name}'").into());
         }
-        if let Some(opname) = opname {
-            if !opname.ends_with(".m") {
-                return Err(format!(
-                    "TMDL operation '{opname}' uses OPNAME but is not a masked .m variant"
-                )
-                .into());
-            }
-        }
-
         entries.push(Entry {
             mnemonic: mnemonic.to_owned(),
-            masked: opname.is_some(),
+            masked: opname.is_some_and(|name| name.ends_with(".m")),
             operation_name: operation_name.to_owned(),
             classification: classify_instruction(item),
         });
     }
 
+    // Disassembly omits TIR's variant names. Count a mnemonic only when all
+    // variants agree, including explicit and dynamic rounding modes.
+    let mut unique: BTreeMap<(String, bool), Entry> = BTreeMap::new();
+    for entry in entries {
+        let key = (entry.mnemonic.clone(), entry.masked);
+        if let Some(previous) = unique.get_mut(&key) {
+            if previous.classification != entry.classification {
+                previous.classification = Classification::Unclassified;
+            }
+        } else {
+            unique.insert(key, entry);
+        }
+    }
+    let entries = unique.into_values().collect::<Vec<_>>();
     validate_keys(&entries)?;
-    entries
-        .sort_by(|left, right| (&left.mnemonic, left.masked).cmp(&(&right.mnemonic, right.masked)));
     fs::write(output, render(&entries))?;
     Ok(())
 }
@@ -115,20 +131,13 @@ fn string_parameter<'a>(item: &'a Value, name: &str) -> Option<&'a str> {
 }
 
 fn validate_keys(entries: &[Entry]) -> Result<(), Box<dyn Error>> {
-    let mut keys = BTreeMap::new();
-    for entry in entries {
-        let key = (entry.mnemonic.as_str(), entry.masked);
-        if let Some(first) = keys.insert(key, entry.operation_name.as_str()) {
-            return Err(format!(
-                "TMDL operations '{first}' and '{}' have the same lookup key ({:?}, {})",
-                entry.operation_name, entry.mnemonic, entry.masked
-            )
-            .into());
-        }
-    }
+    let keys = entries
+        .iter()
+        .map(|entry| (entry.mnemonic.as_str(), entry.masked))
+        .collect::<BTreeSet<_>>();
 
     for entry in entries.iter().filter(|entry| entry.masked) {
-        if !keys.contains_key(&(entry.mnemonic.as_str(), false)) {
+        if !keys.contains(&(entry.mnemonic.as_str(), false)) {
             return Err(format!(
                 "masked TMDL operation '{}' has no unmasked '{}' partner",
                 entry.operation_name, entry.mnemonic
@@ -154,6 +163,11 @@ fn classify_instruction(item: &Value) -> Classification {
         .flatten()
         .filter_map(Value::as_str)
         .collect::<Vec<_>>();
+    // Packing the floating-point status fields is part of a CSR transfer,
+    // not arithmetic performed by the program.
+    if isas.contains(&"Zicsr") {
+        return Classification::NonCompute;
+    }
     let vector = isas.iter().any(|isa| matches!(*isa, "RVV" | "VF"));
     let float = isas
         .iter()
@@ -240,8 +254,54 @@ fn collect_vector_lambdas(node: &Value, domain: Domain, classes: &mut Vec<Expres
 
 fn classify_scalar_behavior(behavior: &Value, domain: Domain) -> ExpressionClass {
     let mut classes = Vec::new();
-    collect_scalar_results(behavior, domain, &mut classes);
+    let resolved = resolve_bindings(behavior, &BTreeMap::new());
+    collect_scalar_results(&resolved, domain, &mut classes);
     merge_classes(classes)
+}
+
+fn resolve_bindings(node: &Value, bindings: &BTreeMap<String, Value>) -> Value {
+    if node.get("kind").and_then(Value::as_str) == Some("identifier") {
+        if let Some(value) = node
+            .get("name")
+            .and_then(Value::as_str)
+            .and_then(|name| bindings.get(name))
+        {
+            return value.clone();
+        }
+    }
+    if node.get("kind").and_then(Value::as_str) == Some("block") {
+        let mut resolved = node.clone();
+        let mut bindings = bindings.clone();
+        if let Some(statements) = resolved.get_mut("statements").and_then(Value::as_array_mut) {
+            for statement in statements {
+                *statement = resolve_bindings(statement, &bindings);
+                if statement.get("kind").and_then(Value::as_str) == Some("let") {
+                    if let (Some(name), Some(value)) = (
+                        statement.get("name").and_then(Value::as_str),
+                        statement.get("value"),
+                    ) {
+                        bindings.insert(name.to_owned(), value.clone());
+                    }
+                }
+            }
+        }
+        return resolved;
+    }
+    match node {
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .map(|value| resolve_bindings(value, bindings))
+                .collect(),
+        ),
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .map(|(key, value)| (key.clone(), resolve_bindings(value, bindings)))
+                .collect(),
+        ),
+        _ => node.clone(),
+    }
 }
 
 fn collect_scalar_results(node: &Value, domain: Domain, classes: &mut Vec<ExpressionClass>) {

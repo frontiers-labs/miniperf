@@ -456,7 +456,13 @@ mod tests {
 
     #[test]
     fn does_not_count_control_flow_or_expand_integer_remainder() {
-        for instruction in ["auipc a0,0x10", "jal ra,0x20", "jalr ra,a0,0"] {
+        for instruction in [
+            "auipc a0,0x10",
+            "jal ra,0x20",
+            "jalr ra,a0,0",
+            "csrrw a0,fcsr,a1",
+            "csrrwi a0,fcsr,1",
+        ] {
             assert_eq!(
                 classify_riscv(instruction),
                 RiscvClassification::NonCompute,
@@ -485,6 +491,23 @@ mod tests {
                 RiscvClassification::NonCompute,
                 "{instruction}"
             );
+        }
+    }
+
+    #[test]
+    fn classifies_scalar_float_variants_and_local_results() {
+        for instruction in ["fmadd.d fa0,fa1,fa2,fa3", "fmadd.d fa0,fa1,fa2,fa3,rne"] {
+            assert_eq!(
+                classify_riscv(instruction),
+                RiscvClassification::Counted(RiscvCost {
+                    kind: RiscvKind::ScalarDouble,
+                    factor: 2,
+                    sew_scale: 1,
+                })
+            );
+        }
+        for instruction in ["fsgnj.s fa0,fa1,fa2", "fsgnj.d fa0,fa1,fa2"] {
+            assert_eq!(classify_riscv(instruction), RiscvClassification::NonCompute);
         }
     }
 
