@@ -387,6 +387,36 @@ mod imp {
         }
         Ok(CounterResult::from_entries(entries))
     }
+
+    #[cfg(test)]
+    #[test]
+    fn timer_samples_keep_independent_dispatcher_groups() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("samples.json");
+        fs::write(
+            &path,
+            r#"{"qpc_frequency":1000000,"samples":[{"cpu":1,"timestamp":10,"tid":7,"pid":42,"ip":4096},{"cpu":1,"timestamp":20,"tid":7,"pid":42,"ip":8192}]}"#,
+        )
+        .unwrap();
+        let (dispatcher, join) = EventDispatcher::new(directory.path());
+        assert_eq!(publish_profile_samples(&dispatcher, &path).unwrap(), 2);
+        drop(dispatcher);
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(join.join());
+        let session = store::Session::open(directory.path()).unwrap();
+        let distinct: i64 = session
+            .connection()
+            .query_row(
+                "SELECT COUNT(DISTINCT group_id) FROM samples_raw",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(distinct, 2);
+    }
 }
 
 #[cfg(target_os = "windows")]
