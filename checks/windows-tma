@@ -7,9 +7,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
     || skip "not a Windows host"
 
 dir="${CHECK_WORK}/rec-tma"
+# The dollar signs belong to PowerShell, not this shell.
+# shellcheck disable=SC2016
+powershell_code='$sw = [Diagnostics.Stopwatch]::StartNew(); while ($sw.Elapsed.TotalSeconds -lt 8) { $null = [Math]::Sqrt(12345) }'
 "${mperf}" record -s tma -o "${dir}" --duration 5s -- \
-    powershell.exe -NoProfile -Command \
-    '$sw = [Diagnostics.Stopwatch]::StartNew(); while ($sw.Elapsed.TotalSeconds -lt 8) { $null = [Math]::Sqrt(12345) }' \
+    powershell.exe -NoProfile -Command "${powershell_code}" \
     >"${dir}.log" 2>&1 || {
         cat "${dir}.log" >&2
         fail "Windows TMA recording failed"
