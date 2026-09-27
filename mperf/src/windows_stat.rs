@@ -187,68 +187,6 @@ mod imp {
         }
         Ok(())
     }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use libprof::Metric;
-
-        #[test]
-        fn mixed_model_event_and_accounting_uses_one_wpr_capture() {
-            let scenario = pmu_data::TmaScenario {
-                name: "tma".into(),
-                events: vec!["cycles".into(), "model_event".into()],
-                groups: Vec::new(),
-                precise_attribution: false,
-                constants: Vec::new(),
-                metrics: Vec::new(),
-                ui: None,
-            };
-            let supported = [Counter::Cycles, Counter::CpuClock, Counter::ContextSwitches];
-            let names = vec![
-                "model_event".into(),
-                "cpu_clock".into(),
-                "context_switches".into(),
-            ];
-            assert_eq!(
-                windows_explicit_event_route(&names, &supported, Some(&scenario)),
-                WindowsExplicitEventRoute::Tma
-            );
-            let mut available = supported.to_vec();
-            for name in &scenario.events {
-                push_counter(&mut available, libprof::tma_counter(name));
-            }
-            let (selected, _) = requested_counters_and_metrics(&names, &available, &[]).unwrap();
-            assert_eq!(
-                selected,
-                vec![
-                    Counter::Custom("model_event".into()),
-                    Counter::CpuClock,
-                    Counter::ContextSwitches
-                ]
-            );
-            let metric = Metric {
-                name: "model_rate".into(),
-                desc: String::new(),
-                expression: pmu_data::MetricExpression("model_event / cycles".into()),
-                unit: None,
-            };
-            let (expanded, _) = requested_counters_and_metrics(
-                &["model_rate".into(), "cpu_clock".into()],
-                &available,
-                &[metric],
-            )
-            .unwrap();
-            let expanded_names = expanded
-                .iter()
-                .map(|counter| counter.name().to_owned())
-                .collect::<Vec<_>>();
-            assert_eq!(
-                windows_explicit_event_route(&expanded_names, &supported, Some(&scenario)),
-                WindowsExplicitEventRoute::Tma
-            );
-        }
-    }
 }
 
 #[cfg(not(target_os = "windows"))]

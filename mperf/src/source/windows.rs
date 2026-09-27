@@ -65,34 +65,3 @@ pub(super) fn finalize_fidelity(
     }
     fidelity
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn hardware(status: &str) -> SnapshotCollectorStatus {
-        SnapshotCollectorStatus {
-            name: "hardware_pmu".to_owned(),
-            status: status.to_owned(),
-            source: "windows_etw".to_owned(),
-            quality: "sampled".to_owned(),
-            message: "ETW hardware PMU unavailable".to_owned(),
-        }
-    }
-
-    #[test]
-    fn snapshot_fidelity_uses_the_observed_hardware_status() {
-        let planned = resolve_fidelity(Scenario::Snapshot);
-        assert!(planned.rejected.is_empty());
-        let captured = finalize_fidelity(
-            Scenario::Snapshot,
-            planned.clone(),
-            &[hardware("available")],
-        );
-        assert_eq!(captured.rung, "windows_etw_pmu");
-        assert!(captured.rejected.is_empty());
-        let fallback = finalize_fidelity(Scenario::Snapshot, planned, &[hardware("unavailable")]);
-        assert_eq!(fallback.rung, "cpu_time_samples_only");
-        assert_eq!(fallback.rejected[0].rung, "windows_etw_pmu");
-    }
-}

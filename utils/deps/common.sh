@@ -3,11 +3,17 @@
 
 deps_repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-# Windows runners ship `python`, not `python3`.
-if command -v python3 >/dev/null 2>&1; then
+# Windows may expose a nonfunctional Microsoft Store `python3` alias. Probe the
+# executable, and allow local packaging to select a bundled Python explicitly.
+if [[ -n "${MINIPERF_DEPS_PYTHON:-}" ]]; then
+    deps_python="${MINIPERF_DEPS_PYTHON}"
+elif command -v python3 >/dev/null 2>&1 && python3 -c 'import sys' >/dev/null 2>&1; then
     deps_python=python3
-else
+elif command -v python >/dev/null 2>&1 && python -c 'import sys' >/dev/null 2>&1; then
     deps_python=python
+else
+    printf 'Python is required for dependency manifests and bundles.\n' >&2
+    exit 1
 fi
 
 # Downloads a pinned artifact. Every download in this repository goes through
