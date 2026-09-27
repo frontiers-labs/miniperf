@@ -7,6 +7,13 @@ for sub in list doctor stat record query show events-export recover; do
     "${mperf}" "${sub}" --help >/dev/null 2>&1 || fail "mperf ${sub} --help failed"
 done
 "${mperf}" list >/dev/null || fail "mperf list failed"
+if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
+    stat_error="${CHECK_WORK}/stat-explicit-error.txt"
+    "${mperf}" stat --topdown -e cycles -- cmd /c exit 0 >"${stat_error}" 2>&1 \
+        && fail "Windows stat accepted explicit events with --topdown"
+    grep -q 'does not accept explicit events' "${stat_error}" \
+        || fail "Windows stat did not explain why explicit events were rejected"
+fi
 "${mperf}" record -o /tmp/nowhere -- /bin/true >/dev/null 2>&1 \
     && fail "record without -s should be rejected"
 "${mperf}" record -s nonsense -o /tmp/nowhere -- /bin/true >/dev/null 2>&1 \

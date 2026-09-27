@@ -3962,6 +3962,7 @@ dependencies = [
  "syn 2.0.118",
  "thiserror 2.0.18",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4308,6 +4309,7 @@ dependencies = [
  "libc",
  "object 0.36.7",
  "thiserror 2.0.18",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4431,6 +4433,7 @@ name = "mperf-trace"
 version = "0.1.1"
 dependencies = [
  "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6285,6 +6288,7 @@ name = "shmem"
 version = "0.1.1"
 dependencies = [
  "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

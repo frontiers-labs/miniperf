@@ -26,6 +26,7 @@ on:
     paths:
       - deps/patches/**
       - utils/build-dynamorio-bundle.sh
+      - utils/dr-roofline/**
   schedule:
     # Monthly, on the 1st.
     - cron: '0 3 1 * *'
@@ -166,7 +167,7 @@ jobs:
         run: utils/deps/setup-riscv64-sysroot.sh
 
       - name: Install DynamoRIO build dependencies
-        if: matrix.dependency == 'dynamorio' && matrix.cross != 'riscv64'
+        if: matrix.dependency == 'dynamorio' && runner.os == 'Linux' && matrix.cross != 'riscv64'
         run: sudo apt-get install -y zlib1g-dev
 
       - name: Install QEMU build dependencies
@@ -215,9 +216,15 @@ jobs:
             echo "no DynamoRIO patches in this checkout; nothing to verify"
             exit 0
           fi
-          archive=(dist/miniperf-dynamorio-*.tar.zst)
-          manifest="$(tar --extract --zstd --to-stdout --file "${archive[0]}" \
-            --wildcards '*/MANIFEST.txt')"
+          if [[ "${{ matrix.platform }}" == windows-* ]]; then
+            archive=(dist/miniperf-dynamorio-*.zip)
+            archive_native="$(cygpath -m "${archive[0]}")"
+            manifest="$(python -c 'import sys, zipfile; z = zipfile.ZipFile(sys.argv[1]); print(next(z.read(n).decode() for n in z.namelist() if n.endswith("/MANIFEST.txt")))' "${archive_native}")"
+          else
+            archive=(dist/miniperf-dynamorio-*.tar.zst)
+            manifest="$(tar --extract --zstd --to-stdout --file "${archive[0]}" \
+              --wildcards '*/MANIFEST.txt')"
+          fi
           printf '%s\n' "${manifest}"
           for patch in "${expected[@]}"; do
             name="$(basename "${patch}")"

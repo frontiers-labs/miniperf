@@ -16,6 +16,8 @@ pub enum ReadMethod {
     UserPmu,
     /// The group leader is read with the `read(2)` system call.
     ReadSyscall,
+    /// Thread accounting is read with Windows process APIs.
+    WindowsApi,
 }
 
 /// The measured overhead and mechanism of one complete counter snapshot.
@@ -957,7 +959,11 @@ mod backend {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+#[path = "event_timer/windows.rs"]
+mod backend;
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 mod backend {
     use super::ReadMethod;
     use crate::{Counter, Error};

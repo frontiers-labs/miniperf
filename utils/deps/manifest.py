@@ -89,9 +89,8 @@ def render_support(support: dict) -> list[str]:
     lines = [
         "# Platforms each dependency must build for. deps.yml generates its build",
         "# matrix from this table and fails the run when the published release does",
-        "# not cover it, so a partial build can never be published. Windows ships the",
-        "# GUI only and therefore needs DuckDB alone; DynamoRIO has no arm64 macOS",
-        "# port; qemu-user targets Linux hosts only.",
+        "# not cover it, so a partial build can never be published. DynamoRIO has no",
+        "# arm64 macOS port; qemu-user targets Linux hosts only.",
         "[support]",
     ]
     for dependency in sorted(support):

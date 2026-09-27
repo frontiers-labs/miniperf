@@ -7,11 +7,13 @@ linked in as a staticlib via the C API in `roofline_core.h`.
 
 DynamoRIO instruments natively, so it only works when the target matches the
 host architecture — QEMU remains the cross-architecture path. `mperf` prefers
-DynamoRIO automatically when `drrun` and this client are available, and if an
-auto-selected DynamoRIO run fails at runtime it retries with the QEMU backend
-instead of aborting (`--roofline-backend dynamorio|qemu` overrides and never
-falls back; `--dynamorio`, `--dynamorio-client`, `MPERF_DYNAMORIO`,
+DynamoRIO automatically when `drrun` and this client are available. On Linux,
+an auto-selected DynamoRIO run that fails at runtime retries with QEMU
+(`--roofline-backend dynamorio|qemu` overrides and never falls back;
+`--dynamorio`, `--dynamorio-client`, `MPERF_DYNAMORIO`,
 `MPERF_DR_CLIENT` control discovery).
+On Windows, the package ships the native DynamoRIO backend; the bundled QEMU
+backend is only available on Linux.
 
 ## Build
 
@@ -26,6 +28,13 @@ cmake --build build
 <dynamorio-build>/bin64/drrun -disable_traces -max_bb_instrs 32 \
   -c build/libdr_roofline.so output=out.counts memory-profile=on -- ./app
 ```
+
+For a Windows x86_64 bundle, run
+`utils/build-dynamorio-bundle.sh windows-x86_64` from Git Bash in an MSVC
+developer environment. The resulting zip contains `dynamorio/bin64/drrun.exe`
+and `dr_roofline.dll`. The pinned dependency release must include that zip and
+its checksum before `utils/package-miniperf.sh x86_64-pc-windows-msvc` can
+embed it.
 
 When running mperf from a source checkout, the built client is discovered in
 any CMake build directory directly below `utils/dr-roofline`; it does not need

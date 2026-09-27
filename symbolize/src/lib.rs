@@ -1,8 +1,9 @@
 #![deny(missing_docs)]
 //! Shared native symbolization for miniperf.
 //!
-//! Resolution is deliberately offline by default. Set `MINIPERF_DEBUGINFOD=1`
-//! and `DEBUGINFOD_URLS` to permit use of an installed `debuginfod-find` client.
+//! Unix resolution is offline by default. Set `MINIPERF_DEBUGINFOD=1` and
+//! `DEBUGINFOD_URLS` to permit an installed `debuginfod-find` client. Windows
+//! PDB lookup uses DbgHelp and its configured symbol search path.
 
 use std::{
     borrow::Cow,
@@ -15,6 +16,9 @@ use std::{
 
 use addr2line::Loader;
 use object::{Object, ObjectSection, ObjectSegment, ObjectSymbol, SectionKind, SymbolKind};
+
+#[cfg(windows)]
+mod windows;
 
 /// A mapped object in one sampled process.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -125,6 +129,8 @@ pub struct Resolver {
     modules: HashMap<u32, Vec<Module>>,
     loaders: Vec<(Loader, SymbolTable)>,
     perf_maps: HashMap<u32, PerfMap>,
+    #[cfg(windows)]
+    native: windows::NativeResolver,
 }
 
 /// Function symbols with the address range each one covers, sorted by start.
@@ -205,8 +211,14 @@ impl Resolver {
         Ok(Self::new(current_process_maps()?))
     }
 
-    /// Creates an empty current-process resolver on hosts without procfs maps.
-    #[cfg(not(target_os = "linux"))]
+    /// Creates a resolver from loaded modules in the current Windows process.
+    #[cfg(windows)]
+    pub fn for_current_process() -> Result<Self, std::io::Error> {
+        Ok(Self::new(current_process_maps()?))
+    }
+
+    /// Creates an empty current-process resolver on hosts without module maps.
+    #[cfg(not(any(target_os = "linux", windows)))]
     pub fn for_current_process() -> Result<Self, std::io::Error> {
         Ok(Self::new(Vec::new()))
     }
@@ -256,10 +268,15 @@ impl Resolver {
             })
             .collect();
 
+        #[cfg(windows)]
+        let native = windows::NativeResolver::new(&modules);
+
         Self {
             modules,
             loaders,
             perf_maps,
+            #[cfg(windows)]
+            native,
         }
     }
 
@@ -291,13 +308,24 @@ impl Resolver {
         }) else {
             return Vec::new();
         };
-        let Some((loader, symbols)) = module.loader.and_then(|index| self.loaders.get(index))
-        else {
-            return Vec::new();
-        };
+        #[cfg(windows)]
+        if let Some(frame) = self.native.resolve(pid, ip, &module.map) {
+            return vec![frame];
+        }
         let relative = ip
             .saturating_sub(module.map.start)
             .saturating_add(module.svma_start.unwrap_or(module.map.offset));
+        #[cfg(windows)]
+        let fallback_offset = ip.saturating_sub(module.map.start);
+        #[cfg(not(windows))]
+        let fallback_offset = relative;
+        let Some((loader, symbols)) = module.loader.and_then(|index| self.loaders.get(index))
+        else {
+            #[cfg(windows)]
+            return vec![module_offset_frame(&module.map, fallback_offset)];
+            #[cfg(not(windows))]
+            return Vec::new();
+        };
         for address in [relative, ip] {
             let frames = resolve_loader(loader, address, &module.map.path);
             if !frames.is_empty() {
@@ -307,13 +335,7 @@ impl Resolver {
         let function = match symbols.find(relative) {
             Some(symbol) => addr2line::demangle_auto(Cow::Borrowed(symbol), None).into_owned(),
             None => {
-                let module_name = module
-                    .map
-                    .path
-                    .file_name()
-                    .map(|name| name.to_string_lossy())
-                    .unwrap_or_default();
-                format!("{module_name}+{relative:#x}")
+                return vec![module_offset_frame(&module.map, fallback_offset)];
             }
         };
         vec![Frame {
@@ -362,8 +384,28 @@ pub fn current_process_maps() -> Result<Vec<ProcessMap>, std::io::Error> {
         .collect())
 }
 
-/// Returns no mappings on hosts without Linux procfs.
-#[cfg(not(target_os = "linux"))]
+/// Reads loaded image mappings for the current Windows process.
+#[cfg(windows)]
+pub fn current_process_maps() -> Result<Vec<ProcessMap>, std::io::Error> {
+    windows::current_process_maps()
+}
+
+fn module_offset_frame(map: &ProcessMap, relative: u64) -> Frame {
+    let module_name = map
+        .path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+    Frame {
+        function: format!("{module_name}+{relative:#x}"),
+        file: None,
+        line: None,
+        module: Some(map.path.clone()),
+    }
+}
+
+/// Returns no mappings on hosts without Linux procfs or Windows module APIs.
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn current_process_maps() -> Result<Vec<ProcessMap>, std::io::Error> {
     Ok(Vec::new())
 }
@@ -371,6 +413,13 @@ pub fn current_process_maps() -> Result<Vec<ProcessMap>, std::io::Error> {
 fn mapping_svma_start(path: &Path, mapping_offset: u64) -> Option<u64> {
     let bytes = fs::read(path).ok()?;
     let object = object::File::parse(bytes.as_slice()).ok()?;
+    // PE section addresses are based on the preferred image base, while the
+    // runtime mapping starts at the ASLR-selected load base. File offsets in
+    // Windows module maps do not describe ELF-style individual segments.
+    #[cfg(windows)]
+    if object.format() == object::BinaryFormat::Pe {
+        return Some(object.relative_address_base());
+    }
     let segment = object
         .segments()
         .filter(|segment| {
@@ -565,8 +614,25 @@ pub fn current_process_symbol(ip: u64) -> Option<String> {
     })
 }
 
-/// Current-process lookup is unavailable on non-Unix hosts.
-#[cfg(not(unix))]
+/// Best-effort lookup in the current Windows process.
+#[cfg(windows)]
+pub fn current_process_symbol(ip: u64) -> Option<String> {
+    use std::sync::{Mutex, OnceLock};
+    static RESOLVER: OnceLock<Mutex<Resolver>> = OnceLock::new();
+    RESOLVER
+        .get_or_init(|| {
+            Mutex::new(Resolver::for_current_process().unwrap_or_else(|_| Resolver::new([])))
+        })
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .resolve(std::process::id(), ip)
+        .into_iter()
+        .next()
+        .map(|frame| frame.function)
+}
+
+/// Current-process lookup is unavailable on other non-Unix hosts.
+#[cfg(not(any(unix, windows)))]
 pub fn current_process_symbol(_ip: u64) -> Option<String> {
     None
 }

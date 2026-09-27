@@ -63,3 +63,6 @@ tempfile = "3"
 [target.'cfg(target_os = "linux")'.dependencies]
 framehop = { version = "0.16.0", default-features = false, features = ["std"] }
 framehop-object = "0.2.0"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+tempfile = "3"

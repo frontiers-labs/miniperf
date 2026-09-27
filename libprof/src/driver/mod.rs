@@ -3,12 +3,26 @@ pub(crate) mod perf;
 
 #[cfg(target_os = "macos")]
 mod kperf;
+#[cfg(target_os = "windows")]
+mod windows;
 
 #[cfg(target_os = "linux")]
 use perf::{PerfCountingDriver, PerfSamplingDriver};
 
 #[cfg(target_os = "macos")]
 use kperf::{KPerfCountingDriver, KPerfSamplingDriver};
+#[cfg(target_os = "windows")]
+pub use windows::windows_decode_pmc_etl;
+#[cfg(target_os = "windows")]
+pub use windows::windows_max_pmc_sources;
+#[cfg(target_os = "windows")]
+pub use windows::windows_pmc_etl_totals;
+#[cfg(target_os = "windows")]
+pub use windows::windows_switch_etl_totals;
+#[cfg(target_os = "windows")]
+pub use windows::wpr::{windows_counter_profile, windows_tma_profile, WindowsTmaProfile};
+#[cfg(target_os = "windows")]
+use windows::{WindowsCountingDriver, WindowsSamplingDriver};
 
 use smallvec::SmallVec;
 use std::sync::Arc;
@@ -26,6 +40,8 @@ pub enum DriverKind {
     Perf,
     /// Apple kperf backend.
     KPerf,
+    /// Windows process accounting and ETW sampled profiles.
+    Windows,
 }
 
 /// Strategy used to collect user-space call stacks.
@@ -203,6 +219,10 @@ pub fn list_supported_counters(driver: DriverKind) -> Vec<Counter> {
             if driver == DriverKind::Default || driver == DriverKind::KPerf {
                 return kperf::list_supported_counters();
             }
+        } else if #[cfg(target_os="windows")] {
+            if driver == DriverKind::Default || driver == DriverKind::Windows {
+                return windows::list_supported_counters();
+            }
         }
     }
 
@@ -304,6 +324,10 @@ impl CountingDriverBuilder {
                 if self.kind == DriverKind::Default || self.kind == DriverKind::KPerf {
                     return Ok(Box::new(KPerfCountingDriver::new(self.counters, self.pid)?));
                 }
+            } else if #[cfg(target_os="windows")] {
+                if self.kind == DriverKind::Default || self.kind == DriverKind::Windows {
+                    return Ok(Box::new(WindowsCountingDriver::new(self.counters, self.pid)?));
+                }
             }
         }
 
@@ -344,11 +368,19 @@ impl SamplingDriverBuilder {
     /// accepts such a group and then never schedules it, which costs every
     /// counter in it, not just the duplicate.
     pub fn counters(mut self, counters: &[Counter]) -> Self {
-        self.counters = plan_sampling_group(
-            counters,
-            cpu_family::find_cpu_family(cpu_family::get_host_cpu_family()),
-        );
-        self
+        #[cfg(target_os = "windows")]
+        {
+            self.counters = counters.to_vec();
+            self
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.counters = plan_sampling_group(
+                counters,
+                cpu_family::find_cpu_family(cpu_family::get_host_cpu_family()),
+            );
+            self
+        }
     }
 
     /// Attaches sampling to a suspended child process.
@@ -436,6 +468,10 @@ impl SamplingDriverBuilder {
                         self.sample_freq,
                         self.pid,
                     )?));
+                }
+            } else if #[cfg(target_os="windows")] {
+                if self.kind == DriverKind::Default || self.kind == DriverKind::Windows {
+                    return Ok(Box::new(WindowsSamplingDriver::new(&self.counters, self.sample_freq, self.pid)?));
                 }
             }
         }
@@ -555,11 +591,24 @@ impl CounterResult {
 
         let value = matching.iter().map(|e| e.value.value).sum();
         let scaling = matching.iter().map(|e| e.value.scaling).sum::<f64>() / matching.len() as f64;
+        let quality = if matching
+            .iter()
+            .any(|entry| entry.value.quality == MeasurementQuality::Estimated)
+        {
+            MeasurementQuality::Estimated
+        } else if matching
+            .iter()
+            .any(|entry| entry.value.quality == MeasurementQuality::Scaled)
+        {
+            MeasurementQuality::Scaled
+        } else {
+            MeasurementQuality::Exact
+        };
 
         Some(CounterValue {
             value,
             scaling,
-            quality: MeasurementQuality::Exact,
+            quality,
         })
     }
 
@@ -598,6 +647,31 @@ impl IntoIterator for CounterResult {
 
     fn into_iter(self) -> Self::IntoIter {
         self.entries.into_iter()
+    }
+}
+
+#[cfg(test)]
+mod counter_result_tests {
+    use super::*;
+
+    #[test]
+    fn total_preserves_the_least_reliable_measurement_quality() {
+        let entry = |value, quality| CounterEntry {
+            core: None,
+            counter: Counter::Cycles,
+            value: CounterValue {
+                value,
+                scaling: 1.0,
+                quality,
+            },
+        };
+        let result = CounterResult::from_entries(smallvec::smallvec![
+            entry(10, MeasurementQuality::Exact),
+            entry(20, MeasurementQuality::Estimated),
+        ]);
+        let total = result.get(Counter::Cycles).unwrap();
+        assert_eq!(total.value, 30);
+        assert_eq!(total.quality, MeasurementQuality::Estimated);
     }
 }
 

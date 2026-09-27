@@ -4,6 +4,34 @@ pub const MAX_FRAMES: usize = 64;
 /// frame pointers; stops at the first implausible frame. Returns the number
 /// of return addresses stored in `frames`, most recent call first.
 #[inline(never)]
+#[cfg(windows)]
+pub fn capture(frames: &mut [u64; MAX_FRAMES]) -> usize {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn RtlCaptureStackBackTrace(
+            frames_to_skip: u32,
+            frames_to_capture: u32,
+            back_trace: *mut *mut core::ffi::c_void,
+            back_trace_hash: *mut u32,
+        ) -> u16;
+    }
+    let mut addresses = [core::ptr::null_mut(); MAX_FRAMES];
+    let count = unsafe {
+        RtlCaptureStackBackTrace(
+            1,
+            MAX_FRAMES.min(62) as u32,
+            addresses.as_mut_ptr(),
+            core::ptr::null_mut(),
+        )
+    } as usize;
+    for (frame, address) in frames.iter_mut().zip(addresses.iter()).take(count) {
+        *frame = *address as usize as u64;
+    }
+    count
+}
+
+#[inline(never)]
+#[cfg(not(windows))]
 pub fn capture(frames: &mut [u64; MAX_FRAMES]) -> usize {
     let mut fp = current_frame_pointer();
     let mut sp = fp;
@@ -27,21 +55,24 @@ pub fn capture(frames: &mut [u64; MAX_FRAMES]) -> usize {
     count
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(not(windows), target_arch = "x86_64"))]
 fn current_frame_pointer() -> u64 {
     let fp: u64;
     unsafe { core::arch::asm!("mov {}, rbp", out(reg) fp) };
     fp
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(not(windows), target_arch = "aarch64"))]
 fn current_frame_pointer() -> u64 {
     let fp: u64;
     unsafe { core::arch::asm!("mov {}, x29", out(reg) fp) };
     fp
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(
+    not(windows),
+    not(any(target_arch = "x86_64", target_arch = "aarch64"))
+))]
 fn current_frame_pointer() -> u64 {
     0
 }

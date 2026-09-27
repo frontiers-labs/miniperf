@@ -26,12 +26,11 @@ version = "11.0.2"
 
 # Platforms each dependency must build for. deps.yml generates its build
 # matrix from this table and fails the run when the published release does
-# not cover it, so a partial build can never be published. Windows ships the
-# GUI only and therefore needs DuckDB alone; DynamoRIO has no arm64 macOS
-# port; qemu-user targets Linux hosts only.
+# not cover it, so a partial build can never be published. DynamoRIO has no
+# arm64 macOS port; qemu-user targets Linux hosts only.
 [support]
 duckdb = ["linux-x86_64", "linux-aarch64", "linux-riscv64", "macos-aarch64", "windows-x86_64"]
-dynamorio = ["linux-x86_64", "linux-aarch64", "linux-riscv64"]
+dynamorio = ["linux-x86_64", "linux-aarch64", "linux-riscv64", "windows-x86_64"]
 qemu = ["linux-x86_64", "linux-aarch64", "linux-riscv64"]
 
 # Built by the dependency workflow; every platform in [support] must be

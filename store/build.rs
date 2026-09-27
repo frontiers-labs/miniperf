@@ -20,7 +20,15 @@ fn main() {
         .as_str()
     {
         "macos" => "c++",
-        "windows" => return,
+        "windows" => {
+            // The pinned static DuckDB bundle uses Winsock, Restart Manager,
+            // and BCrypt. Unlike DuckDB's bundled build, the linked archive
+            // does not emit these dependencies for Cargo.
+            for library in ["ws2_32", "rstrtmgr", "bcrypt"] {
+                println!("cargo:rustc-link-lib=dylib={library}");
+            }
+            return;
+        }
         _ => "stdc++",
     };
     println!("cargo:rustc-link-lib=dylib={runtime}");

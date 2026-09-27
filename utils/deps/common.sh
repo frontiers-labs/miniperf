@@ -22,7 +22,9 @@ deps_curl() {
 }
 
 deps_manifest_get() {
-    "${deps_python}" "${deps_repository_root}/utils/deps/manifest.py" get "$1"
+    "${deps_python}" "${deps_repository_root}/utils/deps/manifest.py" \
+        --manifest "${MINIPERF_DEPS_MANIFEST:-${deps_repository_root}/deps/manifest.toml}" \
+        get "$1"
 }
 
 # Prints a path that native Windows tools (CMake, MSVC, Python) can open. Under

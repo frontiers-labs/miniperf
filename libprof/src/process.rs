@@ -1,16 +1,21 @@
 use std::cell::Cell;
+#[cfg(not(target_os = "windows"))]
 use std::ffi::CString;
 
+#[cfg(target_os = "windows")]
+mod windows;
+
 #[derive(Debug)]
-/// A child process suspended before `execve` so counters can be attached.
+/// A child process held before its command runs so counters can be attached.
 pub struct Process {
     pid: i32,
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     write_fd: i32,
-    /// Set once the child has been observed to exit (via `wait`). Until the
-    /// process is reaped it lingers as a zombie, which keeps its accounting
-    /// (e.g. `proc_pid_rusage` cycles/instructions) queryable by a counting
-    /// driver's `stop()` even though the child has already finished.
+    #[cfg(target_os = "windows")]
+    windows: windows::WindowsProcess,
+    /// Set once the child has been observed to exit (via `wait`). On Unix the
+    /// child remains unreaped so its final accounting stays queryable. On
+    /// Windows the process handle remains open until drop.
     exited: Cell<bool>,
     reaped: Cell<bool>,
     exit_code: Cell<Option<i32>>,
@@ -24,7 +29,19 @@ impl Process {
             Self::new_macos_suspended(args, env)
         }
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
+        {
+            let windows = windows::WindowsProcess::new(args, env)?;
+            Ok(Self {
+                pid: windows.pid(),
+                windows,
+                exited: Cell::new(false),
+                reaped: Cell::new(false),
+                exit_code: Cell::new(None),
+            })
+        }
+
+        #[cfg(target_os = "linux")]
         {
             Self::new_fork_gated(args, env)
         }
@@ -101,7 +118,7 @@ impl Process {
         })
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     fn new_fork_gated(args: &[String], env: &[(String, String)]) -> Result<Self, std::io::Error> {
         let mut pipe_fds: [libc::c_int; 2] = [-1; 2];
         if unsafe { libc::pipe(pipe_fds.as_mut_ptr()) } == -1 {
@@ -175,16 +192,27 @@ impl Process {
             libc::kill(self.pid, libc::SIGCONT);
         }
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         unsafe {
             libc::write(self.write_fd, &[1u8] as *const u8 as *const libc::c_void, 1);
             libc::close(self.write_fd);
         }
+        #[cfg(target_os = "windows")]
+        self.windows.cont();
     }
 
-    /// Block until the child exits, but leave it unreaped (a zombie) so that its
-    /// final resource accounting stays queryable. Reaping happens on drop.
+    /// Block until the child exits, retaining final accounting until drop.
     pub fn wait(&self) -> Result<(), std::io::Error> {
+        #[cfg(target_os = "windows")]
+        {
+            if self.exited.get() {
+                return Ok(());
+            }
+            self.exit_code.set(Some(self.windows.wait()?));
+            self.exited.set(true);
+            return Ok(());
+        }
+        #[cfg(not(target_os = "windows"))]
         unsafe {
             let mut info: libc::siginfo_t = std::mem::zeroed();
             if libc::waitid(
@@ -204,17 +232,28 @@ impl Process {
                     128_i32.saturating_add(status)
                 }));
         }
+        #[cfg(not(target_os = "windows"))]
         self.exited.set(true);
+        #[cfg(not(target_os = "windows"))]
         Ok(())
     }
 
     /// Whether the child has already exited, without blocking. Like
-    /// [`Process::wait`], it leaves the zombie in place so the child's final
-    /// resource accounting stays queryable.
+    /// [`Process::wait`], it retains final accounting until drop.
     pub fn try_wait(&self) -> Result<bool, std::io::Error> {
         if self.exited.get() {
             return Ok(true);
         }
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(code) = self.windows.try_wait()? {
+                self.exit_code.set(Some(code));
+                self.exited.set(true);
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+        #[cfg(not(target_os = "windows"))]
         unsafe {
             // waitid leaves the struct untouched when nothing has exited, so
             // a zeroed si_pid is what "still running" looks like.
@@ -239,7 +278,9 @@ impl Process {
                     128_i32.saturating_add(status)
                 }));
         }
+        #[cfg(not(target_os = "windows"))]
         self.exited.set(true);
+        #[cfg(not(target_os = "windows"))]
         Ok(true)
     }
 
@@ -249,21 +290,84 @@ impl Process {
         self.exit_code.get()
     }
 
+    /// Stop a Windows child, including one still at its suspended entry point.
+    #[cfg(target_os = "windows")]
+    pub fn terminate(&self) -> Result<(), std::io::Error> {
+        if !self.exited.get() {
+            self.exit_code.set(Some(self.windows.terminate()?));
+            self.exited.set(true);
+        }
+        Ok(())
+    }
+
+    /// Stop the launched process and its descendants after a grace period.
+    pub fn terminate_tree(&self, root_pid: u32) -> Result<(), std::io::Error> {
+        #[cfg(target_os = "windows")]
+        {
+            let _ = root_pid;
+            self.terminate()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let signal = |number: i32| {
+                for member in crate::platform::process_tree(root_pid)
+                    .unwrap_or_else(|| {
+                        vec![crate::platform::ProcessStat {
+                            pid: root_pid,
+                            ..Default::default()
+                        }]
+                    })
+                    .iter()
+                    .filter(|member| member.state != b'Z')
+                {
+                    unsafe { libc::kill(member.pid as i32, number) };
+                }
+            };
+            signal(libc::SIGTERM);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                let gone = match crate::platform::process_tree(root_pid) {
+                    Some(tree) => tree
+                        .iter()
+                        .find(|member| member.pid == root_pid)
+                        .is_none_or(|member| member.state == b'Z'),
+                    None => self.try_wait().unwrap_or(true),
+                };
+                if gone {
+                    return Ok(());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            signal(libc::SIGKILL);
+            Ok(())
+        }
+    }
+
     /// Reap the child if it has exited, releasing the zombie. Idempotent.
     fn reap(&self) {
         if self.reaped.get() {
             return;
         }
+        #[cfg(target_os = "windows")]
+        {
+            self.windows.reap(self.exited.get());
+            self.reaped.set(true);
+            return;
+        }
         // Process owns the spawned child. If setup fails before `cont()` (for
         // example a denied kperf session), leaving a suspended/pre-exec child
         // behind is worse than terminating it during cleanup.
+        #[cfg(not(target_os = "windows"))]
         if !self.exited.get() {
             unsafe {
                 libc::kill(self.pid, libc::SIGKILL);
             }
         }
+        #[cfg(not(target_os = "windows"))]
         let mut status: libc::c_int = 0;
+        #[cfg(not(target_os = "windows"))]
         let rc = unsafe { libc::waitpid(self.pid, &mut status, 0) };
+        #[cfg(not(target_os = "windows"))]
         if rc == self.pid || rc == -1 {
             self.reaped.set(true);
         }

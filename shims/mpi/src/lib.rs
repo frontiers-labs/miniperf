@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! miniperf MPI proxy: preloaded into MPI applications. Wraps MPI_Init /
 //! MPI_Init_thread / MPI_Finalize via PMPI to (1) record the rank into
 //! process metadata, and (2) upgrade cross-node time alignment from

@@ -1,5 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(target_os = "windows")]
+#[path = "capabilities/windows.rs"]
+mod windows;
+
 /// One PMU exposed under `/sys/bus/event_source/devices`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PmuDevice {
@@ -154,7 +158,11 @@ pub fn capabilities() -> Capabilities {
     {
         linux_capabilities()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    {
+        windows::capabilities()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         Capabilities::default()
     }
