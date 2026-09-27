@@ -246,7 +246,8 @@ pub struct CounterCheckpoint {
 
 impl EventTimer {
     /// Opens and enables a coherent per-thread counter group that counts user
-    /// mode only.
+    /// mode only. On Windows, `Cycles` uses `QueryThreadCycleTime`, whose total
+    /// includes kernel work; `CpuClock` follows the user-mode scope.
     pub fn new(counters: &[Counter]) -> Result<Self, Error> {
         Self::open(counters, false)
     }

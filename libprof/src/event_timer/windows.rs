@@ -14,10 +14,11 @@ pub(super) struct Snapshot {
 
 pub(super) struct Backend {
     counters: Vec<Counter>,
+    kernel: bool,
 }
 
 impl Backend {
-    pub(super) fn new(counters: &[Counter]) -> Result<Self, Error> {
+    pub(super) fn new(counters: &[Counter], kernel: bool) -> Result<Self, Error> {
         for counter in counters {
             if !matches!(counter, Counter::Cycles | Counter::CpuClock) {
                 return Err(Error::UnsupportedCounter {
@@ -28,6 +29,7 @@ impl Backend {
         }
         Ok(Self {
             counters: counters.to_vec(),
+            kernel,
         })
     }
 
@@ -63,9 +65,12 @@ impl Backend {
         }
         let ticks =
             |time: FILETIME| ((time.dwHighDateTime as u64) << 32) | time.dwLowDateTime as u64;
-        let cpu_ns = ticks(kernel)
-            .saturating_add(ticks(user))
-            .saturating_mul(100);
+        let cpu_ns = if self.kernel {
+            ticks(kernel).saturating_add(ticks(user))
+        } else {
+            ticks(user)
+        }
+        .saturating_mul(100);
         let values = self
             .counters
             .iter()
