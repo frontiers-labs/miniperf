@@ -1,12 +1,13 @@
 use anyhow::{Context, Result, bail};
-use mperf_data::{CpuClockSource, RecordInfo, ScenarioInfo};
+use mperf_data::{RecordInfo, ScenarioInfo};
 use std::{collections::HashSet, fs::File, path::Path, rc::Rc, sync::Arc};
 
 use libprof::{Process, Record, SessionContext, Sink, probe_sampling_group};
 
+use crate::counter_selection::get_tma_counter_groups;
 use crate::{
-    Scenario, counter_selection::get_tma_counter_groups, event_dispatcher::EventDispatcher,
-    postprocess::perform_postprocessing, roofline, source::Pass,
+    Scenario, event_dispatcher::EventDispatcher, postprocess::perform_postprocessing, roofline,
+    source::Pass,
 };
 
 /// Tells the user when the host's sampling ceiling forced the rate down, before
@@ -92,7 +93,7 @@ pub async fn do_record(
     // Snapshot and TMA exist to report hardware counters. Mem and Roofline keep
     // their primary artifact, the instrumentation trace, without a PMU, so they
     // are not rejected here.
-    if matches!(scenario, Scenario::Snapshot | Scenario::TMA) {
+    if crate::windows_record::needs_sampling_group_probe(scenario) {
         reject_software_only_group(scenario)?;
     }
 
@@ -179,6 +180,7 @@ pub async fn do_record(
     join_handle.join().await;
 
     let (info, collectors) = recorded?;
+    let fidelity = crate::source::final_capture_fidelity(scenario, fidelity, &collectors);
 
     let json_command = if !command.is_empty() {
         Some(command.clone())
@@ -187,6 +189,7 @@ pub async fn do_record(
     };
 
     let (cpu_vendor, cpu_model) = libprof::host_cpu_description();
+    let (sampling_frequency_hz, cpu_clock_source) = crate::windows_record::metadata(scenario);
 
     let cores = libprof::host_core_clusters()
         .into_iter()
@@ -203,16 +206,8 @@ pub async fn do_record(
         command: json_command,
         cpu_model,
         cpu_vendor,
-        sampling_frequency_hz: Some(if scenario == Scenario::Snapshot {
-            crate::source::SNAPSHOT_SAMPLE_FREQUENCY_HZ
-        } else {
-            libprof::DEFAULT_SAMPLE_FREQUENCY_HZ
-        }),
-        cpu_clock_source: Some(if cfg!(any(target_os = "macos", target_os = "linux")) {
-            CpuClockSource::SampledOccupancy
-        } else {
-            CpuClockSource::CounterDelta
-        }),
+        sampling_frequency_hz,
+        cpu_clock_source: Some(cpu_clock_source),
         logical_cpu_count: host_logical_cpu_count(),
         cores,
         cpu_info,
@@ -239,10 +234,7 @@ pub async fn do_record(
 }
 
 fn host_logical_cpu_count() -> Option<u32> {
-    let configured = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_CONF) };
-    (configured > 0)
-        .then(|| u32::try_from(configured).ok())
-        .flatten()
+    libprof::configured_cpu_count()
 }
 
 fn snapshot(
@@ -256,19 +248,20 @@ fn snapshot(
         anyhow::bail!("record snapshot requires a command or --pid");
     }
 
+    let mut optional: Vec<Box<dyn libprof::Source>> = vec![
+        Box::new(libprof::InternalEventsSource {
+            roofline_instrumented: false,
+        }),
+        Box::new(libprof::HostTelemetrySource::default()),
+        Box::new(libprof::BpfSource::default()),
+    ];
+    optional.push(libprof::process_resource_source());
     let pass = Pass {
         name: "snapshot",
         required: vec![Box::new(crate::source::pmu_sampling_source(
             Scenario::Snapshot,
         ))],
-        optional: vec![
-            Box::new(libprof::InternalEventsSource {
-                roofline_instrumented: false,
-            }),
-            Box::new(libprof::HostTelemetrySource::default()),
-            Box::new(libprof::ProcfsSource::default()),
-            Box::new(libprof::BpfSource::default()),
-        ],
+        optional,
     };
     let mut pass = pass.resolve(output_directory)?;
     let child_env = pass.child_environment(output_directory);
@@ -286,11 +279,9 @@ fn snapshot(
         attached_pid: pid,
     };
     let recorded_pid = context.root_pid();
-    // A launched macOS child is already exec'd and suspended, so its dyld
-    // mappings exist before the first instruction is profiled. Attached
-    // processes are live on every platform. Elsewhere the mappings only appear
-    // once the child is released, and the polling loop picks them up.
-    if cfg!(target_os = "macos") || pid.is_some() {
+    // macOS and Windows map the launched executable before the suspended
+    // child resumes. Capture it now, including for very short-lived targets.
+    if crate::windows_record::publish_initial_process_maps(pid.is_some()) {
         publish_process_maps(&dispatcher, recorded_pid);
     }
 
@@ -299,10 +290,11 @@ fn snapshot(
     let statuses = pass.stop(&context);
     warn_if_sample_rate_lowered(&pass);
     let recorded_counters = pass.recorded_counters();
-    let collectors: Vec<mperf_data::SnapshotCollectorStatus> = statuses
+    let mut collectors: Vec<mperf_data::SnapshotCollectorStatus> = statuses
         .into_iter()
         .filter(|status| status.name != "pmu_sampling" || status.status != "available")
         .collect();
+    crate::windows_record::add_snapshot_collector(&mut collectors, &recorded_counters);
 
     let warnings = collectors
         .iter()
@@ -317,12 +309,7 @@ fn snapshot(
         ScenarioInfo::Snapshot(mperf_data::SnapshotInfo {
             pid: recorded_pid as i32,
             counters: recorded_counters,
-            scope: match (tree, pid.is_some()) {
-                (true, true) => "attached_tree_best_effort",
-                (true, false) => "launched_tree_inherited",
-                (false, _) => "legacy_root_only",
-            }
-            .to_string(),
+            scope: crate::windows_record::snapshot_scope(tree, pid.is_some()).to_string(),
             interval_ms: if tree { 1_000 } else { 0 },
             stop_reason,
             collectors: collectors.clone(),
@@ -411,44 +398,14 @@ fn root_alive(
 /// Ask the tree to exit, then insist. Members that ignore SIGTERM would
 /// otherwise outlive the recording that started them.
 fn terminate(process: &Process, root_pid: u32) {
-    let signal = |signal: i32| {
-        for member in libprof::process_tree(root_pid)
-            .unwrap_or_else(|| {
-                vec![libprof::ProcessStat {
-                    pid: root_pid,
-                    ..Default::default()
-                }]
-            })
-            .iter()
-            .filter(|member| member.state != b'Z')
-        {
-            unsafe { libc::kill(member.pid as i32, signal) };
-        }
-    };
-    signal(libc::SIGTERM);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while std::time::Instant::now() < deadline {
-        // Without a process tree the root is the only thing to wait on, and
-        // asking it directly is what keeps a well-behaved child from costing
-        // the full grace period.
-        let gone = match libprof::process_tree(root_pid) {
-            Some(tree) => tree
-                .iter()
-                .find(|member| member.pid == root_pid)
-                .is_none_or(|member| member.state == b'Z'),
-            None => process.try_wait().unwrap_or(true),
-        };
-        if gone {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+    if let Err(error) = process.terminate_tree(root_pid) {
+        eprintln!("Warning: failed to terminate profiled process: {error}");
     }
-    signal(libc::SIGKILL);
 }
 
 /// Publish a live process's executable mappings so its samples can be
 /// symbolized even when perf never reported them.
-fn publish_process_maps(dispatcher: &Arc<EventDispatcher>, pid: u32) {
+pub(crate) fn publish_process_maps(dispatcher: &Arc<EventDispatcher>, pid: u32) {
     for module in libprof::process_modules(pid) {
         dispatcher.record(Record::ProcAddr(module));
     }
@@ -459,6 +416,9 @@ fn topdown(
     command: &[String],
     output_directory: &Path,
 ) -> Result<(ScenarioInfo, Vec<mperf_data::SnapshotCollectorStatus>)> {
+    if crate::windows_record::uses_windows_topdown() {
+        return crate::windows_record::topdown(dispatcher, command, output_directory);
+    }
     let scenario = libprof::tma_scenario().context("TMA is not supported on this CPU")?;
     // Validate the formula groups, but do not turn each one into an independent
     // sampling leader. Multiple cycle leaders multiply the interrupt rate and
@@ -471,16 +431,17 @@ fn topdown(
     // Precise memory samples (PEBS/SPE) run in their own event slots and do
     // not compete with the topdown counter group, so a TMA recording gets
     // instruction-level memory attribution for free where the host has it.
+    let optional: Vec<Box<dyn libprof::Source>> = vec![
+        Box::new(libprof::InternalEventsSource {
+            roofline_instrumented: false,
+        }),
+        Box::new(libprof::PreciseMemorySource::default()),
+        Box::new(libprof::HostTelemetrySource::default()),
+    ];
     let pass = Pass {
         name: "tma",
         required: vec![Box::new(crate::source::pmu_sampling_source(Scenario::TMA))],
-        optional: vec![
-            Box::new(libprof::InternalEventsSource {
-                roofline_instrumented: false,
-            }),
-            Box::new(libprof::PreciseMemorySource::default()),
-            Box::new(libprof::HostTelemetrySource::default()),
-        ],
+        optional,
     };
     let mut pass = pass.resolve(output_directory)?;
     let child_env = pass.child_environment(output_directory);

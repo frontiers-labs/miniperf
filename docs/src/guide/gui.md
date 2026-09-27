@@ -5,7 +5,7 @@ mperf-gui results/tma
 mperf-gui
 ```
 
-`mperf-gui` is the desktop viewer. It runs on Linux and macOS, and Windows packages ship it on its own for viewing recordings made elsewhere. Without a directory argument it opens a welcome screen with an **Open recording** button and a list of recent recordings.
+`mperf-gui` is the desktop viewer. It runs on Linux, macOS, and Windows. The Windows package also includes `mperf.exe` for recording locally. Without a directory argument the GUI opens a welcome screen with an **Open recording** button and a list of recent recordings.
 
 ## Layout
 

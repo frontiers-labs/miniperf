@@ -12,6 +12,10 @@ use std::sync::Arc;
 
 use crate::{Counter, Error, Process, Record, SamplingDriverBuilder, Sink};
 
+#[cfg(target_os = "windows")]
+#[path = "sampling_probe/windows.rs"]
+mod windows;
+
 /// What a scenario's sampling group produced on this host.
 #[derive(Debug, Clone)]
 pub struct SamplingProbe {
@@ -64,18 +68,19 @@ impl Sink for CountingSink {
 
 /// Samples a short-lived spinning child with `counters` and reports the result.
 ///
-/// The child is a real `execve`'d process, so the group is exercised through
-/// the same enable-on-exec path a recording uses. It busy-loops in the shell
-/// itself and is killed after `millis`: a loop that forks a helper per
-/// iteration would put the work in grandchildren, which go uncounted wherever
-/// the kernel refuses inherited sampling groups, and the probe would report a
-/// working PMU as dead.
+/// The child is launched through the same process path as a recording and
+/// loops inside its shell until `millis` elapses. A loop that forks a helper
+/// per iteration would put work in grandchildren, which some sampling groups
+/// cannot count, and make a working PMU appear dead.
 pub fn probe_sampling_group(counters: &[Counter], millis: u64) -> Result<SamplingProbe, Error> {
+    #[cfg(not(target_os = "windows"))]
     let command = vec![
         "/bin/sh".to_owned(),
         "-c".to_owned(),
         "while :; do :; done".to_owned(),
     ];
+    #[cfg(target_os = "windows")]
+    let command = windows::workload_command();
     let process = Process::new(&command, &[]).map_err(|error| {
         Error::InvalidConfiguration(format!(
             "sampling probe could not start a workload: {error}"
@@ -86,13 +91,21 @@ pub fn probe_sampling_group(counters: &[Counter], millis: u64) -> Result<Samplin
         .counters(counters)
         .process(&process)
         .build()?;
-    let opened = driver.counters();
     let sink = Arc::new(CountingSink(AtomicUsize::new(0)));
 
     driver.start(sink.clone())?;
+    // Some backends can lose a hardware source while starting (for example,
+    // Windows falls back to a CPU-time sampler if ETW rejects the session).
+    // Report the counters that are actually active, not the planned set.
+    let opened = driver.counters();
     process.cont();
     std::thread::sleep(std::time::Duration::from_millis(millis));
-    unsafe { libc::kill(process.pid(), libc::SIGKILL) };
+    #[cfg(not(target_os = "windows"))]
+    unsafe {
+        libc::kill(process.pid(), libc::SIGKILL)
+    };
+    #[cfg(target_os = "windows")]
+    windows::stop_workload(&process);
     let _ = process.wait();
     driver.stop()?;
 

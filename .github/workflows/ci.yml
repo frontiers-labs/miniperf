@@ -97,6 +97,7 @@ jobs:
           - { label: ubuntu-24.04-arm,             platform: linux-aarch64,  os: linux }
           - { label: blacksmith-2vcpu-ubuntu-2404, platform: linux-x86_64,   os: linux }
           - { label: macos-14,                     platform: macos-aarch64,  os: macos }
+          - { label: windows-2022,                 platform: windows-x86_64, os: windows }
     defaults:
       run:
         shell: bash
@@ -110,6 +111,9 @@ jobs:
         id: unpack
         run: |
           root="$(utils/unpack-package.sh dist pkg)"
+          if [[ "${{ matrix.os }}" == windows ]]; then
+            root="$(cygpath -m "${root}")"
+          fi
           echo "root=${root}" >> "$GITHUB_OUTPUT"
       # The OMPT and MPI shims are only observable through a runtime that
       # implements them: libgomp has no OMPT interface, so without clang and
@@ -126,11 +130,18 @@ jobs:
         if: matrix.os == 'linux'
         run: sudo sysctl -w kernel.perf_event_paranoid=-1
       - name: Run checks
+        if: matrix.os != 'windows'
         id: checks
         env:
           MPERF_PACKAGE: ${{ steps.unpack.outputs.root }}
           CHECK_WORK: ${{ github.workspace }}/check-work
         run: checks/run
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: matrix.os == 'windows'
+      - name: Check Windows stat, recordings, and GUI
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: ./checks/windows-smoke.ps1 -PackageRoot '${{ steps.unpack.outputs.root }}'
       - name: Publish the recordings these checks made
         if: always()
         uses: actions/upload-artifact@v4

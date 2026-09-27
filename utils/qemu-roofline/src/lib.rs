@@ -1,6 +1,7 @@
 //! QEMU TCG plugin for roofline/memory accounting. All analysis and artifact
 //! writing lives in `miniperf-roofline-core`; this crate is the QEMU plugin
 //! API adapter.
+#![cfg(not(target_os = "windows"))]
 
 use roofline_core::{
     active_elements, artifacts, classify_flow, classify_riscv, classify_x86, is_masked, mnemonic,

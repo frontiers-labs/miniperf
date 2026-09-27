@@ -8,8 +8,10 @@
 //! ```sh
 //! cargo run --example sampling_probe
 //! ```
+#[cfg(not(target_os = "windows"))]
 use libprof::{probe_sampling_group, Counter};
 
+#[cfg(not(target_os = "windows"))]
 fn main() -> anyhow::Result<()> {
     let narrow = std::env::var_os("NARROW").is_some();
     let requested = if narrow {
@@ -87,4 +89,9 @@ fn main() -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn main() {
+    eprintln!("this example compares perf_event hardware groups, which are unavailable on Windows");
 }

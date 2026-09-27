@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! miniperf libc proxy (the one genuine LD_PRELOAD shim): allocator family
 //! with size + pointer (lifetime pairing via flow_id) + call stack, anonymous
 //! mmap/munmap, sbrk, and pthread lifecycle markers. Forwards to the

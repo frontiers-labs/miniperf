@@ -18,6 +18,7 @@ use crate::{Scenario, event_dispatcher::EventDispatcher, utils::counter_to_event
 
 mod calibrate;
 mod loops;
+mod platform;
 mod qemu;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
@@ -577,7 +578,13 @@ async fn profile_command(
         env.extend(source.child_environment(directory));
     }
     let process = Process::new(command, &env)?;
+    platform::publish_initial_process_maps(&dispatcher, process.pid() as u32);
     let sampler_stop = Arc::new(AtomicBool::new(false));
+    let module_thread = platform::start_module_poller(
+        dispatcher.clone(),
+        process.pid() as u32,
+        sampler_stop.clone(),
+    );
     let bandwidth_thread =
         bandwidth_output.and_then(|path| start_bandwidth_timeline(path, sampler_stop.clone()));
     let rss_thread = rss_output.map(|path| {
@@ -607,10 +614,7 @@ async fn profile_command(
         .map(|counter| counter.name())
         .collect::<Vec<_>>();
     if !shed.is_empty() {
-        let warning = format!(
-            "this host's PMU cannot run the full sampling group, so these counters were not sampled: {}",
-            shed.join(", ")
-        );
+        let warning = platform::missing_counters_warning(&shed);
         eprintln!("Warning: {warning}");
         warnings.push(warning);
     }
@@ -627,6 +631,11 @@ async fn profile_command(
     process.cont();
     process.wait()?;
     sampler_stop.store(true, Ordering::Relaxed);
+    if let Some(module_thread) = module_thread {
+        module_thread
+            .join()
+            .map_err(|_| anyhow::anyhow!("module map poller panicked"))?;
+    }
     if let Some(thread) = rss_thread {
         thread
             .join()
@@ -743,19 +752,8 @@ fn sample_memory_timeline(pid: i32, output: &Path, stop: Arc<AtomicBool>) -> Res
     let mut file = std::fs::File::create(output)
         .with_context(|| format!("create RSS timeline '{}'", output.display()))?;
     while !stop.load(Ordering::Relaxed) {
-        if let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status"))
-            && let Some(kbytes) = status
-                .lines()
-                .find_map(|line| line.strip_prefix("VmRSS:"))
-                .and_then(|value| value.split_whitespace().next())
-                .and_then(|value| value.parse::<u64>().ok())
-        {
-            writeln!(
-                file,
-                "{} {}",
-                monotonic_timestamp()?,
-                kbytes.saturating_mul(1024)
-            )?;
+        if let Some(bytes) = libprof::process_rss_bytes(pid as u32) {
+            writeln!(file, "{} {}", monotonic_timestamp()?, bytes)?;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
@@ -849,12 +847,5 @@ fn memory_preload_path() -> Option<PathBuf> {
 }
 
 fn monotonic_timestamp() -> Result<u64> {
-    let mut timestamp = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut timestamp) } != 0 {
-        return Err(std::io::Error::last_os_error()).context("read monotonic clock");
-    }
-    Ok((timestamp.tv_sec as u64) * 1_000_000_000 + timestamp.tv_nsec as u64)
+    libprof::monotonic_timestamp_ns().context("read monotonic clock")
 }

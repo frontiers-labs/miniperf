@@ -490,7 +490,11 @@ pub fn do_doctor() -> Result<()> {
     } else {
         format!("{vendor} {model}")
     };
-    let checks = checks(&caps, &Tooling::probe(), &HostProbe::measure());
+    let checks = if windows::is_host() {
+        windows::windows_checks()
+    } else {
+        checks(&caps, &Tooling::probe(), &HostProbe::measure())
+    };
 
     println!(
         "mperf doctor - {cpu} ({}), kernel {}\n",
@@ -510,3 +514,6 @@ pub fn do_doctor() -> Result<()> {
     println!("\nno blockers found");
     Ok(())
 }
+
+#[path = "doctor/windows.rs"]
+mod windows;

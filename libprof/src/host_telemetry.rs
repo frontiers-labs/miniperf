@@ -261,6 +261,11 @@ mod imp {
     }
 
     impl HostTelemetry {
+        /// Source label for Linux host telemetry and availability.
+        pub fn source_name() -> &'static str {
+            "sysfs"
+        }
+
         /// Discover sensors once. Clocks are grouped by cpufreq policy domain;
         /// `clusters` maps a CPU-family id to its logical CPUs and is used only
         /// to *label* those domains, since a family can span several domains
@@ -904,6 +909,11 @@ mod imp {
     }
 
     impl HostTelemetry {
+        /// Source label for macOS host telemetry and availability.
+        pub fn source_name() -> &'static str {
+            "macos_thermal"
+        }
+
         /// Discover sensors once. `clusters` maps a cluster id to its logical
         /// CPUs; an empty slice means one `"host"` cluster. `Ok(None)` when
         /// the host exposes neither clocks nor temperatures.
@@ -1020,15 +1030,24 @@ mod imp {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "windows")]
+#[path = "host_telemetry/windows.rs"]
+mod imp;
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use imp::HostTelemetry;
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 /// Unsupported-platform stub.
 pub struct HostTelemetry;
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 impl HostTelemetry {
+    /// Source label for unsupported-platform telemetry.
+    pub fn source_name() -> &'static str {
+        "unavailable"
+    }
+
     /// No host clock or thermal sensors are available.
     pub fn start(_clusters: &[(String, Vec<u32>)]) -> io::Result<Option<Self>> {
         Ok(None)

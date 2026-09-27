@@ -13,6 +13,9 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
+#[path = "../../src/dynload.rs"]
+mod dynload;
+
 const CUPTI_API_ENTER: c_int = 0;
 const CUPTI_API_EXIT: c_int = 1;
 const CB_DOMAIN_DRIVER_API: c_int = 1;
@@ -60,6 +63,7 @@ const KIND_END: u8 = 1;
 static CORE_REGISTER: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static CORE_EMIT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static CORE_TIMESTAMP: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static CORE_DEVICE_CLOCK: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 static CUPTI_TIMESTAMP: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 struct HandleCache {
@@ -153,7 +157,7 @@ fn calibrate() {
         return;
     }
     let after = unsafe { core_timestamp() };
-    let core = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"mperf_trace_device_clock".as_ptr()) };
+    let core = CORE_DEVICE_CLOCK.load(Ordering::Acquire);
     if core.is_null() {
         return;
     }
@@ -172,31 +176,39 @@ pub extern "C" fn InitializeInjection() -> c_int {
         return 1;
     }
     let collector = std::env::var("MPERF_COLLECTOR_LIBRARY")
-        .unwrap_or_else(|_| "libmperf_collector.so".to_string());
+        .unwrap_or_else(|_| dynload::CORE_LIBRARY.to_string());
     let Ok(collector) = std::ffi::CString::new(collector) else {
         return 1;
     };
-    let core = unsafe { libc::dlopen(collector.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL) };
+    let core = unsafe { dynload::load(&collector) };
     if core.is_null() {
         return 1;
     }
-    let register = unsafe { libc::dlsym(core, c"mperf_trace_register".as_ptr()) };
-    let emit = unsafe { libc::dlsym(core, c"mperf_trace_emit".as_ptr()) };
-    let timestamp = unsafe { libc::dlsym(core, c"mperf_trace_timestamp".as_ptr()) };
+    let register = unsafe { dynload::symbol(core, c"mperf_trace_register") };
+    let emit = unsafe { dynload::symbol(core, c"mperf_trace_emit") };
+    let timestamp = unsafe { dynload::symbol(core, c"mperf_trace_timestamp") };
     if register.is_null() || emit.is_null() || timestamp.is_null() {
         return 1;
     }
     CORE_REGISTER.store(register, Ordering::Release);
     CORE_EMIT.store(emit, Ordering::Release);
     CORE_TIMESTAMP.store(timestamp, Ordering::Release);
+    CORE_DEVICE_CLOCK.store(
+        unsafe { dynload::symbol(core, c"mperf_trace_device_clock") },
+        Ordering::Release,
+    );
 
+    #[cfg(windows)]
+    let cupti = std::env::var("MPERF_CUPTI_LIBRARY")
+        .ok()
+        .and_then(|path| std::ffi::CString::new(path).ok())
+        .map(|path| unsafe { dynload::load(&path) })
+        .unwrap_or_else(|| unsafe { dynload::load(c"cupti64.dll") });
+    #[cfg(unix)]
     let cupti = unsafe {
-        let handle = libc::dlopen(c"libcupti.so".as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL);
+        let handle = dynload::load(c"libcupti.so");
         if handle.is_null() {
-            libc::dlopen(
-                c"libcupti.so.12".as_ptr(),
-                libc::RTLD_NOW | libc::RTLD_GLOBAL,
-            )
+            dynload::load(c"libcupti.so.12")
         } else {
             handle
         }
@@ -204,9 +216,9 @@ pub extern "C" fn InitializeInjection() -> c_int {
     if cupti.is_null() {
         return 1;
     }
-    let subscribe = unsafe { libc::dlsym(cupti, c"cuptiSubscribe".as_ptr()) };
-    let enable_domain = unsafe { libc::dlsym(cupti, c"cuptiEnableDomain".as_ptr()) };
-    let get_timestamp = unsafe { libc::dlsym(cupti, c"cuptiGetTimestamp".as_ptr()) };
+    let subscribe = unsafe { dynload::symbol(cupti, c"cuptiSubscribe") };
+    let enable_domain = unsafe { dynload::symbol(cupti, c"cuptiEnableDomain") };
+    let get_timestamp = unsafe { dynload::symbol(cupti, c"cuptiGetTimestamp") };
     if subscribe.is_null() || enable_domain.is_null() {
         return 1;
     }

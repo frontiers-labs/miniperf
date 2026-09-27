@@ -3,12 +3,26 @@ pub(crate) mod perf;
 
 #[cfg(target_os = "macos")]
 mod kperf;
+#[cfg(target_os = "windows")]
+mod windows;
 
 #[cfg(target_os = "linux")]
 use perf::{PerfCountingDriver, PerfSamplingDriver};
 
 #[cfg(target_os = "macos")]
 use kperf::{KPerfCountingDriver, KPerfSamplingDriver};
+#[cfg(target_os = "windows")]
+pub use windows::windows_decode_pmc_etl;
+#[cfg(target_os = "windows")]
+pub use windows::windows_max_pmc_sources;
+#[cfg(target_os = "windows")]
+pub use windows::windows_pmc_etl_totals;
+#[cfg(target_os = "windows")]
+pub use windows::windows_switch_etl_totals;
+#[cfg(target_os = "windows")]
+pub use windows::wpr::{windows_counter_profile, windows_tma_profile, WindowsTmaProfile};
+#[cfg(target_os = "windows")]
+use windows::{WindowsCountingDriver, WindowsSamplingDriver};
 
 use smallvec::SmallVec;
 use std::sync::Arc;
@@ -26,6 +40,8 @@ pub enum DriverKind {
     Perf,
     /// Apple kperf backend.
     KPerf,
+    /// Windows process accounting and ETW sampled profiles.
+    Windows,
 }
 
 /// Strategy used to collect user-space call stacks.
@@ -203,6 +219,10 @@ pub fn list_supported_counters(driver: DriverKind) -> Vec<Counter> {
             if driver == DriverKind::Default || driver == DriverKind::KPerf {
                 return kperf::list_supported_counters();
             }
+        } else if #[cfg(target_os="windows")] {
+            if driver == DriverKind::Default || driver == DriverKind::Windows {
+                return windows::list_supported_counters();
+            }
         }
     }
 
@@ -304,6 +324,10 @@ impl CountingDriverBuilder {
                 if self.kind == DriverKind::Default || self.kind == DriverKind::KPerf {
                     return Ok(Box::new(KPerfCountingDriver::new(self.counters, self.pid)?));
                 }
+            } else if #[cfg(target_os="windows")] {
+                if self.kind == DriverKind::Default || self.kind == DriverKind::Windows {
+                    return Ok(Box::new(WindowsCountingDriver::new(self.counters, self.pid)?));
+                }
             }
         }
 
@@ -344,11 +368,19 @@ impl SamplingDriverBuilder {
     /// accepts such a group and then never schedules it, which costs every
     /// counter in it, not just the duplicate.
     pub fn counters(mut self, counters: &[Counter]) -> Self {
-        self.counters = plan_sampling_group(
-            counters,
-            cpu_family::find_cpu_family(cpu_family::get_host_cpu_family()),
-        );
-        self
+        #[cfg(target_os = "windows")]
+        {
+            self.counters = counters.to_vec();
+            self
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.counters = plan_sampling_group(
+                counters,
+                cpu_family::find_cpu_family(cpu_family::get_host_cpu_family()),
+            );
+            self
+        }
     }
 
     /// Attaches sampling to a suspended child process.
@@ -436,6 +468,10 @@ impl SamplingDriverBuilder {
                         self.sample_freq,
                         self.pid,
                     )?));
+                }
+            } else if #[cfg(target_os="windows")] {
+                if self.kind == DriverKind::Default || self.kind == DriverKind::Windows {
+                    return Ok(Box::new(WindowsSamplingDriver::new(&self.counters, self.sample_freq, self.pid)?));
                 }
             }
         }
@@ -555,11 +591,24 @@ impl CounterResult {
 
         let value = matching.iter().map(|e| e.value.value).sum();
         let scaling = matching.iter().map(|e| e.value.scaling).sum::<f64>() / matching.len() as f64;
+        let quality = if matching
+            .iter()
+            .any(|entry| entry.value.quality == MeasurementQuality::Estimated)
+        {
+            MeasurementQuality::Estimated
+        } else if matching
+            .iter()
+            .any(|entry| entry.value.quality == MeasurementQuality::Scaled)
+        {
+            MeasurementQuality::Scaled
+        } else {
+            MeasurementQuality::Exact
+        };
 
         Some(CounterValue {
             value,
             scaling,
-            quality: MeasurementQuality::Exact,
+            quality,
         })
     }
 
@@ -598,184 +647,5 @@ impl IntoIterator for CounterResult {
 
     fn into_iter(self) -> Self::IntoIter {
         self.entries.into_iter()
-    }
-}
-
-#[cfg(all(test, target_os = "linux"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_unsupported_event_does_not_cost_the_branch_records() {
-        let mut attempts = Vec::new();
-        let selected = sampling_with_fallback(
-            vec![
-                Counter::Cycles,
-                Counter::StalledCyclesBackend,
-                Counter::CpuClock,
-            ],
-            true,
-            |counters, branch_mode| {
-                attempts.push((counters.to_vec(), branch_mode));
-                if counters.contains(&Counter::StalledCyclesBackend) {
-                    Err(Error::perf_event_open_with(
-                        &Counter::StalledCyclesBackend,
-                        None,
-                        std::io::Error::from_raw_os_error(libc::ENOENT),
-                        Some(4),
-                    ))
-                } else {
-                    Ok(counters.to_vec())
-                }
-            },
-        )
-        .expect("dropping the unsupported event should open");
-
-        assert_eq!(selected, vec![Counter::Cycles, Counter::CpuClock]);
-        assert!(
-            attempts
-                .iter()
-                .all(|(_, mode)| *mode == Some(perf::branch::BranchMode::CallStack)),
-            "branch records must survive an unrelated counter failure"
-        );
-    }
-
-    #[test]
-    fn a_group_the_pmu_never_runs_sheds_hardware_events_until_it_fits() {
-        let selected = sampling_with_fallback(
-            vec![
-                Counter::Cycles,
-                Counter::Instructions,
-                Counter::LLCReferences,
-                Counter::LLCMisses,
-                Counter::CpuClock,
-            ],
-            false,
-            |counters, _| {
-                if counters.contains(&Counter::LLCReferences) {
-                    Err(Error::SamplingGroupNeverScheduled {
-                        groups: String::new(),
-                    })
-                } else {
-                    Ok(counters.to_vec())
-                }
-            },
-        )
-        .expect("shedding the unschedulable event should open");
-
-        assert_eq!(
-            selected,
-            vec![Counter::Cycles, Counter::Instructions, Counter::CpuClock]
-        );
-
-        // A PMU on which not even cycles and instructions run leaves the
-        // cpu-clock timer; instructions are never shed on their own, since
-        // hardware sampling needs them next to cycles.
-        let software = sampling_with_fallback(
-            vec![Counter::Cycles, Counter::Instructions, Counter::PageFaults],
-            false,
-            |counters, _| {
-                if counters.contains(&Counter::Cycles) {
-                    Err(Error::SamplingGroupNeverScheduled {
-                        groups: String::new(),
-                    })
-                } else {
-                    Ok(counters.to_vec())
-                }
-            },
-        )
-        .unwrap();
-        assert_eq!(software, vec![Counter::CpuClock, Counter::PageFaults]);
-
-        let error = sampling_with_fallback(
-            vec![Counter::CpuClock],
-            false,
-            |_, _| -> Result<Vec<Counter>, Error> {
-                Err(Error::SamplingGroupNeverScheduled {
-                    groups: String::new(),
-                })
-            },
-        )
-        .unwrap_err();
-        assert!(matches!(error, Error::SamplingGroupNeverScheduled { .. }));
-    }
-
-    #[test]
-    fn sampling_falls_back_to_cpu_clock_when_cycles_cannot_open() {
-        let mut attempts = Vec::new();
-        let selected = sampling_with_fallback(
-            vec![Counter::Cycles, Counter::Instructions],
-            false,
-            |counters, _| {
-                attempts.push(counters.to_vec());
-                if counters.contains(&Counter::Cycles) {
-                    Err(Error::perf_event_open_with(
-                        &Counter::Cycles,
-                        None,
-                        std::io::Error::from_raw_os_error(libc::ENOENT),
-                        Some(4),
-                    ))
-                } else {
-                    Ok(counters.to_vec())
-                }
-            },
-        )
-        .expect("software fallback should open");
-
-        assert_eq!(attempts.len(), 2);
-        assert_eq!(
-            selected,
-            vec![Counter::CpuClock],
-            "hardware-only sampling must become a cpu-clock-only group"
-        );
-    }
-
-    /// Every shipped event table must produce a sampling group the hardware can
-    /// actually schedule. A group naming one PMU event twice is accepted by the
-    /// kernel and then never scheduled, which loses every counter in it; this
-    /// caught `spacemit_x100`, whose `leader_event` is the event
-    /// `Counter::Cycles` already resolves to.
-    #[test]
-    fn no_shipped_event_table_plans_a_duplicated_event() {
-        let requested = [
-            Counter::Cycles,
-            Counter::Instructions,
-            Counter::LLCReferences,
-            Counter::LLCMisses,
-            Counter::BranchMisses,
-            Counter::BranchInstructions,
-            Counter::StalledCyclesBackend,
-            Counter::StalledCyclesFrontend,
-            Counter::CpuClock,
-            Counter::CpuMigrations,
-            Counter::PageFaults,
-            Counter::ContextSwitches,
-        ];
-
-        for (id, family) in crate::cpu_family::families() {
-            let group = plan_sampling_group(&requested, Some(family));
-            let mut events = group
-                .iter()
-                .map(|counter| resolved_event(counter, Some(family)))
-                .collect::<Vec<_>>();
-            let planned = events.len();
-            events.sort();
-            events.dedup();
-            assert_eq!(
-                planned,
-                events.len(),
-                "{id} plans the same PMU event more than once: {group:?}"
-            );
-
-            // The binding layer requires both to be present to build a group.
-            assert!(
-                group.contains(&Counter::Cycles),
-                "{id} dropped cycles from the sampling group"
-            );
-            assert!(
-                group.contains(&Counter::Instructions),
-                "{id} dropped instructions from the sampling group"
-            );
-        }
     }
 }

@@ -8,6 +8,9 @@ use std::cell::Cell;
 use std::ffi::{c_char, c_int, c_void};
 use std::sync::atomic::{AtomicPtr, Ordering};
 
+#[path = "../../src/dynload.rs"]
+mod dynload;
+
 const KIND_BEGIN: u8 = 0;
 const KIND_END: u8 = 1;
 const KIND_INSTANT: u8 = 2;
@@ -264,16 +267,16 @@ unsafe extern "C" fn tool_initialize(
     _tool_data: *mut OmptData,
 ) -> c_int {
     let library = std::env::var("MPERF_COLLECTOR_LIBRARY")
-        .unwrap_or_else(|_| "libmperf_collector.so".to_string());
+        .unwrap_or_else(|_| dynload::CORE_LIBRARY.to_string());
     let Ok(library) = std::ffi::CString::new(library) else {
         return 0;
     };
-    let core = unsafe { libc::dlopen(library.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL) };
+    let core = unsafe { dynload::load(&library) };
     if core.is_null() {
         return 0;
     }
-    let register = unsafe { libc::dlsym(core, c"mperf_trace_register".as_ptr()) };
-    let emit = unsafe { libc::dlsym(core, c"mperf_trace_emit".as_ptr()) };
+    let register = unsafe { dynload::symbol(core, c"mperf_trace_register") };
+    let emit = unsafe { dynload::symbol(core, c"mperf_trace_emit") };
     if register.is_null() || emit.is_null() {
         return 0;
     }

@@ -1,6 +1,12 @@
 use std::{env, path::PathBuf, process::Command};
 
 fn main() {
+    // The C smoke fixtures use POSIX clocks and pthreads. They are only used
+    // by the Unix packaging checks; the Windows binary has no dependency on
+    // either fixture or on a Unix C compiler.
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        return;
+    }
     println!("cargo:rerun-if-changed=src/roofline/calibrate_rvv.c");
     println!("cargo:rerun-if-changed=../utils/profile_smoke.c");
     println!("cargo:rerun-if-changed=../utils/roofline_threads.c");

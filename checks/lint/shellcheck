@@ -11,5 +11,5 @@ fi
 targets=()
 while IFS= read -r target; do
     targets+=("${target}")
-done < <(git ls-files 'checks/*' 'utils/*.sh' | grep -v '^checks/fixtures/')
+done < <(git ls-files 'checks/*' 'utils/*.sh' | grep -vE '^checks/fixtures/|\.ps1$')
 shellcheck --shell=bash --external-sources "${targets[@]}"

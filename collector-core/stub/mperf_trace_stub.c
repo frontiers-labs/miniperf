@@ -3,8 +3,20 @@
  * otherwise every call costs one predictable branch. */
 #include "../include/mperf_trace.h"
 
-#include <dlfcn.h>
 #include <stdlib.h>
+#ifdef _WIN32
+#include <windows.h>
+#define MPERF_SYMBOL(module, name) GetProcAddress((HMODULE)(module), (name))
+static void *mperf_open_library(const char *name) {
+    return (void *)LoadLibraryA(name ? name : "mperf_collector.dll");
+}
+#else
+#include <dlfcn.h>
+#define MPERF_SYMBOL(module, name) dlsym((module), (name))
+static void *mperf_open_library(const char *name) {
+    return dlopen(name ? name : "libmperf_collector.so", RTLD_NOW | RTLD_GLOBAL);
+}
+#endif
 
 typedef struct {
     mperf_trace_handle_t *(*reg)(const mperf_trace_payload_t *);
@@ -26,23 +38,22 @@ static int mperf_resolve(void) {
         return mperf_state;
     }
     const char *library = getenv("MPERF_COLLECTOR_LIBRARY");
-    void *core = dlopen(library ? library : "libmperf_collector.so",
-                        RTLD_NOW | RTLD_GLOBAL);
+    void *core = mperf_open_library(library);
     if (!core) {
         mperf_state = -1;
         return mperf_state;
     }
     mperf_vtable.reg = (mperf_trace_handle_t * (*)(const mperf_trace_payload_t *))
-        dlsym(core, "mperf_trace_register");
-    mperf_vtable.begin = (uint64_t (*)(mperf_trace_handle_t *, uint64_t))dlsym(
+        MPERF_SYMBOL(core, "mperf_trace_register");
+    mperf_vtable.begin = (uint64_t (*)(mperf_trace_handle_t *, uint64_t))MPERF_SYMBOL(
         core, "mperf_trace_begin");
-    mperf_vtable.end = (void (*)(mperf_trace_handle_t *, uint64_t))dlsym(
+    mperf_vtable.end = (void (*)(mperf_trace_handle_t *, uint64_t))MPERF_SYMBOL(
         core, "mperf_trace_end");
-    mperf_vtable.instant = (void (*)(mperf_trace_handle_t *, int64_t))dlsym(
+    mperf_vtable.instant = (void (*)(mperf_trace_handle_t *, int64_t))MPERF_SYMBOL(
         core, "mperf_trace_instant");
-    mperf_vtable.counter = (void (*)(mperf_trace_handle_t *, int64_t))dlsym(
+    mperf_vtable.counter = (void (*)(mperf_trace_handle_t *, int64_t))MPERF_SYMBOL(
         core, "mperf_trace_counter");
-    mperf_vtable.shutdown = (void (*)(void))dlsym(core, "mperf_trace_shutdown");
+    mperf_vtable.shutdown = (void (*)(void))MPERF_SYMBOL(core, "mperf_trace_shutdown");
     mperf_state = mperf_vtable.reg ? 1 : -1;
     return mperf_state;
 }
@@ -103,16 +114,19 @@ static int mperf_roofline_resolve(void) {
         return mperf_roofline_state;
     }
     const char *library = getenv("MPERF_COLLECTOR_LIBRARY");
-    void *core = dlopen(library ? library : "libmperf_collector.so",
-                        RTLD_NOW | RTLD_GLOBAL);
+    void *core = mperf_open_library(library);
+    if (!core) {
+        mperf_roofline_state = -1;
+        return mperf_roofline_state;
+    }
     mperf_roofline_vtable.begin = (mperf_roofline_handle_t * (*)(const void *))
-        dlsym(core, "mperf_roofline_internal_notify_loop_begin");
-    mperf_roofline_vtable.end = (void (*)(mperf_roofline_handle_t *))dlsym(
+        MPERF_SYMBOL(core, "mperf_roofline_internal_notify_loop_begin");
+    mperf_roofline_vtable.end = (void (*)(mperf_roofline_handle_t *))MPERF_SYMBOL(
         core, "mperf_roofline_internal_notify_loop_end");
     mperf_roofline_vtable.stats =
-        (void (*)(mperf_roofline_handle_t *, const void *))dlsym(
+        (void (*)(mperf_roofline_handle_t *, const void *))MPERF_SYMBOL(
             core, "mperf_roofline_internal_notify_loop_stats");
-    mperf_roofline_vtable.is_instrumented = (int (*)(void))dlsym(
+    mperf_roofline_vtable.is_instrumented = (int (*)(void))MPERF_SYMBOL(
         core, "mperf_roofline_internal_is_instrumented_profiling");
     mperf_roofline_state = mperf_roofline_vtable.begin ? 1 : -1;
     return mperf_roofline_state;

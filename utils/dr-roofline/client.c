@@ -33,7 +33,7 @@
 
 static rc_session_t *session;
 static uint32_t target;
-static bool in_child; /* forked child: do not write artifacts */
+static bool in_child; /* forked Unix child: do not write artifacts */
 static bool debug_unclassified;
 static bool debug_classify;
 static bool memory_profile;
@@ -445,6 +445,7 @@ event_thread_init(void *drcontext)
     drmgr_set_tls_field(drcontext, tls_index, (void *)(uintptr_t)index);
 }
 
+#ifdef UNIX
 static void
 event_fork_init(void *drcontext)
 {
@@ -452,6 +453,7 @@ event_fork_init(void *drcontext)
      * child_process_seen semantics. */
     in_child = true;
 }
+#endif
 
 static void
 event_exit(void)
@@ -462,7 +464,11 @@ event_exit(void)
         drx_buf_free(record_buf);
         record_buf = NULL;
     }
+#ifdef UNIX
     if (!in_child && session != NULL) {
+#else
+    if (session != NULL) {
+#endif
         dr_mutex_lock(bb_list_lock);
         for (bb_data_t *data = bb_list; data != NULL; data = data->next) {
             if (data->executions == 0)
@@ -608,6 +614,26 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
             }
         }
 #endif
+#ifdef WINDOWS
+        /* Windows module_data_t has no segments array. Query mapped regions
+         * for the first executable page so image_start matches the PE text
+         * section address used by the host when it computes load bias. */
+        for (byte *pc = main_module->start; pc < main_module->end;) {
+            byte *base = NULL;
+            size_t size = 0;
+            uint prot = 0;
+            if (!dr_query_memory(pc, &base, &size, &prot) || size == 0) {
+                pc += 4096;
+                continue;
+            }
+            if ((prot & DR_MEMPROT_EXEC) != 0) {
+                text_start = (uint64_t)(uintptr_t)base;
+                break;
+            }
+            byte *next = base + size;
+            pc = next > pc ? next : pc + 4096;
+        }
+#endif
         rc_session_set_image(session, text_start,
                              (uint64_t)(uintptr_t)main_module->end,
                              (uint64_t)(uintptr_t)main_module->entry_point);
@@ -630,6 +656,8 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
         !drmgr_register_bb_instrumentation_event(event_bb_analysis,
                                                  event_bb_insertion, NULL))
         DR_ASSERT(false);
+#ifdef UNIX
     dr_register_fork_init_event(event_fork_init);
+#endif
     drmgr_register_exit_event(event_exit);
 }

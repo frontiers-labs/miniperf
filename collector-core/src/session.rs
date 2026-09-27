@@ -91,12 +91,35 @@ pub fn thread_is_internal() -> bool {
 }
 
 pub fn timestamp_ns() -> u64 {
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
-    (ts.tv_sec as u64) * 1_000_000_000 + ts.tv_nsec as u64
+    #[cfg(windows)]
+    {
+        use std::sync::OnceLock;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn QueryPerformanceCounter(value: *mut i64) -> i32;
+            fn QueryPerformanceFrequency(value: *mut i64) -> i32;
+        }
+        static FREQUENCY: OnceLock<i64> = OnceLock::new();
+        let frequency = *FREQUENCY.get_or_init(|| {
+            let mut value = 0;
+            unsafe { QueryPerformanceFrequency(&mut value) };
+            value
+        });
+        let mut counter = 0;
+        if frequency <= 0 || unsafe { QueryPerformanceCounter(&mut counter) } == 0 {
+            return 0;
+        }
+        return (counter as u128 * 1_000_000_000 / frequency as u128) as u64;
+    }
+    #[cfg(unix)]
+    {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+        (ts.tv_sec as u64) * 1_000_000_000 + ts.tv_nsec as u64
+    }
 }
 
 fn current_thread_id() -> u32 {
@@ -109,6 +132,14 @@ fn current_thread_id() -> u32 {
         let mut tid = 0_u64;
         unsafe { libc::pthread_threadid_np(0, &mut tid) };
         tid as u32
+    }
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentThreadId() -> u32;
+        }
+        unsafe { GetCurrentThreadId() }
     }
 }
 
@@ -128,6 +159,7 @@ pub fn collector() -> Option<Arc<Collector>> {
         *guard = Some(Collector::start(PathBuf::from(dir)));
         INIT_HOOKS.get_or_init(|| unsafe {
             libc::atexit(atexit_shutdown);
+            #[cfg(unix)]
             libc::pthread_atfork(None, None, Some(atfork_child));
         });
     }
@@ -138,6 +170,7 @@ extern "C" fn atexit_shutdown() {
     shutdown();
 }
 
+#[cfg(unix)]
 extern "C" fn atfork_child() {
     FORKED.store(true, Ordering::Release);
 }
@@ -562,6 +595,7 @@ pub fn current_tid() -> u32 {
 }
 
 fn write_process_metadata(dir: &Path, pid: u32, collector: &Collector) {
+    #[cfg(unix)]
     let hostname = {
         let mut buffer = [0u8; 256];
         let ok =
@@ -569,6 +603,20 @@ fn write_process_metadata(dir: &Path, pid: u32, collector: &Collector) {
         if ok == 0 {
             let end = buffer.iter().position(|byte| *byte == 0).unwrap_or(0);
             String::from_utf8_lossy(&buffer[..end]).into_owned()
+        } else {
+            String::new()
+        }
+    };
+    #[cfg(windows)]
+    let hostname = {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetComputerNameW(buffer: *mut u16, size: *mut u32) -> i32;
+        }
+        let mut buffer = [0u16; 256];
+        let mut len = buffer.len() as u32;
+        if unsafe { GetComputerNameW(buffer.as_mut_ptr(), &mut len) } != 0 {
+            String::from_utf16_lossy(&buffer[..len as usize])
         } else {
             String::new()
         }
@@ -584,7 +632,7 @@ fn write_process_metadata(dir: &Path, pid: u32, collector: &Collector) {
     };
     let json = format!(
         "{{\"pid\":{pid},\"ppid\":{},\"exe\":{},\"hostname\":{},\"rank\":{rank}}}",
-        unsafe { libc::getppid() },
+        parent_pid(),
         json_string(&exe),
         json_string(&hostname),
     );
@@ -592,6 +640,18 @@ fn write_process_metadata(dir: &Path, pid: u32, collector: &Collector) {
     if let Err(err) = std::fs::write(&path, json) {
         eprintln!("mperf-collector: failed to write {}: {err}", path.display());
     }
+}
+
+#[cfg(unix)]
+fn parent_pid() -> u32 {
+    unsafe { libc::getppid() as u32 }
+}
+
+#[cfg(windows)]
+fn parent_pid() -> u32 {
+    // Windows has no direct getppid equivalent; an unknown parent is recorded
+    // as zero until the launcher supplies richer process metadata.
+    0
 }
 
 fn json_string(value: &str) -> String {

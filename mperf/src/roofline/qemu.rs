@@ -43,7 +43,7 @@ pub(super) struct QemuBackend {
     not(target_os = "linux"),
     expect(
         dead_code,
-        reason = "QEMU and DynamoRIO accounting tools are constructed only on Linux"
+        reason = "some accounting variants are unavailable on this host"
     )
 )]
 pub(super) enum AccountingTool {
@@ -240,16 +240,16 @@ impl QemuBackend {
         })
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     pub(super) fn new_dynamorio(
         _options: &Options,
         _method: RooflineMethodInfo,
         _memory_profile: bool,
     ) -> Result<Self> {
-        anyhow::bail!("the DynamoRIO roofline backend supports Linux hosts only");
+        anyhow::bail!("the DynamoRIO roofline backend supports Linux and Windows hosts only");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     pub(super) fn new_dynamorio(
         options: &Options,
         mut method: RooflineMethodInfo,
@@ -551,18 +551,18 @@ pub(super) fn probe(options: &Options, guest: &Path) -> Result<()> {
     ensure_plugin_support(&qemu)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub(super) fn probe_dynamorio(_options: &Options) -> Result<()> {
-    anyhow::bail!("the DynamoRIO roofline backend supports Linux hosts only")
+    anyhow::bail!("the DynamoRIO roofline backend supports Linux and Windows hosts only")
 }
 
 /// Checks that drrun and the miniperf DynamoRIO client are available.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 pub(super) fn probe_dynamorio(options: &Options) -> Result<()> {
     dynamorio_paths(options).map(|_| ())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn dynamorio_paths(options: &Options) -> Result<(PathBuf, PathBuf)> {
     let configured_drrun = options
         .dynamorio
@@ -571,12 +571,20 @@ fn dynamorio_paths(options: &Options) -> Result<(PathBuf, PathBuf)> {
     let drrun = if let Some(configured) = configured_drrun {
         resolve_dynamorio_launcher(&configured)?
     } else {
-        if let Some(bundled) = super::package_path("dynamorio/bin64/drrun") {
+        #[cfg(target_os = "windows")]
+        let bundled_path = "dynamorio/bin64/drrun.exe";
+        #[cfg(not(target_os = "windows"))]
+        let bundled_path = "dynamorio/bin64/drrun";
+        if let Some(bundled) = super::package_path(bundled_path) {
             bundled
         } else {
-            which::which("drrun").map_err(|_| {
+            #[cfg(target_os = "windows")]
+            let launcher = "drrun.exe";
+            #[cfg(not(target_os = "windows"))]
+            let launcher = "drrun";
+            which::which(launcher).map_err(|_| {
                 anyhow::anyhow!(
-                    "DynamoRIO 'drrun' was not found in this miniperf package or on PATH; pass --dynamorio with a drrun executable or DynamoRIO build directory"
+                    "DynamoRIO '{launcher}' was not found in this miniperf package or on PATH; pass --dynamorio with a drrun executable or DynamoRIO build directory"
                 )
             })?
         }
@@ -596,21 +604,29 @@ fn dynamorio_paths(options: &Options) -> Result<(PathBuf, PathBuf)> {
         configured
     } else {
         discover_dynamorio_client(&drrun)?.ok_or_else(|| {
+            #[cfg(target_os = "windows")]
+            let client_name = "dr_roofline.dll";
+            #[cfg(not(target_os = "windows"))]
+            let client_name = "libdr_roofline.so";
             anyhow::anyhow!(
-                "miniperf DynamoRIO client 'libdr_roofline.so' was not found next to mperf, in the DynamoRIO bundle, or in this miniperf source checkout; build utils/dr-roofline or pass --dynamorio-client"
+                "miniperf DynamoRIO client '{client_name}' was not found next to mperf, in the DynamoRIO bundle, or in this miniperf source checkout; build utils/dr-roofline or pass --dynamorio-client"
             )
         })?
     };
     Ok((drrun, client))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn resolve_dynamorio_launcher(configured: &Path) -> Result<PathBuf> {
     if configured.is_file() {
         return Ok(configured.to_path_buf());
     }
     if configured.is_dir() {
-        for relative in ["bin64/drrun", "dynamorio/bin64/drrun"] {
+        #[cfg(target_os = "windows")]
+        let candidates = ["bin64/drrun.exe", "dynamorio/bin64/drrun.exe"];
+        #[cfg(not(target_os = "windows"))]
+        let candidates = ["bin64/drrun", "dynamorio/bin64/drrun"];
+        for relative in candidates {
             let candidate = configured.join(relative);
             if candidate.is_file() {
                 return Ok(candidate);
@@ -632,12 +648,16 @@ fn resolve_dynamorio_launcher(configured: &Path) -> Result<PathBuf> {
     )
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn discover_dynamorio_client(drrun: &Path) -> Result<Option<PathBuf>> {
+    #[cfg(target_os = "windows")]
+    let client_name = "dr_roofline.dll";
+    #[cfg(not(target_os = "windows"))]
+    let client_name = "libdr_roofline.so";
     let executable_directory = super::executable_directory().ok();
     if let Some(client) = executable_directory
         .as_deref()
-        .map(|directory| directory.join("libdr_roofline.so"))
+        .map(|directory| directory.join(client_name))
         .filter(|client| client.is_file())
     {
         return Ok(Some(client));
@@ -648,7 +668,7 @@ fn discover_dynamorio_client(drrun: &Path) -> Result<Option<PathBuf>> {
     let mut directory = drrun.parent();
     for _ in 0..3 {
         let Some(current) = directory else { break };
-        let candidate = current.join("libdr_roofline.so");
+        let candidate = current.join(client_name);
         if candidate.is_file() {
             return Ok(Some(candidate));
         }
@@ -678,7 +698,7 @@ fn discover_dynamorio_client(drrun: &Path) -> Result<Option<PathBuf>> {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn discover_checkout_clients(start: &Path) -> Result<Vec<PathBuf>> {
     let Some(root) = start.ancestors().find(|candidate| {
         candidate.join("Cargo.toml").is_file()
@@ -696,8 +716,8 @@ fn discover_checkout_clients(start: &Path) -> Result<Vec<PathBuf>> {
             continue;
         }
         for candidate in [
-            path.join("libdr_roofline.so"),
-            path.join("Release/libdr_roofline.so"),
+            path.join(client_filename()),
+            path.join("Release").join(client_filename()),
         ] {
             if candidate.is_file() {
                 clients.push(candidate);
@@ -705,6 +725,24 @@ fn discover_checkout_clients(start: &Path) -> Result<Vec<PathBuf>> {
         }
     }
     Ok(clients)
+}
+
+#[cfg(target_os = "windows")]
+fn client_filename() -> &'static str {
+    "dr_roofline.dll"
+}
+#[cfg(not(target_os = "windows"))]
+fn client_filename() -> &'static str {
+    "libdr_roofline.so"
+}
+
+#[cfg(target_os = "windows")]
+fn detect_host_cache() -> CacheInfo {
+    CacheInfo {
+        line_size: 64,
+        capacity: 8 * 1024 * 1024,
+        associativity: 16,
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -1655,11 +1693,12 @@ fn write_loop_artifact(
 fn executable_segment_start(object: &object::File<'_>) -> Option<u64> {
     object
         .segments()
-        .filter(|segment| {
-            matches!(
-                segment.flags(),
-                SegmentFlags::Elf { p_flags } if p_flags & object::elf::PF_X != 0
-            )
+        .filter(|segment| match segment.flags() {
+            SegmentFlags::Elf { p_flags } => p_flags & object::elf::PF_X != 0,
+            SegmentFlags::Coff { characteristics } => {
+                characteristics & object::pe::IMAGE_SCN_MEM_EXECUTE != 0
+            }
+            _ => false,
         })
         .map(|segment| segment.address())
         .min()

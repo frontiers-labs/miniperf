@@ -10,6 +10,9 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
 
+#[path = "../../src/dynload.rs"]
+mod dynload;
+
 const KIND_BEGIN: u8 = 0;
 const KIND_END: u8 = 1;
 
@@ -58,7 +61,12 @@ pub struct IttGlobal {
     pub api_initialized: libc::c_long,
     pub mutex_initialized: libc::c_long,
     pub atomic_counter: libc::c_long,
+    #[cfg(unix)]
     pub mutex: libc::pthread_mutex_t,
+    #[cfg(all(windows, target_pointer_width = "64"))]
+    pub mutex: [u8; 40],
+    #[cfg(all(windows, target_pointer_width = "32"))]
+    pub mutex: [u8; 24],
     pub lib: *mut c_void,
     pub error_handler: *mut c_void,
     pub dll_path_ptr: *const *const c_char,
@@ -116,18 +124,18 @@ fn core_resolve() -> bool {
         return false;
     }
     let library = std::env::var("MPERF_COLLECTOR_LIBRARY")
-        .unwrap_or_else(|_| "libmperf_collector.so".to_string());
+        .unwrap_or_else(|_| dynload::CORE_LIBRARY.to_string());
     let Ok(library) = std::ffi::CString::new(library) else {
         CORE_STATE.store(-1, Ordering::Release);
         return false;
     };
-    let core = unsafe { libc::dlopen(library.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL) };
+    let core = unsafe { dynload::load(&library) };
     if core.is_null() {
         CORE_STATE.store(-1, Ordering::Release);
         return false;
     }
-    let register = unsafe { libc::dlsym(core, c"mperf_trace_register".as_ptr()) };
-    let emit = unsafe { libc::dlsym(core, c"mperf_trace_emit".as_ptr()) };
+    let register = unsafe { dynload::symbol(core, c"mperf_trace_register") };
+    let emit = unsafe { dynload::symbol(core, c"mperf_trace_emit") };
     if register.is_null() || emit.is_null() {
         CORE_STATE.store(-1, Ordering::Release);
         return false;
@@ -346,7 +354,7 @@ pub unsafe extern "C" fn __itt_api_init(global: *mut IttGlobal, _init_groups: c_
     let mut api = global.api_list_ptr;
     while !api.is_null() && !unsafe { (*api).name }.is_null() {
         let entry = unsafe { &mut *api };
-        let implementation = unsafe { libc::dlsym(global.lib, entry.name) };
+        let implementation = unsafe { dynload::symbol(global.lib, CStr::from_ptr(entry.name)) };
         unsafe {
             *entry.func_ptr = if implementation.is_null() {
                 entry.null_func

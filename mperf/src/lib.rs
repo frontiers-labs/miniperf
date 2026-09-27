@@ -11,6 +11,8 @@ mod source;
 mod stat;
 mod tui;
 mod utils;
+mod windows_record;
+mod windows_tma;
 
 use std::{
     path::{Path, PathBuf},

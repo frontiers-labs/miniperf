@@ -16,6 +16,8 @@ pub enum ReadMethod {
     UserPmu,
     /// The group leader is read with the `read(2)` system call.
     ReadSyscall,
+    /// Thread accounting is read with Windows process APIs.
+    WindowsApi,
 }
 
 /// The measured overhead and mechanism of one complete counter snapshot.
@@ -244,7 +246,8 @@ pub struct CounterCheckpoint {
 
 impl EventTimer {
     /// Opens and enables a coherent per-thread counter group that counts user
-    /// mode only.
+    /// mode only. On Windows, `Cycles` uses `QueryThreadCycleTime`, whose total
+    /// includes kernel work; `CpuClock` follows the user-mode scope.
     pub fn new(counters: &[Counter]) -> Result<Self, Error> {
         Self::open(counters, false)
     }
@@ -970,7 +973,11 @@ mod backend {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+#[path = "event_timer/windows.rs"]
+mod backend;
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 mod backend {
     use super::ReadMethod;
     use crate::{Counter, Error};

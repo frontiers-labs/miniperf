@@ -8,6 +8,10 @@
 
 use crate::{Capabilities, MeasurementQuality};
 
+#[cfg(target_os = "windows")]
+#[path = "features/windows.rs"]
+mod windows;
+
 /// A capability a caller needs, independent of the hardware that provides it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Feature {
@@ -118,6 +122,10 @@ impl Mechanism {
 
     /// Why this mechanism cannot run on this host, or `None` when it can.
     pub fn rejection(self, caps: &Capabilities) -> Option<String> {
+        #[cfg(target_os = "windows")]
+        if let Some(reason) = windows::rejection(self) {
+            return Some(reason.to_owned());
+        }
         match self {
             Mechanism::PebsMem => {
                 if caps.core_pmus().next().is_none() {

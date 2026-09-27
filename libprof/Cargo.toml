@@ -56,6 +56,30 @@ dlopen2 = "0.7.0"
 [target.'cfg(target_os = "linux")'.dependencies]
 perf-event-open-sys2 = "5.0.6"
 
+[target.'cfg(target_os = "windows")'.dependencies]
+serde_json = "1.0.138"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Diagnostics_Etw",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Console",
+    "Win32_System_Environment",
+    "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_Kernel",
+    "Win32_System_Performance",
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_System_Time",
+    "Win32_System_WindowsProgramming",
+] }
+
 # Post-hoc DWARF unwinding of captured stack dumps. framehop has a native
 # unwinder for these architectures only; elsewhere the kernel callchain stands
 # and `PostHocUnwinder` compiles without it.

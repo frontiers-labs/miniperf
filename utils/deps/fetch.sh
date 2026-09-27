@@ -44,7 +44,7 @@ staging="$(mktemp -d "${TMPDIR:-/tmp}/miniperf-fetch.XXXXXX")"
 trap 'rm -rf "${staging}"' EXIT
 if [[ "${file}" == *.zip ]]; then
     "${deps_python}" -c 'import shutil, sys; shutil.unpack_archive(sys.argv[1], sys.argv[2])' \
-        "${archive}" "${staging}"
+        "$(deps_native_path "${archive}")" "$(deps_native_path "${staging}")"
 else
     tar --extract --zstd --file "${archive}" --directory "${staging}"
 fi
