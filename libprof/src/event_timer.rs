@@ -245,8 +245,21 @@ pub struct CounterCheckpoint {
 }
 
 impl EventTimer {
-    /// Opens and enables a coherent per-thread counter group.
+    /// Opens and enables a coherent per-thread counter group that counts user
+    /// mode only.
     pub fn new(counters: &[Counter]) -> Result<Self, Error> {
+        Self::open(counters, false)
+    }
+
+    /// Like [`EventTimer::new`], but also counts what the kernel does on behalf
+    /// of the thread: interrupts, system calls and context switches. Software
+    /// events such as [`Counter::ContextSwitches`] only count this way, since
+    /// they happen in kernel mode.
+    pub fn with_kernel(counters: &[Counter]) -> Result<Self, Error> {
+        Self::open(counters, true)
+    }
+
+    fn open(counters: &[Counter], kernel: bool) -> Result<Self, Error> {
         if counters.is_empty() {
             return Err(Error::InvalidConfiguration(
                 "EventTimer requires at least one counter".to_owned(),
@@ -262,7 +275,7 @@ impl EventTimer {
             ));
         }
 
-        let backend = backend::Backend::new(counters)?;
+        let backend = backend::Backend::new(counters, kernel)?;
         let method = backend.method();
         let duration = calibrate_read_cost(&backend)?;
         Ok(Self {
@@ -480,7 +493,7 @@ mod backend {
     }
 
     impl Backend {
-        pub(super) fn new(counters: &[Counter]) -> Result<Self, Error> {
+        pub(super) fn new(counters: &[Counter], kernel: bool) -> Result<Self, Error> {
             let page_size = unsafe { libc::sysconf(libc::_SC_PAGE_SIZE) };
             if page_size <= 0 {
                 return Err(Error::InvalidConfiguration(
@@ -493,7 +506,7 @@ mod backend {
 
             for (index, counter) in counters.iter().enumerate() {
                 let resolved = resolve_counter(counter)?;
-                let mut attr = attr_for(&resolved)?;
+                let mut attr = attr_for(&resolved, kernel)?;
                 attr.set_disabled((index == 0).into());
                 let fd = unsafe { sys::perf_event_open(&mut attr, 0, -1, leader_fd, 0) };
                 #[cfg(target_arch = "aarch64")]
@@ -650,7 +663,7 @@ mod backend {
         }
     }
 
-    fn attr_for(counter: &Counter) -> Result<perf_event_attr, Error> {
+    fn attr_for(counter: &Counter, kernel: bool) -> Result<perf_event_attr, Error> {
         let (type_, config) = match counter {
             Counter::Cycles => (
                 sys::bindings::PERF_TYPE_HARDWARE,
@@ -711,7 +724,7 @@ mod backend {
         attr.size = std::mem::size_of::<perf_event_attr>() as u32;
         attr.type_ = type_;
         attr.config = config;
-        attr.set_exclude_kernel(1);
+        attr.set_exclude_kernel((!kernel).into());
         attr.set_exclude_hv(1);
         attr.set_inherit(0);
         attr.read_format = (sys::bindings::PERF_FORMAT_GROUP
@@ -977,7 +990,7 @@ mod backend {
     pub(super) struct Backend;
 
     impl Backend {
-        pub(super) fn new(_counters: &[Counter]) -> Result<Self, Error> {
+        pub(super) fn new(_counters: &[Counter], _kernel: bool) -> Result<Self, Error> {
             Err(Error::UnsupportedDriver {
                 driver: "EventTimer is currently supported only on Linux".to_owned(),
             })
