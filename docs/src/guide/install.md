@@ -10,7 +10,7 @@ Each GitHub release attaches one archive per platform, with a `.sha256` file nex
 | Linux Arm64 | `miniperf-<version>-aarch64-unknown-linux-gnu.tar.gz` | `mperf`, `mperf-gui`, shims, QEMU, DynamoRIO |
 | Linux RISC-V 64 | `miniperf-<version>-riscv64gc-unknown-linux-gnu.tar.gz` | `mperf`, shims, QEMU, DynamoRIO. No GUI. Built for `rv64gcv_zba_zbb`. |
 | macOS Arm64 | `miniperf-<version>-aarch64-apple-darwin.tar.gz` | `mperf`, `mperf-gui.app`, collector library |
-| Windows x86-64 | `miniperf-<version>-x86_64-pc-windows-msvc.zip` | `mperf-gui.exe` only |
+| Windows x86-64 | `miniperf-<version>-x86_64-pc-windows-msvc.zip` | `mperf.exe`, `mperf-gui.exe`, collector library, DynamoRIO and miniperf client |
 
 Unpack the archive anywhere and add its `bin` directory to `PATH`:
 
@@ -20,9 +20,11 @@ export PATH="$PWD/miniperf-<version>-x86_64-unknown-linux-gnu/bin:$PATH"
 mperf doctor
 ```
 
-Linux packages are self-contained. The `lib/miniperf` directory holds the collector library, the libc shim, the QEMU plugin, a plugin-enabled `qemu-user` build, and DynamoRIO with the miniperf client. `mperf` finds them relative to its own executable, so the `roofline` and `mem` scenarios work without installing anything system-wide.
+Linux packages are self-contained. The `lib/miniperf` directory holds the collector library, the libc shim, the QEMU plugin, a plugin-enabled `qemu-user` build, and DynamoRIO with the miniperf client. `mperf` finds them relative to its own executable, so the `roofline` and `mem` scenarios work without installing anything system-wide. Windows packages bundle DynamoRIO and its client for those scenarios; [Windows profiling notes](../platforms/desktop.md) cover ETW and PMU access.
 
 On macOS, drag `mperf-gui.app` into `/Applications`, or run `bin/mperf-gui <directory>` from the unpacked archive. Recording on macOS uses Apple's kperf interface and usually needs `sudo`. See [macOS and Windows](../platforms/desktop.md).
+
+On Windows, run `bin\mperf.exe` to record and `mperf-gui.exe` from the archive root to view a result. TMA and model-specific PMU events also need Windows Performance Recorder (`wpr.exe`) and an elevated terminal with PMU access.
 
 Every package also contains `MANIFEST.txt` with the version, target, source revision, and the dependency release it embeds.
 

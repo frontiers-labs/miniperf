@@ -20,11 +20,14 @@
 # Windows CLI policy lives in dedicated stat, record, and Roofline platform
 # modules. Shared command files may call those modules without selecting a
 # Windows implementation themselves.
+# TMA's platform module selects the ETW-specific materializer without placing
+# Windows predicates in the shared metric-expression path.
 mperf/src/windows_tma.rs
 mperf/src/windows_stat.rs
 mperf/src/windows_record.rs
 mperf/src/roofline/platform.rs
 mperf/src/postprocess/roofline/platform.rs
+mperf/src/postprocess/tma/platform.rs
 mperf/src/source/windows.rs
 mperf/src/doctor/windows.rs
 mperf/src/roofline/calibrate.rs

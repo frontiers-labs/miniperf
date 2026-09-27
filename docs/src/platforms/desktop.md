@@ -33,6 +33,11 @@ only on machines whose firmware exposes them.
 
 The `tma` scenario and model-specific `stat` events use Windows Performance
 Recorder (`wpr.exe`) to capture a coherent counter vector on context switches.
-Run them from an elevated terminal with PMU access. TMA recordings provide
-process totals and time intervals; Windows context-switch traces do not contain
-the instruction addresses needed for per-function TMA attribution.
+Run them from an elevated terminal with PMU access. TMA recording also captures
+timer instruction-pointer samples in the same ETW trace. It matches samples to
+measured intervals by process, thread, CPU, and time, then apportions each
+interval's counter vector among the sampled functions. The per-function values
+in `tma` are statistical estimates; `tma_summary` and `tma_intervals` retain the
+measured process totals. `tma_attribution` reports how many intervals and
+samples contributed to function estimates. Intervals without a sample remain
+in process totals and do not acquire an invented function.
