@@ -543,7 +543,9 @@ fn render_profile(
         "    <SystemCollector Id=\"{prefix}_collector\" Name=\"{prefix}_collector\"/>"
     )
     .unwrap();
-    writeln!(xml, "    <SystemProvider Id=\"{prefix}_system\"><Keywords><Keyword Value=\"ProcessThread\"/><Keyword Value=\"Loader\"/><Keyword Value=\"CSwitch\"/></Keywords></SystemProvider>").unwrap();
+    // Timer profile samples carry instruction pointers for statistical
+    // attribution of the coherent CSwitch counter intervals to functions.
+    writeln!(xml, "    <SystemProvider Id=\"{prefix}_system\"><Keywords><Keyword Value=\"ProcessThread\"/><Keyword Value=\"Loader\"/><Keyword Value=\"CSwitch\"/><Keyword Value=\"SampledProfile\"/></Keywords></SystemProvider>").unwrap();
     let custom_sources = sources.iter().any(|(_, encoding)| encoding.is_some());
     if custom_sources {
         writeln!(
@@ -737,6 +739,7 @@ mod tests {
             .iter()
             .all(|(name, counter)| *counter == Counter::Custom(name.clone())));
         assert_eq!(profile.xml.matches("<ProfileSource Name=").count(), 7);
+        assert!(profile.xml.contains("<Keyword Value=\"SampledProfile\"/>"));
         assert_eq!(profile.xml.matches("<Counter Value=").count(), 9);
         assert!(profile
             .xml

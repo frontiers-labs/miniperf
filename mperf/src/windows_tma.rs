@@ -12,14 +12,63 @@ mod imp {
 
     use anyhow::{Context, Result, bail};
     use libprof::{
-        Counter, CounterEntry, CounterResult, CounterValue, MeasurementQuality, Process,
+        Counter, CounterEntry, CounterResult, CounterValue, MeasurementQuality, Process, Sink,
     };
     use mperf_data::{ScenarioInfo, SnapshotCollectorStatus, TMAInfo};
+    use serde::Deserialize;
     use smallvec::SmallVec;
 
     use crate::counter_selection::get_tma_counter_groups;
     use crate::event_dispatcher::EventDispatcher;
     use crate::record::publish_process_maps;
+
+    #[derive(Deserialize)]
+    struct ProfileSamples {
+        qpc_frequency: u64,
+        samples: Vec<ProfileSample>,
+    }
+
+    #[derive(Deserialize)]
+    struct ProfileSample {
+        cpu: u16,
+        timestamp: i64,
+        tid: u32,
+        pid: u32,
+        ip: u64,
+    }
+
+    fn publish_profile_samples(dispatcher: &EventDispatcher, path: &Path) -> Result<usize> {
+        let data: ProfileSamples = serde_json::from_slice(&fs::read(path)?)?;
+        if data.qpc_frequency == 0 {
+            bail!("Windows TMA trace has no QPC frequency");
+        }
+        let count = data.samples.len();
+        for (index, sample) in data.samples.into_iter().enumerate() {
+            let time = ((sample.timestamp.max(0) as u128) * 1_000_000_000
+                / data.qpc_frequency as u128)
+                .min(u64::MAX as u128) as u64;
+            dispatcher.record(libprof::Record::Sample(libprof::Sample {
+                // The dispatcher uses this as the group ID. Each timer
+                // interrupt is its own observation, not one giant group.
+                event_id: index as u128 + 1,
+                ip: sample.ip,
+                pid: sample.pid,
+                tid: sample.tid,
+                cpu: sample.cpu as u32,
+                core: None,
+                time,
+                time_enabled: 1,
+                time_running: 1,
+                counter: Counter::CpuClock,
+                value: 1,
+                callstack: SmallVec::new(),
+                lbr_callstack: SmallVec::new(),
+                user_regs: None,
+                user_stack: Vec::new(),
+            }));
+        }
+        Ok(count)
+    }
 
     fn wpr(args: &[String]) -> Result<Output> {
         let mut busy_retries = 0;
@@ -166,6 +215,13 @@ mod imp {
             .collect::<Vec<_>>();
         libprof::windows_decode_pmc_etl(&etl_path, &intervals_path, pid, &counter_order)
             .context("could not decode coherent Windows TMA counter intervals")?;
+        let sample_count = publish_profile_samples(&dispatcher, &intervals_path)
+            .context("could not publish Windows TMA instruction-pointer samples")?;
+        if sample_count == 0 {
+            bail!(
+                "WPR trace contains no process-attributed SampledProfile events; function-level TMA is unavailable"
+            );
+        }
         let recorded_counters = profile
             .counters
             .iter()
@@ -184,9 +240,9 @@ mod imp {
             vec![SnapshotCollectorStatus {
                 name: "coherent_pmu".to_owned(),
                 status: "available".to_owned(),
-                source: "windows_wpr_etw_cswitch".to_owned(),
-                quality: "counted_intervals".to_owned(),
-                message: "WPR captured the TMA event set together on context switches".to_owned(),
+                source: "windows_wpr_etw_cswitch_sampled_profile".to_owned(),
+                quality: "measured_intervals_sampled_functions".to_owned(),
+                message: "WPR measured coherent TMA intervals and sampled instruction pointers for per-function estimates".to_owned(),
             }],
         ))
     }

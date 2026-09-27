@@ -315,7 +315,11 @@ fn render_functions(
                 .px(px(8.0))
                 .py(px(6.0))
                 .child(ui::section_caption(
-                    "per-function breakdown · top hotspots",
+                    if tma.sampled_function_estimates {
+                        "per-function estimates · sampled hotspots"
+                    } else {
+                        "per-function breakdown · top hotspots"
+                    },
                     cx,
                 )),
         )

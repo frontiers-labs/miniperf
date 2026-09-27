@@ -27,8 +27,8 @@ pub(super) fn resolve_fidelity(scenario: Scenario) -> CaptureFidelity {
             "Windows does not expose workload-scoped memory-controller bandwidth through libprof",
         ),
         Scenario::TMA => (
-            "wpr_etw_cswitch",
-            "Windows WPR counts coherent TMA intervals on context switches; exact per-function counter attribution is unavailable",
+            "wpr_etw_sampled_functions",
+            "Windows WPR measures coherent TMA intervals and estimates function shares from timer instruction-pointer samples",
         ),
     };
     CaptureFidelity {

@@ -55,8 +55,8 @@ pub async fn perform_postprocessing(res_dir: &Path, pb: kdam::Bar) -> Result<()>
         }
         Scenario::TMA => {
             mem_samples::process(&tables, res_dir)?;
-            assembly::process(&tables, &mut pb)?;
             tma::process(&tables, &info.scenario_info, res_dir)?;
+            assembly::process(&tables, &mut pb)?;
         }
     }
 

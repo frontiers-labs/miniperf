@@ -29,6 +29,7 @@ struct Accumulator {
     missing_baseline: HashSet<u16>,
     totals: Vec<(Counter, u64)>,
     intervals: Vec<PmcInterval>,
+    samples: Vec<PmcSample>,
     capture_intervals: bool,
     coverage: PmcCoverage,
     loss: PmcLoss,
@@ -46,6 +47,16 @@ pub(super) struct PmcInterval {
     pub tid: u32,
     pub pid: u32,
     pub deltas: Vec<(Counter, u64)>,
+}
+
+/// A sampled instruction pointer from the same ETW clock as the PMC vectors.
+#[derive(Clone, Debug, PartialEq)]
+struct PmcSample {
+    cpu: u16,
+    timestamp: i64,
+    tid: u32,
+    pid: u32,
+    ip: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -66,6 +77,7 @@ pub(super) struct PmcLoss {
 
 pub(super) struct PmcTrace {
     pub intervals: Vec<PmcInterval>,
+    samples: Vec<PmcSample>,
     pub totals: Vec<(Counter, u64)>,
     pub coverage: PmcCoverage,
     pub loss: PmcLoss,
@@ -322,6 +334,50 @@ unsafe extern "system" fn on_event(record: *mut EVENT_RECORD) {
         return;
     };
     let provider = record.EventHeader.ProviderId;
+    let Some(context) = (record.UserContext as *const Context).as_ref() else {
+        return;
+    };
+    if context.mode == DecodeMode::OfflineCounters
+        && provider.data1 == PerfInfoGuid.data1
+        && provider.data2 == PerfInfoGuid.data2
+        && provider.data3 == PerfInfoGuid.data3
+        && provider.data4 == PerfInfoGuid.data4
+        && record.EventHeader.EventDescriptor.Opcode == 46
+        && !record.UserData.is_null()
+    {
+        let width = if record.EventHeader.Flags as u32 & EVENT_HEADER_FLAG_32_BIT_HEADER != 0 {
+            4
+        } else {
+            8
+        };
+        let bytes = std::slice::from_raw_parts(
+            record.UserData as *const u8,
+            record.UserDataLength as usize,
+        );
+        if bytes.len() >= width + 4 {
+            let ip = if width == 4 {
+                u32::from_le_bytes(bytes[..4].try_into().unwrap()) as u64
+            } else {
+                u64::from_le_bytes(bytes[..8].try_into().unwrap())
+            };
+            let tid = u32::from_le_bytes(bytes[width..width + 4].try_into().unwrap());
+            let timestamp = record.EventHeader.TimeStamp;
+            let mut data = context.values.lock().unwrap();
+            if data.capture_intervals
+                && ip != 0
+                && data.thread_pid_at(tid, timestamp) == Some(Some(context.pid))
+            {
+                data.samples.push(PmcSample {
+                    cpu: record.BufferContext.Anonymous.ProcessorIndex,
+                    timestamp,
+                    tid,
+                    pid: context.pid,
+                    ip,
+                });
+            }
+        }
+        return;
+    }
     if provider.data1 != ThreadGuid.data1
         || provider.data2 != ThreadGuid.data2
         || provider.data3 != ThreadGuid.data3
@@ -330,9 +386,6 @@ unsafe extern "system" fn on_event(record: *mut EVENT_RECORD) {
     {
         return;
     }
-    let Some(context) = (record.UserContext as *const Context).as_ref() else {
-        return;
-    };
     let data =
         std::slice::from_raw_parts(record.UserData as *const u8, record.UserDataLength as usize);
     let opcode = record.EventHeader.EventDescriptor.Opcode;
@@ -519,6 +572,7 @@ fn read_etl(
             .any(|(process, _, _, _)| *process == pid);
     Ok(PmcTrace {
         intervals: data.intervals,
+        samples: data.samples,
         totals: data.totals,
         coverage: data.coverage,
         loss: data.loss,
@@ -647,6 +701,29 @@ pub(super) fn decode_etl_to_json(
         )
         .map_err(|error| {
             Error::InvalidConfiguration(format!("cannot serialize WPR interval: {error}"))
+        })?;
+    }
+    writer.write_all(b"],\"samples\":[").map_err(|error| {
+        Error::InvalidConfiguration(format!("cannot write WPR samples: {error}"))
+    })?;
+    for (index, sample) in trace.samples.iter().enumerate() {
+        if index != 0 {
+            writer.write_all(b",").map_err(|error| {
+                Error::InvalidConfiguration(format!("cannot write WPR samples: {error}"))
+            })?;
+        }
+        serde_json::to_writer(
+            &mut writer,
+            &serde_json::json!({
+                "cpu": sample.cpu,
+                "timestamp": sample.timestamp,
+                "tid": sample.tid,
+                "pid": sample.pid,
+                "ip": sample.ip,
+            }),
+        )
+        .map_err(|error| {
+            Error::InvalidConfiguration(format!("cannot serialize WPR sample: {error}"))
         })?;
     }
     writer
@@ -971,6 +1048,7 @@ mod tests {
         assert_eq!(a.coverage.baselines, 2);
         let trace = PmcTrace {
             intervals: Vec::new(),
+            samples: Vec::new(),
             totals: a.totals,
             coverage: a.coverage,
             loss: PmcLoss::default(),
@@ -994,6 +1072,7 @@ mod tests {
         assert_eq!(a.coverage.unrelated_missing_vectors, 1);
         let trace = PmcTrace {
             intervals: Vec::new(),
+            samples: Vec::new(),
             totals: a.totals,
             coverage: a.coverage,
             loss: PmcLoss::default(),
@@ -1020,6 +1099,7 @@ mod tests {
         assert_eq!(a.coverage.rejected_vectors, 1);
         let trace = PmcTrace {
             intervals: Vec::new(),
+            samples: Vec::new(),
             totals: a.totals,
             coverage: a.coverage,
             loss: PmcLoss::default(),

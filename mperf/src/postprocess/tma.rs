@@ -6,7 +6,7 @@ use mperf_data::{EventType, ScenarioInfo};
 use serde::Deserialize;
 
 use super::event_column_name;
-use super::tables::{Columns, Tables};
+use super::tables::{Columns, Tables, quote_identifier};
 
 /// Materialize the per-function `tma` table plus the interval and summary
 /// tables the UI reads without re-expanding formulas.
@@ -186,19 +186,69 @@ fn process_windows(tables: &Tables, info: &mperf_data::TMAInfo, path: &Path) -> 
         .iter()
         .flat_map(|r| r.deltas.keys().cloned())
         .collect::<std::collections::BTreeSet<_>>();
-    for event in event_names {
+    for event in &event_names {
         cols.u64(
             &format!("pmu_{}", event.replace('.', "_")),
             accepted
                 .iter()
-                .map(|r| r.deltas.get(&event).copied().unwrap_or(0))
+                .map(|r| r.deltas.get(event).copied().unwrap_or(0))
                 .collect(),
         );
     }
     tables.write("pmu_intervals", cols.finish()?)?;
 
-    // Windows CSwitch data has no sampled instruction pointer, so there is no
-    // honest per-function attribution. Preserve the established empty schema.
+    // A timer sample identifies a function that ran in one coherent CSwitch
+    // interval. Split that interval's measured vector across its samples.
+    // This is statistical function attribution; unsampled intervals remain
+    // solely in the measured process summary and time series below.
+    let event_select = event_names
+        .iter()
+        .map(|event| {
+            let column = format!("pmu_{}", event.replace('.', "_"));
+            let quoted = quote_identifier(&column);
+            format!("i.{quoted} * 1.0 / sample_count AS {quoted}")
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    tables.write_query(
+        "tma_attributed",
+        &format!(
+            "WITH matched AS (
+                 SELECT s.ip, s.cpu, s.timestamp, i.tid, i.pid,
+                        COUNT(*) OVER (PARTITION BY i.cpu, i.start_ns, i.end_ns, i.tid) AS sample_count,
+                        i.*
+                 FROM pmu_intervals i
+                 INNER JOIN samples s ON s.pid = i.pid AND s.tid = i.tid AND s.cpu = i.cpu
+                     AND s.timestamp > i.start_ns AND s.timestamp <= i.end_ns
+                 INNER JOIN proc_map p ON p.ip = s.ip
+             )
+             SELECT ROW_NUMBER() OVER () AS unique_id, pid AS process_id,
+                    tid AS thread_id, cpu, timestamp, ip,
+                    '[' || CAST(ip AS VARCHAR) || ']' AS call_stack,
+                    1 AS time_enabled, 1 AS time_running, 1.0 AS confidence,
+                    {event_select}
+             FROM matched i"
+        ),
+    )?;
+    let attributed_samples: i64 =
+        tables
+            .connection()
+            .query_row("SELECT COUNT(*) FROM tma_attributed", [], |row| row.get(0))?;
+    if attributed_samples == 0 {
+        bail!("Windows TMA trace has no symbolized timer samples inside measured PMC intervals");
+    }
+    tables.write_query(
+        "tma_attribution",
+        "SELECT COUNT(*) AS measured_intervals,
+                COUNT(*) FILTER (WHERE EXISTS (
+                    SELECT 1 FROM tma_attributed a
+                    WHERE a.cpu = i.cpu AND a.thread_id = i.tid
+                      AND a.timestamp > i.start_ns AND a.timestamp <= i.end_ns
+                )) AS sampled_intervals,
+                (SELECT COUNT(*) FROM tma_attributed) AS samples,
+                'sampled_interval' AS method
+         FROM pmu_intervals i",
+    )?;
     let metric_columns = info
         .metrics
         .iter()
@@ -213,7 +263,7 @@ fn process_windows(tables: &Tables, info: &mperf_data::TMAInfo, path: &Path) -> 
     } else {
         format!(",\n{metric_columns}")
     };
-    tables.write_query("tma", &format!("SELECT proc_map.func_name AS func_name, COUNT(pmu_counters.pmu_cycles) AS num_samples, SUM(pmu_counters.pmu_cycles) * 1.0 / NULLIF((SELECT SUM(pmu_cycles) FROM pmu_counters), 0) AS total, CAST(SUM(pmu_counters.pmu_cycles) AS BIGINT) AS cycles, CAST(SUM(pmu_counters.pmu_instructions) AS BIGINT) AS instructions, SUM(pmu_counters.pmu_instructions) * 1.0 / NULLIF(SUM(pmu_counters.pmu_cycles), 0) AS ipc{metric_columns} FROM pmu_counters INNER JOIN proc_map ON pmu_counters.ip = proc_map.ip WHERE FALSE GROUP BY proc_map.func_name"))?;
+    tables.write_query("tma", &format!("SELECT proc_map.func_name AS func_name, COUNT(pmu_counters.pmu_cycles) AS num_samples, SUM(pmu_counters.pmu_cycles) * 1.0 / NULLIF((SELECT SUM(pmu_cycles) FROM pmu_intervals), 0) AS total, CAST(SUM(pmu_counters.pmu_cycles) AS BIGINT) AS cycles, CAST(SUM(pmu_counters.pmu_instructions) AS BIGINT) AS instructions, SUM(pmu_counters.pmu_instructions) * 1.0 / NULLIF(SUM(pmu_counters.pmu_cycles), 0) AS ipc{metric_columns}, 'sampled_interval' AS attribution FROM tma_attributed AS pmu_counters INNER JOIN proc_map ON pmu_counters.ip = proc_map.ip GROUP BY proc_map.func_name"))?;
 
     let mut sums: BTreeMap<String, u64> = BTreeMap::new();
     for row in &accepted {
@@ -270,6 +320,21 @@ fn process_windows(tables: &Tables, info: &mperf_data::TMAInfo, path: &Path) -> 
     intervals.text("metric", interval_names);
     intervals.f64_opt("value", interval_values);
     tables.write("tma_intervals", intervals.finish()?)?;
+    // The GUI's hotspot analysis reads this established table when it reopens
+    // the session. Replace the empty timer-only counter table with the
+    // interval-weighted vectors, preserving the persisted Parquet filename.
+    tables
+        .connection()
+        .execute_batch("DROP VIEW IF EXISTS pmu_counters")?;
+    let attributed_path = path.with_file_name("tma_attributed.parquet");
+    let counter_path = path.with_file_name("pmu_counters.parquet");
+    std::fs::copy(&attributed_path, &counter_path).with_context(|| {
+        format!(
+            "could not save attributed Windows TMA counters to {}",
+            counter_path.display()
+        )
+    })?;
+    tables.register("pmu_counters", &[counter_path])?;
     Ok(())
 }
 
@@ -408,7 +473,7 @@ mod windows_tests {
     }
 
     #[test]
-    fn materializes_windows_summary_without_inventing_function_attribution() {
+    fn materializes_windows_summary_and_sampled_function_attribution() {
         let directory = tempfile::tempdir().unwrap();
         let tables = Tables::open(directory.path()).unwrap();
         let mut samples = Columns::default();
@@ -422,9 +487,18 @@ mod windows_tests {
             .write("pmu_counters", samples.finish().unwrap())
             .unwrap();
         let mut maps = Columns::default();
-        maps.u64("ip", vec![]);
-        maps.text("func_name", vec![]);
+        maps.u64("ip", vec![0x1000, 0x2000]);
+        maps.text("func_name", vec!["function_a".into(), "function_b".into()]);
         tables.write("proc_map", maps.finish().unwrap()).unwrap();
+        let mut profile_samples = Columns::default();
+        profile_samples.u64("ip", vec![0x1000, 0x2000]);
+        profile_samples.u64("pid", vec![42, 42]);
+        profile_samples.u64("tid", vec![7, 7]);
+        profile_samples.u64("cpu", vec![0, 0]);
+        profile_samples.i64("timestamp", vec![1_040_000_000, 1_050_000_000]);
+        tables
+            .write("samples", profile_samples.finish().unwrap())
+            .unwrap();
 
         let info = mperf_data::TMAInfo {
             pid: 42,
@@ -472,7 +546,29 @@ mod windows_tests {
             .connection()
             .query_row("SELECT COUNT(*) FROM tma", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(function_count, 0);
+        assert_eq!(function_count, 2);
+        assert_eq!(
+            tables.scalar_f64("SELECT slots_per_cycle FROM tma WHERE func_name = 'function_a'"),
+            Some(4.0)
+        );
+        let attributed_share = tables.scalar_f64("SELECT SUM(total) FROM tma").unwrap();
+        assert!((attributed_share - 1.0 / 3.0).abs() < 1e-12);
+        let sampled_intervals: i64 = tables
+            .connection()
+            .query_row("SELECT sampled_intervals FROM tma_attribution", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(sampled_intervals, 1);
+        let saved_samples: i64 = tables
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM pmu_counters WHERE call_stack IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(saved_samples, 2);
     }
 }
 
