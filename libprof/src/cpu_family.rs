@@ -45,6 +45,38 @@ pub fn host_tma_scenario() -> Option<TmaScenario> {
         .or_else(|| Some(architectural_tma_fallback()))
 }
 
+/// The event-arithmetic scenario of a heterogeneous host. Each core type has
+/// its own formulas, so every cluster contributes its family's scenario,
+/// restricted to its own CPUs. `None` when every core is of one family.
+pub fn cluster_tma_scenario() -> Option<TmaScenario> {
+    let pmus = host_core_pmus();
+    if pmus.len() < 2 {
+        return None;
+    }
+    // Clusters of one family share its formulas, and so its metric names.
+    let mut clusters: Vec<(&str, String)> = Vec::new();
+    for pmu in &pmus {
+        match clusters
+            .iter_mut()
+            .find(|(family, _)| *family == pmu.family_id)
+        {
+            Some((_, cpus)) => *cpus = format!("{cpus},{}", pmu.cpus),
+            None => clusters.push((pmu.family_id, pmu.cpus.clone())),
+        }
+    }
+    // One family means one formula set, which the host scenario already is.
+    if clusters.len() < 2 {
+        return None;
+    }
+    TmaScenario::merge(clusters.iter().map(|(family, cpus)| {
+        find_cpu_family(family)
+            .and_then(|family| family.scenarios.get("tma"))
+            .cloned()
+            .unwrap_or_else(architectural_tma_fallback)
+            .for_cluster(family, cpus)
+    }))
+}
+
 /// Conservative level-one fallback for CPUs without a vendor TMA definition.
 /// It uses only architectural perf events and labels its estimates accordingly.
 fn architectural_tma_fallback() -> TmaScenario {
@@ -60,6 +92,7 @@ fn architectural_tma_fallback() -> TmaScenario {
             pmu_data::TmaGroup {
                 name: "retiring".to_owned(),
                 events: vec!["cycles".to_owned(), "instructions".to_owned()],
+                cpus: None,
             },
             pmu_data::TmaGroup {
                 name: "fe_bound".to_owned(),
@@ -68,6 +101,7 @@ fn architectural_tma_fallback() -> TmaScenario {
                     "instructions".to_owned(),
                     "stalled_cycles_frontend".to_owned(),
                 ],
+                cpus: None,
             },
             pmu_data::TmaGroup {
                 name: "be_bound".to_owned(),
@@ -76,6 +110,7 @@ fn architectural_tma_fallback() -> TmaScenario {
                     "instructions".to_owned(),
                     "stalled_cycles_backend".to_owned(),
                 ],
+                cpus: None,
             },
         ],
         precise_attribution: false,
@@ -113,11 +148,6 @@ fn architectural_tma_fallback() -> TmaScenario {
 /// Whether the detected host family's event table has an event.
 pub fn host_has_event(name: &str) -> bool {
     find_cpu_family(get_host_cpu_family()).is_some_and(|family| family.events.contains_key(name))
-}
-
-/// Maximum number of events the host PMU can schedule in one coherent group.
-pub fn host_max_counters() -> Option<usize> {
-    find_cpu_family(get_host_cpu_family()).and_then(|family| family.max_counters)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -531,7 +561,6 @@ pub fn host_pmu_type() -> Option<u32> {
 #[derive(Clone, Debug)]
 pub struct CorePmu {
     /// Dynamic `perf_event` PMU `type` id read from sysfs.
-    #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
     pub pmu_type: u32,
     /// Known family id (e.g. `"cortex_a720"`), or `"unknown"` for a cluster we
     /// have no event data for.

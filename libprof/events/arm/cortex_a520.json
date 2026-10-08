@@ -3,6 +3,7 @@
   "name": "ARM Cortex-A520",
   "vendor": "ARM",
   "arch": "aarch64",
+  "max_counters": 5,
   "scenarios": [
     {
       "name": "tma",

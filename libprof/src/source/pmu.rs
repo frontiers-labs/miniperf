@@ -4,8 +4,8 @@ use anyhow::Result;
 
 use super::{Availability, SessionContext, Source, SourceDecl};
 use crate::{
-    capabilities, platform, resolve, Counter, Feature, SamplingDriver, SamplingDriverBuilder,
-    SourceStatus,
+    capabilities, platform, resolve, CoScheduled, Counter, Feature, SamplingDriver,
+    SamplingDriverBuilder, SourceStatus,
 };
 
 /// Counter-based sampling. The counter list and rate come from the caller:
@@ -13,6 +13,7 @@ use crate::{
 /// the hardware.
 pub struct PmuSamplingSource {
     counters: Vec<Counter>,
+    co_scheduled: Vec<CoScheduled>,
     sample_freq: Option<u64>,
     stack_dump_size: Option<u32>,
     drivers: Vec<Box<dyn SamplingDriver>>,
@@ -25,12 +26,20 @@ impl PmuSamplingSource {
     pub fn new(counters: Vec<Counter>) -> Self {
         PmuSamplingSource {
             counters,
+            co_scheduled: Vec::new(),
             sample_freq: None,
             stack_dump_size: None,
             drivers: Vec::new(),
             recorded: Vec::new(),
             sample_rate: None,
         }
+    }
+
+    /// Names the counter sets formulas read together. Each is sampled in one
+    /// group.
+    pub fn co_scheduled(mut self, sets: Vec<CoScheduled>) -> Self {
+        self.co_scheduled = sets;
+        self
     }
 
     /// Overrides the interrupt frequency in hertz.
@@ -87,7 +96,9 @@ impl Source for PmuSamplingSource {
         // has it.
         let lbr = resolve(Feature::HwCallstack, &capabilities()).is_satisfied();
         for target_pid in target_pids {
-            let mut builder = SamplingDriverBuilder::new().counters(&self.counters);
+            let mut builder = SamplingDriverBuilder::new()
+                .counters(&self.counters)
+                .co_scheduled(&self.co_scheduled);
             if let Some(freq) = self.sample_freq {
                 builder = builder.sample_freq(freq);
             }

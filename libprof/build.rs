@@ -74,7 +74,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let groups = scenario.groups.iter().map(|group| {
                 let name = group.name.clone();
                 let events = group.events.iter().map(|event| quote! { #event.to_string() });
-                quote! { pmu_data::TmaGroup { name: #name.to_string(), events: vec![#(#events),*] } }
+                quote! { pmu_data::TmaGroup { name: #name.to_string(), events: vec![#(#events),*], cpus: None } }
             });
             let constants = scenario.constants.iter().map(|constant| {
                 let name = constant.name.clone();

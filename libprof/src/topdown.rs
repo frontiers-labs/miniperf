@@ -224,6 +224,7 @@ fn intel_scenario(level_two: bool) -> TmaScenario {
         groups: vec![TmaGroup {
             name: "topdown".to_owned(),
             events: events.clone(),
+            cpus: None,
         }],
         events,
         precise_attribution: false,
@@ -259,7 +260,7 @@ fn arm_scenario(caps: &Capabilities) -> Option<TmaScenario> {
         for (name, desc, formula) in arm_metrics(&constant) {
             metrics.push(TmaMetric {
                 name: if hybrid {
-                    format!("{name}.{}", cluster.name)
+                    format!("{name}_{}", cluster.name)
                 } else {
                     name.to_owned()
                 },
@@ -276,6 +277,7 @@ fn arm_scenario(caps: &Capabilities) -> Option<TmaScenario> {
         groups: vec![TmaGroup {
             name: "topdown".to_owned(),
             events: events.clone(),
+            cpus: None,
         }],
         events,
         precise_attribution: false,

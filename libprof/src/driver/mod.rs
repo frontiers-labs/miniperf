@@ -14,7 +14,7 @@ use smallvec::SmallVec;
 use std::sync::Arc;
 
 pub(crate) use crate::sink::Sink;
-use crate::{cpu_family, Counter, Error, Process};
+use crate::{Counter, Error, Process};
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,9 +131,22 @@ pub struct CountingDriverBuilder {
     pinned: bool,
 }
 
+/// Counters one formula reads from a single sample. They are sampled in one
+/// group, so they cover the same interval.
+#[derive(Debug, Clone)]
+pub struct CoScheduled {
+    /// The counters the formula reads.
+    pub counters: Vec<Counter>,
+    /// The core cluster the formula was written for, as a sysfs cpumask
+    /// (`0,5-11`). Other clusters' PMUs do not plan for it. `None` means every
+    /// CPU.
+    pub cpus: Option<String>,
+}
+
 /// Builder for a sampling driver.
 pub struct SamplingDriverBuilder {
     counters: Vec<Counter>,
+    co_scheduled: Vec<CoScheduled>,
     sample_freq: u64,
     pid: Option<i32>,
     prefer_raw_events: bool,
@@ -219,52 +232,6 @@ pub fn list_supported_counters(driver: DriverKind) -> Vec<Counter> {
     vec![]
 }
 
-/// The PMU event a counter resolves to on `family`, which is what the hardware
-/// actually has to find a counter for.
-fn resolved_event(counter: &Counter, family: Option<&cpu_family::CPUFamily>) -> String {
-    let name = counter.name();
-    family
-        .and_then(|family| family.aliases.get(name))
-        .cloned()
-        .unwrap_or_else(|| name.to_owned())
-}
-
-/// Orders a sampling group: one counter per PMU event, the family's leader
-/// event first.
-///
-/// A group that names one event twice asks the PMU for two counters to count
-/// the same thing. Where the event-to-counter map is fixed (RISC-V sscofpmf)
-/// the kernel accepts such a group and then never schedules it, so every
-/// counter in it is lost, not just the duplicate. Families whose leader event
-/// is the one `Counter::Cycles` already resolves to therefore get no separate
-/// leader: cycles leads the group itself.
-pub(crate) fn plan_sampling_group(
-    counters: &[Counter],
-    family: Option<&cpu_family::CPUFamily>,
-) -> Vec<Counter> {
-    let mut seen = std::collections::HashSet::new();
-    let mut group: Vec<Counter> = counters
-        .iter()
-        .filter(|counter| seen.insert(resolved_event(counter, family)))
-        .cloned()
-        .collect();
-
-    if let Some(leader) = family.and_then(|family| family.leader_event.clone()) {
-        match group
-            .iter()
-            .position(|counter| resolved_event(counter, family) == leader)
-        {
-            Some(index) => {
-                let counter = group.remove(index);
-                group.insert(0, counter);
-            }
-            None => group.insert(0, Counter::Custom(leader)),
-        }
-    }
-
-    group
-}
-
 impl CountingDriverBuilder {
     /// Creates an empty counting-driver configuration.
     pub fn new() -> Self {
@@ -334,6 +301,7 @@ impl SamplingDriverBuilder {
     pub fn new() -> Self {
         SamplingDriverBuilder {
             counters: vec![],
+            co_scheduled: vec![],
             sample_freq: crate::DEFAULT_SAMPLE_FREQUENCY_HZ,
             pid: None,
             prefer_raw_events: true,
@@ -345,19 +313,22 @@ impl SamplingDriverBuilder {
         }
     }
 
-    /// Selects counters included in each sample.
-    ///
-    /// The group is deduplicated by the PMU event each counter resolves to,
-    /// and the family's leader event is moved to the front. A group that names
-    /// one event twice asks the PMU for two counters to count the same thing;
-    /// where the event-to-counter map is fixed (RISC-V sscofpmf) the kernel
-    /// accepts such a group and then never schedules it, which costs every
-    /// counter in it, not just the duplicate.
+    /// Selects counters included in each sample. The driver splits them into
+    /// as many groups as the PMU needs.
     pub fn counters(mut self, counters: &[Counter]) -> Self {
-        self.counters = plan_sampling_group(
-            counters,
-            cpu_family::find_cpu_family(cpu_family::get_host_cpu_family()),
-        );
+        self.counters.clear();
+        for counter in counters {
+            if !self.counters.contains(counter) {
+                self.counters.push(counter.clone());
+            }
+        }
+        self
+    }
+
+    /// Names the counter sets formulas read together. Each is kept in one
+    /// group on the PMUs it applies to.
+    pub fn co_scheduled(mut self, sets: &[CoScheduled]) -> Self {
+        self.co_scheduled = sets.to_vec();
         self
     }
 
@@ -429,6 +400,7 @@ impl SamplingDriverBuilder {
                         self.lbr_callstack,
                         |counters, branch_mode| PerfSamplingDriver::new(
                             counters,
+                            &self.co_scheduled,
                             &perf::SampleOptions {
                                 branch_mode,
                                 ..options
@@ -738,54 +710,5 @@ mod tests {
             vec![Counter::CpuClock],
             "hardware-only sampling must become a cpu-clock-only group"
         );
-    }
-
-    /// Every shipped event table must produce a sampling group the hardware can
-    /// actually schedule. A group naming one PMU event twice is accepted by the
-    /// kernel and then never scheduled, which loses every counter in it; this
-    /// caught `spacemit_x100`, whose `leader_event` is the event
-    /// `Counter::Cycles` already resolves to.
-    #[test]
-    fn no_shipped_event_table_plans_a_duplicated_event() {
-        let requested = [
-            Counter::Cycles,
-            Counter::Instructions,
-            Counter::LLCReferences,
-            Counter::LLCMisses,
-            Counter::BranchMisses,
-            Counter::BranchInstructions,
-            Counter::StalledCyclesBackend,
-            Counter::StalledCyclesFrontend,
-            Counter::CpuClock,
-            Counter::CpuMigrations,
-            Counter::PageFaults,
-            Counter::ContextSwitches,
-        ];
-
-        for (id, family) in crate::cpu_family::families() {
-            let group = plan_sampling_group(&requested, Some(family));
-            let mut events = group
-                .iter()
-                .map(|counter| resolved_event(counter, Some(family)))
-                .collect::<Vec<_>>();
-            let planned = events.len();
-            events.sort();
-            events.dedup();
-            assert_eq!(
-                planned,
-                events.len(),
-                "{id} plans the same PMU event more than once: {group:?}"
-            );
-
-            // The binding layer requires both to be present to build a group.
-            assert!(
-                group.contains(&Counter::Cycles),
-                "{id} dropped cycles from the sampling group"
-            );
-            assert!(
-                group.contains(&Counter::Instructions),
-                "{id} dropped instructions from the sampling group"
-            );
-        }
     }
 }

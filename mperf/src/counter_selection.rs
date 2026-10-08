@@ -13,26 +13,10 @@ pub fn get_tma_counter_groups(scenario: &TmaScenario) -> anyhow::Result<Vec<Vec<
         &scenario.groups
     };
     let available = scenario.events.iter().collect::<BTreeSet<_>>();
-    let capacity = libprof::host_max_counters();
     let mut resolved = Vec::with_capacity(groups.len());
     for group in groups {
         if group.events.is_empty() {
             anyhow::bail!("TMA group '{}' is empty", group.name);
-        }
-        // Fixed-topdown events live in dedicated counters (Intel PERF_METRICS
-        // and its `slots`), so they never compete for the programmable ones.
-        let programmable = group
-            .events
-            .iter()
-            .filter(|event| !libprof::is_topdown_event(event))
-            .count();
-        if let Some(limit) = capacity
-            && programmable > limit
-        {
-            anyhow::bail!(
-                "TMA group '{}' needs {programmable} counters but this PMU has only {limit}; split the methodology into independent coherent formulas",
-                group.name
-            );
         }
         for event in &group.events {
             if !available.contains(event) {
