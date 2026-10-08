@@ -25,3 +25,13 @@ assert_sql "${dir}" "
          SUM(pmu_cycles) > 0 AS has_cycles
   FROM pmu_counters"
 note "tma recording carries hardware counters"
+# A model with more events than the PMU has counters is sampled as several
+# counter groups, and a formula whose events ended up in different groups
+# evaluates to NULL instead of failing.
+assert_sql "${dir}" "
+  SELECT COUNT(*) FILTER (WHERE value IS NOT NULL) > 0 AS has_topdown_values,
+         COUNT(*) FILTER (WHERE metric LIKE '%.%') = 0
+           OR COUNT(*) FILTER (WHERE metric LIKE '%.%' AND value IS NOT NULL) > 0
+           AS has_level_two_values
+  FROM tma_summary"
+note "tma recording evaluates its topdown formulas"

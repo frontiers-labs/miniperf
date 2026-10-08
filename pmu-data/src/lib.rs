@@ -17,6 +17,10 @@ pub const AMDZEN2: &str = "zen2";
 pub const AMDZEN3: &str = "zen3";
 /// AMD Zen 4 family identifier.
 pub const AMDZEN4: &str = "zen4";
+/// AMD Zen 5 family identifier.
+pub const AMDZEN5: &str = "zen5";
+/// AMD Zen 6 family identifier.
+pub const AMDZEN6: &str = "zen6";
 
 /// Intel Haswell family identifier.
 pub const INTEL_HASWELL: &str = "haswell";

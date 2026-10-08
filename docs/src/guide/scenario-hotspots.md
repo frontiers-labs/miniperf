@@ -13,7 +13,7 @@ The `tma` scenario is the general-purpose CPU profile. It samples at 1000 Hz wit
 - **Timeline.** `tma_intervals` gives every metric per second of the run, so you can see phases.
 - **Flame graphs.** `flamegraph_cycles.svg` and `flamegraph_instructions.svg`, plus the folded text files they are rendered from.
 - **Assembly.** Per-instruction sample counts for the hot functions, for the assembly view in `mperf show` and `mperf-gui`.
-- **Precise memory samples,** when the CPU has PEBS or SPE. The `mem_samples`, `alloc_site_memory`, and `cacheline_contention` tables show which loads missed, how long they took, and which cache lines several threads fought over.
+- **Precise memory samples,** when the CPU has PEBS, IBS, or SPE. The `mem_samples`, `alloc_site_memory`, and `cacheline_contention` tables show which loads missed, how long they took, and which cache lines several threads fought over.
 
 ## Which top-down model runs
 
@@ -23,7 +23,8 @@ The metrics depend on the CPU. `mperf record` prints the choice on its second li
 |---|---|---|
 | `fixed_topdown` | Intel Ice Lake and newer, non-hybrid | Level 1, plus level 2 on Sapphire Rapids and newer |
 | `arm_slots_topdown` | Arm cores with the pmuv3 `slots` events | Level 1 |
-| `counter_only` | everything else with a curated event table | Level 1 and 2 on Intel Tiger Lake, AMD Zen, and SpacemiT A100. Three levels on SpacemiT X100. Level 1 on Cortex-A720 and A520. |
+| `amd_dispatch_slots` | AMD Zen 4 and newer | Level 1 and 2 |
+| `counter_only` | everything else with a curated event table | Level 1 and 2 on Intel Tiger Lake, AMD Zen through Zen 3, and SpacemiT A100. Three levels on SpacemiT X100. Level 1 on Cortex-A720 and A520. |
 | `counter_only`, architectural fallback | CPUs without a table | Three metrics from `stalled_cycles_frontend`, `stalled_cycles_backend`, and instructions, assuming a retire width of 4 |
 
 If the host cannot open the counters the model needs, recording stops:
@@ -65,4 +66,4 @@ Metric columns in `tma` take the metric name with dots replaced by underscores, 
 
 ## When the numbers look wrong
 
-Counter-based level-1 metrics can exceed 1.0 or go slightly negative on some CPUs, because the stall counters they use saturate rather than partition. On AMD Zen and SpacemiT cores the frontend and backend stall counters can both count the same cycle. On a loaded host with SMT siblings busy, the shared counters inflate further. Treat the ranking as the signal and the level-2 breakdown as the reliable part. Recording on an idle machine helps.
+Counter-based level-1 metrics can exceed 1.0 or go slightly negative on some CPUs, because the stall counters they use saturate rather than partition. On AMD Zen through Zen 3 and SpacemiT cores the frontend and backend stall counters can both count the same cycle. On a loaded host with SMT siblings busy, the shared counters inflate further. Treat the ranking as the signal and the level-2 breakdown as the reliable part. Recording on an idle machine helps.

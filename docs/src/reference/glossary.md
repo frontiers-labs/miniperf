@@ -20,7 +20,7 @@
 
 **Frontend bound.** Top-down bucket for slots where no decoded instruction was ready.
 
-**IBS.** Instruction Based Sampling, AMD's precise sampling facility. Detected but without a driver in miniperf.
+**IBS.** Instruction Based Sampling, AMD's precise sampling facility. Fills the `mem_samples` tables through the `ibs_op` PMU. Its sample period counts ops, not loads, so the rung is estimated.
 
 **LBR.** Last Branch Record, Intel's hardware buffer of recent branches. In call-stack mode it yields call stacks without copying the user stack.
 

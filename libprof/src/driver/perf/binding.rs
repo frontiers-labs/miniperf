@@ -573,3 +573,50 @@ fn reserved_hardware_counters() -> usize {
         .map(|value| value.trim() == "1")
         .unwrap_or(false) as usize
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    /// A TMA metric is evaluated over the samples of the counter group that
+    /// carries its events, so a formula whose events were split across two
+    /// sampling groups reads NULL. The Zen tables need several groups; this
+    /// holds their event order to one that keeps every formula's events
+    /// together, with and without the NMI watchdog holding a counter.
+    #[test]
+    fn zen_tma_formulas_stay_within_one_sampling_group() {
+        for (id, family) in crate::cpu_family::families() {
+            if family.vendor != "AMD" {
+                continue;
+            }
+            let scenario = &family.scenarios["tma"];
+            let counters = scenario
+                .events
+                .iter()
+                .map(|event| crate::tma_counter(event))
+                .collect::<Vec<_>>();
+            let capacity = family
+                .max_counters
+                .expect("Zen tables state their capacity");
+            for size in [capacity, capacity - 1] {
+                let plan = sampling_group_plan(&counters, None, size);
+                for group in &scenario.groups {
+                    let holders = plan
+                        .iter()
+                        .filter(|chunk| {
+                            chunk
+                                .hardware_indices
+                                .iter()
+                                .any(|index| group.events.contains(&scenario.events[*index]))
+                        })
+                        .count();
+                    assert_eq!(
+                        holders, 1,
+                        "{id}: TMA group '{}' is split across sampling groups of {size}",
+                        group.name
+                    );
+                }
+            }
+        }
+    }
+}

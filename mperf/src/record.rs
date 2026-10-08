@@ -468,7 +468,7 @@ fn topdown(
 
     // TMA uses the same sampling engine and attribution mode as Snapshot.
     // Only the counter set differs.
-    // Precise memory samples (PEBS/SPE) run in their own event slots and do
+    // Precise memory samples (PEBS/IBS/SPE) run in their own event slots and do
     // not compete with the topdown counter group, so a TMA recording gets
     // instruction-level memory attribution for free where the host has it.
     let pass = Pass {

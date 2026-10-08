@@ -1,0 +1,14 @@
+[
+  { "EventName": "ls_not_halted_cyc", "EventCode": "0x76", "BriefDescription": "Core cycles not in halt." },
+  { "EventName": "ex_ret_ops", "EventCode": "0xc1", "BriefDescription": "Retired macro-ops." },
+  { "EventName": "ex_ret_ucode_ops", "EventCode": "0x1c1", "BriefDescription": "Retired microcode ops." },
+  { "EventName": "ex_ret_brn_misp", "EventCode": "0xc3", "BriefDescription": "Retired branch instructions mispredicted." },
+  { "EventName": "bp_redirects.resync", "EventCode": "0x9b", "UMask": "0x01", "BriefDescription": "Redirects caused by resyncs." },
+  { "EventName": "de_src_op_disp.all", "EventCode": "0xaa", "UMask": "0x07", "BriefDescription": "Ops dispatched from any source." },
+  { "EventName": "de_no_dispatch_per_slot.no_ops_from_frontend", "EventCode": "0x1a0", "UMask": "0x01", "BriefDescription": "Dispatch slots left empty by the frontend." },
+  { "EventName": "de_no_dispatch_per_slot.backend_stalls", "EventCode": "0x1a0", "UMask": "0x1e", "BriefDescription": "Ops unable to dispatch because of backend stalls." },
+  { "EventName": "de_no_dispatch_per_slot.smt_contention", "EventCode": "0x1a0", "UMask": "0x60", "BriefDescription": "Ops unable to dispatch because the sibling thread was selected." },
+  { "EventName": "ex_no_retire.load_not_complete", "EventCode": "0xd6", "UMask": "0xa2", "BriefDescription": "Cycles the oldest op waited on a load." },
+  { "EventName": "ex_no_retire.not_complete", "EventCode": "0xd6", "UMask": "0x02", "BriefDescription": "Cycles the oldest op was not complete." },
+  { "EventName": "l3_lookup_state.all_coherent_accesses_to_l3", "EventCode": "0x04", "UMask": "0xff", "BriefDescription": "L3 accesses.", "Unit": "L3PMC" }
+]

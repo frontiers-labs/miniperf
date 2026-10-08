@@ -346,6 +346,7 @@ fn mechanism_feature(mechanism: Mechanism) -> &'static str {
         Mechanism::ArmSpe => "precise sampling (Arm SPE)",
         Mechanism::FixedTopdown => "fixed topdown (PERF_METRICS)",
         Mechanism::ArmSlotsTopdown => "topdown (Arm pmuv3 slots)",
+        Mechanism::AmdDispatchSlots => "topdown (AMD dispatch slots)",
         Mechanism::LbrCallstack => "branch records (LBR call stacks)",
         Mechanism::UncoreBw => "uncore memory bandwidth",
         Mechanism::Baseline => "baseline counters",
@@ -364,6 +365,7 @@ fn applicable_mechanisms(caps: &Capabilities) -> Vec<Mechanism> {
             }
             if !caps.is_intel() {
                 mechanisms.push(Mechanism::IbsOp);
+                mechanisms.push(Mechanism::AmdDispatchSlots);
             }
             mechanisms.push(Mechanism::LbrCallstack);
         }
@@ -392,9 +394,13 @@ fn mechanism_check(mechanism: Mechanism, caps: &Capabilities) -> Check {
             Severity::Degraded,
             "check BIOS for an IBS / 'Instruction Based Sampling' toggle",
         ),
-        Mechanism::IbsOp => (
+        Mechanism::IbsOp if caps.pmu("ibs_op").is_none() => (
             Severity::Degraded,
             "kernel needs CONFIG_PERF_EVENTS_AMD_IBS to expose the ibs_op PMU",
+        ),
+        Mechanism::IbsOp => (
+            Severity::Degraded,
+            "upgrade to a kernel whose ibs_op PMU has the swfilt format",
         ),
         Mechanism::ArmSpe => (
             Severity::Degraded,

@@ -109,13 +109,7 @@ fn metric_expression(info: &mperf_data::TMAInfo, metric: &pmu_data::TmaMetric) -
         conditions.push(cpu_predicate(cpus));
     }
     let filter = (!conditions.is_empty()).then(|| conditions.join(" AND "));
-    Ok(build_tma_sql_expr(
-        &info.metrics,
-        &info.counters,
-        &info.constants,
-        &expression,
-        filter.as_deref(),
-    ))
+    Ok(build_tma_sql_expr(info, &expression, filter.as_deref()))
 }
 
 /// A predicate restricting a metric to one core cluster, from its sysfs
@@ -145,56 +139,53 @@ fn tma_marker_column(events: &[(EventType, String)], event: &str) -> String {
 }
 
 fn build_tma_sql_expr(
-    metrics: &[pmu_data::TmaMetric],
-    events: &[(EventType, String)],
-    constants: &[pmu_data::TmaConstant],
+    info: &mperf_data::TMAInfo,
     expression: &pmu_data::arith_parser::Expr,
     filter: Option<&str>,
 ) -> String {
     use pmu_data::arith_parser::{BinOp, Expr};
 
     match expression {
-        Expr::Variable(variable) => events
+        Expr::Variable(variable) => info
+            .counters
             .iter()
             .find_map(|(event_type, name)| {
                 (name == variable).then(|| {
+                    // Raw sums, not confidence-scaled ones: a formula divides
+                    // events by the cycles of the same samples, and its group
+                    // was scheduled as a whole, so both cover the same time.
                     let column = event_column_name(&(*event_type, name.clone()));
-                    let value = if matches!(
-                        event_type,
-                        EventType::PmuCycles | EventType::PmuInstructions
-                    ) {
-                        format!("SUM(pmu_counters.{column})")
-                    } else {
-                        format!("SUM(pmu_counters.{column} / pmu_counters.confidence)")
-                    };
-                    filter.map_or(value.clone(), |filter| {
-                        format!(
-                            "SUM(CASE WHEN {filter} THEN ({}) END)",
-                            value.trim_start_matches("SUM(").trim_end_matches(')')
-                        )
-                    })
+                    match filter {
+                        Some(filter) => {
+                            format!("SUM(CASE WHEN {filter} THEN pmu_counters.{column} END)")
+                        }
+                        None => format!("SUM(pmu_counters.{column})"),
+                    }
                 })
             })
             .unwrap_or_else(|| {
-                let metric = metrics
+                let metric = info
+                    .metrics
                     .iter()
                     .find(|metric| metric.name == *variable)
                     .unwrap_or_else(|| panic!("unknown TMA variable '{variable}'"));
-                let nested = pmu_data::arith_parser::parse_expr(&metric.formula);
-                format!(
-                    "({})",
-                    build_tma_sql_expr(metrics, events, constants, &nested, filter)
-                )
+                // A referenced metric is a ratio over its own group's
+                // samples. The counter groups rotate, so the referencing
+                // metric's samples do not carry the other group's events.
+                let nested =
+                    metric_expression(info, metric).unwrap_or_else(|error| panic!("{error}"));
+                format!("({nested})")
             }),
-        Expr::Constant(name) => constants
+        Expr::Constant(name) => info
+            .constants
             .iter()
             .find(|constant| constant.name == *name)
             // A missing constant must make the metric unavailable, never turn
             // into a plausible-looking zero-valued result.
             .map_or_else(|| "NULL".to_string(), |constant| constant.value.to_string()),
         Expr::Binary { op, lhs, rhs } => {
-            let lhs = build_tma_sql_expr(metrics, events, constants, lhs, filter);
-            let rhs = build_tma_sql_expr(metrics, events, constants, rhs, filter);
+            let lhs = build_tma_sql_expr(info, lhs, filter);
+            let rhs = build_tma_sql_expr(info, rhs, filter);
             match op {
                 BinOp::Add => format!("({lhs}) + ({rhs})"),
                 BinOp::Sub => format!("({lhs}) - ({rhs})"),
@@ -212,7 +203,7 @@ fn build_tma_sql_expr(
         Expr::Call { name, args } => {
             let args = args
                 .iter()
-                .map(|arg| build_tma_sql_expr(metrics, events, constants, arg, filter))
+                .map(|arg| build_tma_sql_expr(info, arg, filter))
                 .collect::<Vec<_>>();
             match name.to_ascii_lowercase().as_str() {
                 "min" if args.len() == 2 => format!("least({}, {})", args[0], args[1]),

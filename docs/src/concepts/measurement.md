@@ -18,7 +18,7 @@ A **mechanism** is one way a particular CPU answers. For each feature miniperf h
 | Feature | Mechanisms, in preference order |
 |---|---|
 | `PreciseMem` | Intel PEBS, AMD IBS, Arm SPE |
-| `Topdown` | Intel PERF_METRICS fixed counters, Arm pmuv3 slots |
+| `Topdown` | Intel PERF_METRICS fixed counters, Arm pmuv3 slots, AMD dispatch-slot events |
 | `HwCallstack` | LBR call stacks |
 | `DramBw` | uncore memory-controller PMU, or the vendor `/dev/ddr_perf` device |
 
@@ -53,6 +53,7 @@ Each scenario resolves one feature for its rung: `snapshot` asks for `HwCallstac
 Every mechanism carries a **quality**:
 
 - **Exact.** The hardware answers the exact question asked. PEBS, PERF_METRICS, Arm slots, LBR, and uncore counters are exact.
+- **Scaled.** The hardware answers the exact question, but only for part of the run. AMD dispatch-slot top-down needs more events than Zen has counters, so its counter groups take turns.
 - **Estimated.** The hardware answers a nearby question. IBS and SPE sample every micro-operation and tag the memory ones, so their sample period is in operations, not loads. Baseline counters computing top-down from stall events are estimated too.
 
 Quality appears as a column on the collector and resource tables. Collector rows use labels such as `exact_system`, `exact_process_tree`, `best_effort`, `attributed`, and `unavailable`.

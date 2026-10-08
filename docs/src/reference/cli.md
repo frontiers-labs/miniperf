@@ -36,7 +36,7 @@ The checks, in the order they print:
 | `objdump (disassembly)` | | not installed, so the assembly view in `mperf show` is unavailable |
 | `debuginfod-find` | | `DEBUGINFOD_URLS` is set but the tool is missing |
 
-The mechanism rows depend on the host: `precise sampling (Intel PEBS)`, `precise sampling (AMD IBS)`, `precise sampling (Arm SPE)`, `fixed topdown (PERF_METRICS)`, `topdown (Arm pmuv3 slots)`, `branch records (LBR call stacks)`, `uncore memory bandwidth`, and `baseline counters`.
+The mechanism rows depend on the host: `precise sampling (Intel PEBS)`, `precise sampling (AMD IBS)`, `precise sampling (Arm SPE)`, `fixed topdown (PERF_METRICS)`, `topdown (Arm pmuv3 slots)`, `topdown (AMD dispatch slots)`, `branch records (LBR call stacks)`, `uncore memory bandwidth`, and `baseline counters`.
 
 ## mperf stat
 

@@ -78,10 +78,17 @@ pub fn alias_has_term(pmu: &Path, event: &str, term: &str) -> bool {
 
 /// Overwrite one `format/` field of an already encoded event.
 pub fn set_format_field(attr: &mut perf_event_attr, pmu: &Path, name: &str, value: u64) {
-    if let Some((0, low, high)) = parse_format(pmu, name) {
-        let mask = field_mask(low, high);
-        attr.config = (attr.config & !mask) | ((value << low) & mask);
-    }
+    let Some((register, low, high)) = parse_format(pmu, name) else {
+        return;
+    };
+    let mask = field_mask(low, high);
+    let slot = match register {
+        0 => &mut attr.config,
+        1 => &mut attr.config1,
+        2 => &mut attr.config2,
+        _ => return,
+    };
+    *slot = (*slot & !mask) | ((value << low) & mask);
 }
 
 fn field_mask(low: u32, high: u32) -> u64 {
