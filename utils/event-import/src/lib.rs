@@ -7,7 +7,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use pmu_data::{Alias, EventDesc, Metric, MetricExpression, PlatformDesc};
+use pmu_data::{
+    Alias, EventDesc, Metric, MetricExpression, PlatformDesc, TmaConstant, TmaGroup, TmaMetric,
+    TmaScenario,
+};
 use serde_json::Value;
 
 pub type ImportResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -55,6 +58,420 @@ pub fn import_intel_linux(
     name: &str,
 ) -> ImportResult<PlatformDesc> {
     import_intel(source, family_id, name)
+}
+
+/// Converts a Linux perf AMD family directory (`arch/x86/amdzen*`).
+///
+/// Uncore events (those with a `Unit`) are skipped: they belong to the
+/// `amd_l3`, `amd_df` and `amd_umc` PMUs, and a `PlatformDesc` describes the
+/// core PMU only. The top-down scenario is derived from the events the family
+/// has, with the dispatch width taken from perf's own `pipeline.json`.
+pub fn import_amd(source: &Path, family_id: &str, name: &str) -> ImportResult<PlatformDesc> {
+    let mut events = BTreeMap::<String, EventDesc>::new();
+    let mut metric_exprs = BTreeMap::<String, String>::new();
+    for path in json_sources(source)? {
+        let document: Value = serde_json::from_reader(BufReader::new(File::open(&path)?))?;
+        for value in intel_records(document, &path)? {
+            if let (Some(name), Some(expr)) = (
+                string_field(&value, "MetricName"),
+                string_field(&value, "MetricExpr"),
+            ) {
+                metric_exprs.insert(name.to_owned(), expr.to_owned());
+            }
+            if let Some(event) = convert_amd_event(&value)? {
+                events.insert(event.name.clone(), event);
+            }
+        }
+    }
+
+    // perf metrics apply a counter mask inline (`cpu@event\,cmask\=0x8@`). An
+    // event table has no modifiers, so each masked use becomes its own event.
+    for expr in metric_exprs.values() {
+        for (base, cmask) in masked_events(expr) {
+            let Some(event) = events.get(&base) else {
+                continue;
+            };
+            let masked = EventDesc {
+                name: masked_event_name(&base, cmask),
+                desc: format!(
+                    "Cycles in which this event counts at least {cmask}: {}",
+                    event.desc
+                ),
+                code: event.code | (cmask << 24),
+            };
+            events.insert(masked.name.clone(), masked);
+        }
+    }
+
+    let scenario = amd_slots_scenario(&events, &metric_exprs)
+        .or_else(|| amd_stall_scenario(&events))
+        .ok_or_else(|| format!("{} has no top-down events", source.display()))?;
+    Ok(PlatformDesc {
+        family_id: family_id.to_owned(),
+        name: name.to_owned(),
+        vendor: "AMD".to_owned(),
+        arch: "x86_64".to_owned(),
+        // Zen has six counters and none of them is fixed: `cycles` and
+        // `instructions` take two in every sampling group.
+        max_counters: Some(4),
+        leader_event: None,
+        aliases: Some(amd_aliases(&events)),
+        events: events.into_values().collect(),
+        metrics: vec![Metric {
+            name: "IPC".to_owned(),
+            desc: "Instructions retired per CPU cycle.".to_owned(),
+            expression: MetricExpression("instructions / cycles".to_owned()),
+            unit: Some("insn/cycle".to_owned()),
+        }],
+        scenarios: Some(vec![scenario]),
+    })
+}
+
+/// Encode one AMD core event as a PERF_EVTSEL value. The event select is 12
+/// bits wide and its top four live at bits 32-35, above the unit mask.
+fn convert_amd_event(value: &Value) -> ImportResult<Option<EventDesc>> {
+    let (Some(name), Some(event_code)) = (
+        string_field(value, "EventName"),
+        string_field(value, "EventCode"),
+    ) else {
+        return Ok(None);
+    };
+    if value.get("Unit").is_some() || value.get("Deprecated").is_some() {
+        return Ok(None);
+    }
+    let event = parse_number(event_code)?;
+    let umask = parse_optional(value, "UMask")?;
+    if event > 0xfff || umask > 0xff {
+        return Err(format!("{name}: event {event:#x} umask {umask:#x} does not fit").into());
+    }
+    let code = (event & 0xff)
+        | (umask << 8)
+        | (parse_optional(value, "EdgeDetect")? << 18)
+        | (parse_optional(value, "Invert")? << 23)
+        | (parse_optional(value, "CounterMask")? << 24)
+        | ((event >> 8) << 32);
+    let desc = string_field(value, "PublicDescription")
+        .or_else(|| string_field(value, "BriefDescription"))
+        .unwrap_or("");
+    Ok(Some(EventDesc {
+        name: name.to_owned(),
+        desc: desc.to_owned(),
+        code,
+    }))
+}
+
+/// Every `cpu@<event>\,cmask\=<n>@` use in a perf metric expression.
+fn masked_events(expr: &str) -> Vec<(String, u64)> {
+    expr.split("cpu@")
+        .skip(1)
+        .filter_map(|rest| {
+            let (term, _) = rest.split_once('@')?;
+            let (event, cmask) = term.split_once("\\,cmask\\=")?;
+            Some((event.to_owned(), parse_number(cmask).ok()?))
+        })
+        .collect()
+}
+
+fn masked_event_name(event: &str, cmask: u64) -> String {
+    format!("{event}_cmask{cmask}")
+}
+
+/// Zen kernels map the portable events to these encodings
+/// (`amd_zen1_perfmon_event_map` in `arch/x86/events/amd/core.c`).
+fn amd_aliases(events: &BTreeMap<String, EventDesc>) -> Vec<Alias> {
+    [
+        ("cycles", 0x76),
+        ("instructions", 0xc0),
+        ("branches", 0xc2),
+        ("branch_misses", 0xc3),
+        ("cache_references", 0xff60),
+        ("cache_misses", 0x0964),
+    ]
+    .into_iter()
+    .filter_map(|(target, code)| {
+        let origin = events.values().find(|event| event.code == code)?;
+        Some(Alias {
+            target: target.to_owned(),
+            origin: origin.name.clone(),
+        })
+    })
+    .collect()
+}
+
+fn tma_metric(name: &str, desc: &str, formula: String, group: &str) -> TmaMetric {
+    TmaMetric {
+        name: name.to_owned(),
+        desc: desc.to_owned(),
+        formula,
+        group: Some(group.to_owned()),
+        cpus: None,
+    }
+}
+
+fn tma_group(name: &str, events: &[&str]) -> TmaGroup {
+    TmaGroup {
+        name: name.to_owned(),
+        events: events.iter().map(|event| (*event).to_owned()).collect(),
+    }
+}
+
+/// The dispatch-slot top-down of Zen 4 and newer: perf's `PipelineL1` and
+/// `PipelineL2` metrics, under the bucket names the other tables use.
+///
+/// The recorder samples `events` in order, four to a counter group (three
+/// when the NMI watchdog holds a counter), and a metric only sees the samples
+/// of the group its events were counted in. Every pair a formula combines is
+/// therefore adjacent here, at an offset that both group sizes keep together.
+fn amd_slots_scenario(
+    events: &BTreeMap<String, EventDesc>,
+    metric_exprs: &BTreeMap<String, String>,
+) -> Option<TmaScenario> {
+    let slots = metric_exprs.get("total_dispatch_slots")?;
+    let width: u32 = slots.split_once('*')?.0.trim().parse().ok()?;
+    let resync = [
+        "bp_redirects.resync",
+        "bp_fe_redir.resync",
+        "resyncs_or_nc_redirects",
+    ]
+    .into_iter()
+    .find(|event| events.contains_key(*event))?;
+    let starved = masked_event_name(
+        "de_no_dispatch_per_slot.no_ops_from_frontend",
+        u64::from(width),
+    );
+    let ordered = [
+        "de_src_op_disp.all",
+        "ex_ret_ops",
+        "ex_ret_ucode_ops",
+        "de_no_dispatch_per_slot.backend_stalls",
+        "ex_ret_brn_misp",
+        resync,
+        "ex_no_retire.load_not_complete",
+        "ex_no_retire.not_complete",
+        "de_no_dispatch_per_slot.smt_contention",
+        "de_no_dispatch_per_slot.no_ops_from_frontend",
+        &starved,
+    ];
+    if !ordered.iter().all(|event| events.contains_key(*event)) {
+        return None;
+    }
+
+    let slots = "($dispatch_width * cycles)";
+    let per_slot = |event: &str| format!("{event} / {slots}");
+    Some(TmaScenario {
+        name: "tma".to_owned(),
+        events: ["cycles", "instructions"]
+            .into_iter()
+            .chain(ordered)
+            .map(str::to_owned)
+            .collect(),
+        groups: vec![
+            tma_group("retiring", &["cycles", "ex_ret_ops"]),
+            tma_group(
+                "bad_speculation",
+                &["cycles", "de_src_op_disp.all", "ex_ret_ops"],
+            ),
+            tma_group(
+                "fe_bound",
+                &["cycles", "de_no_dispatch_per_slot.no_ops_from_frontend"],
+            ),
+            tma_group(
+                "be_bound",
+                &["cycles", "de_no_dispatch_per_slot.backend_stalls"],
+            ),
+            tma_group(
+                "smt_contention",
+                &["cycles", "de_no_dispatch_per_slot.smt_contention"],
+            ),
+            tma_group("microcode", &["ex_ret_ucode_ops", "ex_ret_ops"]),
+            tma_group("flushes", &["ex_ret_brn_misp", resync]),
+            tma_group("fetch_latency", &["cycles", &starved]),
+            tma_group(
+                "no_retire",
+                &["ex_no_retire.load_not_complete", "ex_no_retire.not_complete"],
+            ),
+        ],
+        precise_attribution: false,
+        constants: vec![TmaConstant {
+            name: "dispatch_width".to_owned(),
+            value: width,
+        }],
+        metrics: vec![
+            tma_metric(
+                "retiring",
+                "Dispatch slots used by ops that retired",
+                per_slot("ex_ret_ops"),
+                "retiring",
+            ),
+            tma_metric(
+                "bad_speculation",
+                "Dispatch slots used by ops that did not retire",
+                format!("(de_src_op_disp.all - ex_ret_ops) / {slots}"),
+                "bad_speculation",
+            ),
+            tma_metric(
+                "fe_bound",
+                "Dispatch slots left empty because the frontend supplied no ops",
+                per_slot("de_no_dispatch_per_slot.no_ops_from_frontend"),
+                "fe_bound",
+            ),
+            tma_metric(
+                "be_bound",
+                "Dispatch slots left empty because the backend stalled",
+                per_slot("de_no_dispatch_per_slot.backend_stalls"),
+                "be_bound",
+            ),
+            tma_metric(
+                "smt_contention",
+                "Dispatch slots given to the sibling hardware thread",
+                per_slot("de_no_dispatch_per_slot.smt_contention"),
+                "smt_contention",
+            ),
+            tma_metric(
+                "retiring.microcode",
+                "Retiring slots used by microcoded ops",
+                "retiring * ex_ret_ucode_ops / ex_ret_ops".to_owned(),
+                "microcode",
+            ),
+            tma_metric(
+                "retiring.fastpath",
+                "Retiring slots used by fastpath ops",
+                "retiring * (1 - ex_ret_ucode_ops / ex_ret_ops)".to_owned(),
+                "microcode",
+            ),
+            tma_metric(
+                "bad_speculation.branch_mispredict",
+                "Bad speculation flushed by mispredicted branches",
+                format!("bad_speculation * ex_ret_brn_misp / (ex_ret_brn_misp + {resync})"),
+                "flushes",
+            ),
+            tma_metric(
+                "bad_speculation.pipeline_restarts",
+                "Bad speculation flushed by pipeline restarts (resyncs)",
+                format!("bad_speculation * {resync} / (ex_ret_brn_misp + {resync})"),
+                "flushes",
+            ),
+            tma_metric(
+                "fe_bound.fetch_latency",
+                "Frontend slots lost in cycles that delivered no ops at all (cache and TLB misses, resteers)",
+                format!("{starved} / cycles"),
+                "fetch_latency",
+            ),
+            tma_metric(
+                "fe_bound.fetch_bandwidth",
+                "Frontend slots lost in cycles that delivered some ops, but fewer than the dispatch width",
+                "fe_bound - fe_bound.fetch_latency".to_owned(),
+                "fetch_latency",
+            ),
+            tma_metric(
+                "be_bound.memory_bound",
+                "Backend stalls while the oldest op waited on a load",
+                "be_bound * ex_no_retire.load_not_complete / ex_no_retire.not_complete"
+                    .to_owned(),
+                "no_retire",
+            ),
+            tma_metric(
+                "be_bound.core_bound",
+                "Backend stalls while the oldest op waited on something other than a load",
+                "be_bound * (1 - ex_no_retire.load_not_complete / ex_no_retire.not_complete)"
+                    .to_owned(),
+                "no_retire",
+            ),
+        ],
+        ui: None,
+    })
+}
+
+/// Zen 1 to 3 have no dispatch-slot events, so their level one is fractions
+/// of cycles from the fetch-stall counters. Those saturate rather than
+/// partition, and the buckets can overlap. Event order matters for the same
+/// reason as in [`amd_slots_scenario`].
+fn amd_stall_scenario(events: &BTreeMap<String, EventDesc>) -> Option<TmaScenario> {
+    let retired = ["ex_ret_ops", "ex_ret_cops"]
+        .into_iter()
+        .find(|event| events.contains_key(*event))?;
+    let ordered = [
+        "ic_fetch_stall.ic_stall_back_pressure",
+        "l2_fill_pending.l2_fill_busy",
+        retired,
+        "ic_fetch_stall.ic_stall_dq_empty",
+        "ex_ret_brn_misp",
+    ];
+    if !ordered.iter().all(|event| events.contains_key(*event)) {
+        return None;
+    }
+    Some(TmaScenario {
+        name: "tma".to_owned(),
+        events: ["cycles", "instructions"]
+            .into_iter()
+            .chain(ordered)
+            .map(str::to_owned)
+            .collect(),
+        groups: vec![
+            tma_group("retiring", &["cycles", retired]),
+            tma_group("fe_bound", &["cycles", "ic_fetch_stall.ic_stall_dq_empty"]),
+            tma_group("bad_speculation", &["cycles", "ex_ret_brn_misp"]),
+            tma_group(
+                "be_bound",
+                &[
+                    "cycles",
+                    "ic_fetch_stall.ic_stall_back_pressure",
+                    "l2_fill_pending.l2_fill_busy",
+                ],
+            ),
+        ],
+        precise_attribution: false,
+        constants: vec![
+            TmaConstant {
+                name: "max_retired_width".to_owned(),
+                value: 8,
+            },
+            TmaConstant {
+                name: "branch_mispredict_penalty".to_owned(),
+                value: 13,
+            },
+        ],
+        metrics: vec![
+            tma_metric(
+                "retiring",
+                "Fraction of cycles useful work completed",
+                format!("{retired} / ($max_retired_width * cycles)"),
+                "retiring",
+            ),
+            tma_metric(
+                "fe_bound",
+                "Fraction of cycles Fetch/Decode not supplied",
+                "ic_fetch_stall.ic_stall_dq_empty / cycles".to_owned(),
+                "fe_bound",
+            ),
+            tma_metric(
+                "bad_speculation",
+                "Fraction of cycles lost to branch misprediction",
+                "(ex_ret_brn_misp * $branch_mispredict_penalty) / cycles".to_owned(),
+                "bad_speculation",
+            ),
+            tma_metric(
+                "be_bound",
+                "Fraction of cycles backend was out of resources",
+                "ic_fetch_stall.ic_stall_back_pressure / cycles".to_owned(),
+                "be_bound",
+            ),
+            tma_metric(
+                "be_bound.memory_bound",
+                "Backend pressure coincident with outstanding L2 fills",
+                "l2_fill_pending.l2_fill_busy / cycles".to_owned(),
+                "be_bound",
+            ),
+            tma_metric(
+                "be_bound.core_bound",
+                "Backend pressure not coincident with outstanding L2 fills",
+                "(ic_fetch_stall.ic_stall_back_pressure - l2_fill_pending.l2_fill_busy) / cycles"
+                    .to_owned(),
+                "be_bound",
+            ),
+        ],
+        ui: None,
+    })
 }
 
 /// Converts an Arm Telemetry Solution PMU JSON file.
@@ -341,6 +758,60 @@ mod tests {
         let aliases = platform.aliases.unwrap();
         assert_eq!(aliases[0].target, "cycles");
         assert_eq!(aliases[1].target, "instructions");
+    }
+
+    #[test]
+    fn amd_extended_event_select_goes_above_the_unit_mask() {
+        // PPR: PMCx1A0 with unit mask 0x1e is PERF_CTL 0x1_0000_1EA0.
+        let value = serde_json::json!({
+            "EventName": "de_no_dispatch_per_slot.backend_stalls",
+            "EventCode": "0x1a0",
+            "UMask": "0x1e"
+        });
+        assert_eq!(
+            convert_amd_event(&value).unwrap().unwrap().code,
+            0x1_0000_1ea0
+        );
+    }
+
+    #[test]
+    fn imports_amd_fixture_with_slot_topdown() {
+        let source = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/amd"));
+        let platform = import_amd(source, "fixture", "AMD fixture").unwrap();
+        let code = |name: &str| {
+            platform
+                .events
+                .iter()
+                .find(|event| event.name == name)
+                .map(|event| event.code)
+        };
+        // The L3 event belongs to another PMU and must not reach the core table.
+        assert_eq!(code("l3_lookup_state.all_coherent_accesses_to_l3"), None);
+        // The masked use in the fixture's metric becomes its own event.
+        assert_eq!(
+            code("de_no_dispatch_per_slot.no_ops_from_frontend_cmask8"),
+            Some(0x1_0800_01a0)
+        );
+        let aliases = platform.aliases.unwrap();
+        assert!(aliases
+            .iter()
+            .any(|alias| alias.target == "cycles" && alias.origin == "ls_not_halted_cyc"));
+
+        let scenario = &platform.scenarios.unwrap()[0];
+        assert_eq!(scenario.constants[0].value, 8);
+        let formula = |name: &str| {
+            &scenario
+                .metrics
+                .iter()
+                .find(|metric| metric.name == name)
+                .unwrap()
+                .formula
+        };
+        assert_eq!(
+            formula("fe_bound.fetch_latency"),
+            "de_no_dispatch_per_slot.no_ops_from_frontend_cmask8 / cycles"
+        );
+        assert!(formula("bad_speculation.pipeline_restarts").contains("bp_redirects.resync"));
     }
 
     #[test]

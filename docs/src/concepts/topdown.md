@@ -27,7 +27,9 @@ There are three ways, and `mperf record` tells you which one it used.
 
 **Dedicated hardware.** Intel cores from Ice Lake on have a `PERF_METRICS` register that counts the four level-1 buckets directly in slots. Sapphire Rapids adds the level-2 halves. Arm cores with pmuv3 `slots` events do the same at level 1. These are exact, occupy fixed counters, and leave the programmable counters free.
 
-**Curated formulas.** For a CPU with an event table but no dedicated hardware, miniperf ships a scenario file with formulas over programmable events. Tiger Lake, Zen, Cortex-A720, A520, and the SpacemiT cores each have one. The events in a formula are opened together as one coherent group, so they are counted over the same cycles. Metrics are fractions of cycles rather than slots.
+**Curated formulas.** For a CPU with an event table but no dedicated hardware, miniperf ships a scenario file with formulas over programmable events. Tiger Lake, every Zen generation, Cortex-A720, A520, and the SpacemiT cores each have one. The events in a formula are opened together as one coherent group, so they are counted over the same cycles. A model with more events than the PMU has counters uses several groups, which the kernel schedules in turn. Each metric is then computed from the samples of its own group.
+
+AMD Zen 4 and newer count dispatch slots with programmable events, so their formulas give fractions of slots like the dedicated hardware does. See [Linux on x86-64](../platforms/x86.md). The other tables give fractions of cycles.
 
 **Architectural fallback.** A CPU without a table gets three metrics from the portable events: `retiring = instructions / (4 * cycles)`, `fe_bound = stalled_cycles_frontend / cycles`, and `be_bound = stalled_cycles_backend / cycles`, assuming a retire width of four.
 
@@ -50,7 +52,7 @@ In a `tma` recording, `tma_summary` gives the same metrics as fractions over the
 Stall counters on many cores saturate rather than partition: a cycle stalled for two reasons counts in both. Consequences you will see:
 
 - Level-1 buckets can sum to more than 100 %, and a value computed by subtraction can be slightly negative. Read negative values as zero.
-- On AMD Zen, and on SpacemiT X100, an execution-bound loop with no cache misses stalls the frontend through backpressure, so `fe_bound` reads high on what is really a core-bound workload. The level-2 breakdown is the reliable signal there.
+- On AMD Zen through Zen 3, and on SpacemiT X100, an execution-bound loop with no cache misses stalls the frontend through backpressure, so `fe_bound` reads high on what is really a core-bound workload. The level-2 breakdown is the reliable signal there.
 - When SMT siblings are busy, shared counters inflate. Profile on a quiet machine.
 
 miniperf normalizes the SpacemiT buckets against the slots not accounted for by retiring and bad speculation, so its level-1 values sum to 1 on those cores. Elsewhere the raw fractions are reported.

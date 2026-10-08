@@ -147,7 +147,8 @@ pub struct SamplingDriverBuilder {
 /// Open precise memory sampling (data address, data source and latency per
 /// access) for a target process, alongside whatever counter-based sampling is
 /// already running: Arm SPE where an `arm_spe_*` PMU exists, Intel PEBS
-/// `mem-loads`/`mem-stores` otherwise.
+/// `mem-loads`/`mem-stores` on x86-64, AMD IBS op where the core PMU has no
+/// precise aliases but `ibs_op` exists.
 ///
 /// Fails with [`Error::UnsupportedDriver`] on a host with no such facility;
 /// callers resolve [`crate::Feature::PreciseMem`] first to find out.
@@ -164,13 +165,36 @@ pub fn mem_sampling_driver(
             return Ok(Box::new(perf::PerfSpeSamplingDriver::new(pid)?));
         }
         #[cfg(target_arch = "x86_64")]
-        return Ok(Box::new(perf::PerfMemSamplingDriver::new(
-            pid,
-            sample_freq,
-            stack_dump_size,
-            perf::dwarf_register_mask(),
-            lbr_callstack,
-        )?));
+        {
+            // A zero-byte stack dump has nothing to unwind, and the kernel
+            // writes such a sample 8 bytes short, cutting off its data source.
+            let dwarf = if stack_dump_size == 0 {
+                0
+            } else {
+                perf::dwarf_register_mask()
+            };
+            match perf::PerfMemSamplingDriver::new(
+                pid,
+                sample_freq,
+                stack_dump_size,
+                dwarf,
+                lbr_callstack,
+            ) {
+                Ok(driver) => return Ok(Box::new(driver)),
+                Err(_) if perf::ibs_pmu_path().is_some() => {
+                    // AMD: the core PMU exposes no `mem-loads` alias to drive
+                    // PEBS-style sampling with, but IBS tags the same loads.
+                    return Ok(Box::new(perf::PerfIbsSamplingDriver::new(
+                        pid,
+                        sample_freq,
+                        stack_dump_size,
+                        dwarf,
+                        lbr_callstack,
+                    )?));
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
     #[allow(unreachable_code)]
     Err(Error::UnsupportedDriver {
@@ -375,9 +399,9 @@ impl SamplingDriverBuilder {
         self
     }
 
-    /// Requests hardware branch records in call-stack mode (Intel LBR) as an
-    /// extra stack source alongside the selected unwind mode. Silently ignored
-    /// where the hardware or kernel rejects it.
+    /// Requests hardware branch records (Intel LBR call-stack mode, AMD BRS /
+    /// LbrV2 history replay) as an extra stack source alongside the selected
+    /// unwind mode. Silently ignored where the hardware or kernel rejects it.
     pub fn lbr_callstack(mut self, enabled: bool) -> Self {
         self.lbr_callstack = enabled;
         self

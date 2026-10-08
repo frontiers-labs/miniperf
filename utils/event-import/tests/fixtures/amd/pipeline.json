@@ -1,0 +1,7 @@
+[
+  { "MetricName": "total_dispatch_slots", "MetricExpr": "8 * ls_not_halted_cyc" },
+  {
+    "MetricName": "frontend_bound_by_latency",
+    "MetricExpr": "d_ratio((8 * cpu@de_no_dispatch_per_slot.no_ops_from_frontend\\,cmask\\=0x8@), total_dispatch_slots)"
+  }
+]

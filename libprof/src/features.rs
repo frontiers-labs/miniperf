@@ -36,7 +36,11 @@ impl Feature {
     pub fn mechanisms(self) -> &'static [Mechanism] {
         match self {
             Feature::PreciseMem => &[Mechanism::PebsMem, Mechanism::IbsOp, Mechanism::ArmSpe],
-            Feature::Topdown => &[Mechanism::FixedTopdown, Mechanism::ArmSlotsTopdown],
+            Feature::Topdown => &[
+                Mechanism::FixedTopdown,
+                Mechanism::ArmSlotsTopdown,
+                Mechanism::AmdDispatchSlots,
+            ],
             Feature::HwCallstack => &[Mechanism::LbrCallstack],
             Feature::DramBw => &[Mechanism::UncoreBw],
         }
@@ -56,7 +60,11 @@ pub enum Mechanism {
     FixedTopdown,
     /// Arm pmuv3 slots-based L1 topdown.
     ArmSlotsTopdown,
-    /// Intel LBR call-stack mode as a frame-pointer-free stack source.
+    /// AMD Zen 4+ dispatch-slot events (`de_no_dispatch_per_slot`), counted on
+    /// programmable counters.
+    AmdDispatchSlots,
+    /// Branch-record call stacks: Intel LBR call-stack mode, or AMD BRS / LbrV2
+    /// history replayed into a stack, as a frame-pointer-free stack source.
     LbrCallstack,
     /// Memory-controller counters for measured DRAM bandwidth.
     UncoreBw,
@@ -74,6 +82,7 @@ impl Mechanism {
             Mechanism::ArmSpe => "arm_spe",
             Mechanism::FixedTopdown => "fixed_topdown",
             Mechanism::ArmSlotsTopdown => "arm_slots_topdown",
+            Mechanism::AmdDispatchSlots => "amd_dispatch_slots",
             Mechanism::LbrCallstack => "lbr_callstack",
             Mechanism::UncoreBw => "uncore_bw",
             Mechanism::Baseline => "counter_only",
@@ -92,27 +101,12 @@ impl Mechanism {
             | Mechanism::ArmSlotsTopdown
             | Mechanism::LbrCallstack
             | Mechanism::UncoreBw => MeasurementQuality::Exact,
+            // The hardware counts slots directly, but the events outnumber
+            // the counters and each group only sees its share of the run.
+            Mechanism::AmdDispatchSlots => MeasurementQuality::Scaled,
             Mechanism::IbsOp | Mechanism::ArmSpe | Mechanism::Baseline => {
                 MeasurementQuality::Estimated
             }
-        }
-    }
-
-    /// Why libprof cannot drive this mechanism yet, whatever the hardware has.
-    ///
-    /// [`Mechanism::rejection`] answers what the host is capable of, which is
-    /// what `mperf doctor` reports; [`resolve`] additionally has to answer what
-    /// a recording will really get, and a facility with no driver behind it
-    /// delivers nothing.
-    fn driver_gap(self) -> Option<&'static str> {
-        match self {
-            // The kernel may already serve precise `mem-loads` through IBS via
-            // precise_ip, which would make a separate driver unnecessary; that
-            // needs checking on real AMD hardware before one is written.
-            Mechanism::IbsOp => {
-                Some("IBS: the ibs_op PMU is present but libprof has no driver for it yet")
-            }
-            _ => None,
         }
     }
 
@@ -150,15 +144,21 @@ impl Mechanism {
                 None
             }
             Mechanism::IbsOp => {
-                if caps.pmu("ibs_op").is_some() {
-                    return None;
-                }
-                if cfg!(target_arch = "x86_64") && !caps.has_cpu_flag("ibs") {
-                    return Some(
-                        "IBS: `ibs` CPUID flag absent — possibly disabled in BIOS".to_string(),
-                    );
-                }
-                Some("IBS: no `ibs_op` PMU exposed by the kernel".to_string())
+                let Some(pmu) = caps.pmu("ibs_op") else {
+                    if cfg!(target_arch = "x86_64") && !caps.has_cpu_flag("ibs") {
+                        return Some(
+                            "IBS: `ibs` CPUID flag absent — possibly disabled in BIOS".to_string(),
+                        );
+                    }
+                    return Some("IBS: no `ibs_op` PMU exposed by the kernel".to_string());
+                };
+                // IBS has no hardware privilege filter. The kernel's software
+                // filter is what lets a recording sample user space only;
+                // without it the open is refused.
+                (!pmu.formats.contains("swfilt")).then(|| {
+                    "IBS: `ibs_op` has no `swfilt` format — this kernel cannot restrict IBS samples to user space"
+                        .to_string()
+                })
             }
             Mechanism::ArmSpe => (caps.pmus_with_prefix("arm_spe").next().is_none()).then(|| {
                 "Arm SPE: no `arm_spe_*` PMU exposed — needs CONFIG_ARM_SPE_PMU and firmware support"
@@ -207,6 +207,16 @@ impl Mechanism {
                     ));
                 }
                 pmuv3.iter().find_map(|pmu| group_is_schedulable(pmu))
+            }
+            Mechanism::AmdDispatchSlots => {
+                if !caps.hardware_counters {
+                    return Some("AMD topdown: no hardware PMU exposed".to_string());
+                }
+                (!crate::cpu_family::host_has_event("de_no_dispatch_per_slot.backend_stalls"))
+                    .then(|| {
+                        "AMD topdown: dispatch-slot events (`de_no_dispatch_per_slot`) are Zen 4 and newer"
+                            .to_string()
+                    })
             }
             Mechanism::LbrCallstack => {
                 let depth = caps
@@ -298,12 +308,7 @@ impl Resolution {
 pub fn resolve(feature: Feature, caps: &Capabilities) -> Resolution {
     let mut rejected = Vec::new();
     for mechanism in feature.mechanisms() {
-        // The hardware answer comes first: "your BIOS has IBS off" is more
-        // useful than "we have no IBS driver" on a host that has no IBS.
-        let reason = mechanism
-            .rejection(caps)
-            .or_else(|| mechanism.driver_gap().map(str::to_string));
-        match reason {
+        match mechanism.rejection(caps) {
             None => {
                 return Resolution {
                     feature,

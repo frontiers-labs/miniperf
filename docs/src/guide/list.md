@@ -22,7 +22,7 @@ ls_pref_instr_disp.prefetch_nta - Software Prefetch Instructions (PREFETCHNTA in
 ...
 ```
 
-The first ten are the portable events every supported CPU provides. The rest come from the event table for the detected CPU family. On an AMD Zen host that is 183 model-specific events. On a CPU without a curated table, only the portable events appear.
+The first ten are the portable events every supported CPU provides. The rest come from the event table for the detected CPU family. On an AMD Zen host that is 163 model-specific events. On a CPU without a curated table, only the portable events appear.
 
 Use any of these names with `mperf stat -e`:
 

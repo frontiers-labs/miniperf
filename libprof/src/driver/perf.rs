@@ -2,6 +2,8 @@ mod binding;
 pub(crate) mod branch;
 mod events;
 #[cfg(target_arch = "x86_64")]
+mod ibs;
+#[cfg(target_arch = "x86_64")]
 mod mem;
 mod mmap;
 mod spe;
@@ -32,6 +34,8 @@ use crate::sink::{ProcAddr, Sample};
 use crate::{Counter, Error, Record};
 
 pub use events::list_supported_counters;
+#[cfg(target_arch = "x86_64")]
+pub use ibs::{ibs_pmu_path, PerfIbsSamplingDriver};
 #[cfg(target_arch = "x86_64")]
 pub use mem::PerfMemSamplingDriver;
 pub use spe::{spe_pmu_path, PerfSpeSamplingDriver};

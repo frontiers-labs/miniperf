@@ -18,7 +18,7 @@ Every number carries its provenance. When a host cannot provide a measurement, t
 
 Results are plain Parquet files. `mperf query` opens them with an embedded DuckDB engine, and so does any Parquet reader you already use.
 
-miniperf runs on x86-64, Arm, and RISC-V. It ships curated event tables for Intel Tiger Lake, AMD Zen, Arm Cortex-A720 and A520, SiFive U7, and SpacemiT X60, X100, and A100, and it works around the quirks of those boards.
+miniperf runs on x86-64, Arm, and RISC-V. It ships curated event tables for Intel Tiger Lake, AMD Zen through Zen 6, Arm Cortex-A720 and A520, SiFive U7, and SpacemiT X60, X100, and A100, and it works around the quirks of those boards.
 
 ## How to read this manual
 

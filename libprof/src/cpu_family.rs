@@ -110,6 +110,11 @@ fn architectural_tma_fallback() -> TmaScenario {
     }
 }
 
+/// Whether the detected host family's event table has an event.
+pub fn host_has_event(name: &str) -> bool {
+    find_cpu_family(get_host_cpu_family()).is_some_and(|family| family.events.contains_key(name))
+}
+
 /// Maximum number of events the host PMU can schedule in one coherent group.
 pub fn host_max_counters() -> Option<usize> {
     find_cpu_family(get_host_cpu_family()).and_then(|family| family.max_counters)
@@ -130,29 +135,26 @@ fn x86_family_from_signature(eax: u32) -> &'static str {
     let extended_model = (eax >> 16) & 0xf;
     let extended_family = (eax >> 20) & 0xff;
 
+    // AMD generations share a family and split it by model range, as in
+    // Linux perf's `arch/x86/mapfile.csv`. The extended model is the range.
     if family == 0xf && extended_family == 0x8 {
-        // AMD Family 23 (17h)
-        if extended_model == 0x0 || extended_model == 0x1 || extended_model == 0x2 {
-            return pmu_data::AMDZEN1;
-        } else if extended_model == 0x3
-            || extended_model == 0x4
-            || extended_model == 0x6
-            || extended_model == 0x7
-            || extended_model == 0x9
-        {
-            return pmu_data::AMDZEN2;
-        }
+        // Family 17h
+        return match extended_model {
+            0x0..=0x2 => pmu_data::AMDZEN1,
+            _ => pmu_data::AMDZEN2,
+        };
     } else if family == 0xf && extended_family == 0xa {
-        // AMD Family 25 (19h)
-        if extended_model == 0x0
-            || extended_model == 0x2
-            || extended_model == 0x4
-            || extended_model == 0x5
-        {
-            return pmu_data::AMDZEN3;
-        } else if extended_model == 0x1 || extended_model == 0x6 || extended_model == 0x7 {
-            return pmu_data::AMDZEN4;
-        }
+        // Family 19h
+        return match extended_model {
+            0x0 | 0x2 | 0x4 | 0x5 => pmu_data::AMDZEN3,
+            _ => pmu_data::AMDZEN4,
+        };
+    } else if family == 0xf && extended_family == 0xb {
+        // Family 1Ah
+        return match extended_model {
+            0x0..=0x2 | 0x4 | 0x6 | 0x7 => pmu_data::AMDZEN5,
+            _ => pmu_data::AMDZEN6,
+        };
     } else if family == 0x6 && extended_family == 0 {
         // Recent Intel processors
         if (extended_model == 0x3 && model == 0xc)
@@ -204,6 +206,48 @@ mod x86_tests {
             x86_family_from_signature(signature(6, 0xd, 8, 0)),
             pmu_data::INTEL_TIGERLAKE
         );
+    }
+
+    #[test]
+    fn maps_amd_models_to_zen_generations() {
+        // (family 0xf + extended family, extended model) of shipped parts.
+        let cases = [
+            (0x8, 0x0, pmu_data::AMDZEN1), // Ryzen 1000, 17h model 01h
+            (0x8, 0x7, pmu_data::AMDZEN2), // Ryzen 3000, 17h model 71h
+            (0x8, 0xa, pmu_data::AMDZEN2), // Mendocino, 17h model A0h
+            (0xa, 0x2, pmu_data::AMDZEN3), // Ryzen 5000, 19h model 21h
+            (0xa, 0x6, pmu_data::AMDZEN4), // Ryzen 7000, 19h model 61h
+            (0xa, 0xa, pmu_data::AMDZEN4), // Bergamo, 19h model A0h
+            (0xb, 0x4, pmu_data::AMDZEN5), // Ryzen 9000, 1Ah model 44h
+            (0xb, 0x7, pmu_data::AMDZEN5), // Strix Halo, 1Ah model 70h
+            (0xb, 0x5, pmu_data::AMDZEN6), // 1Ah model 50h
+        ];
+        for (extended_family, extended_model, expected) in cases {
+            assert_eq!(
+                x86_family_from_signature(signature(0xf, 0, extended_model, extended_family)),
+                expected,
+                "family {:#x} model {extended_model:#x}0",
+                0xf + extended_family
+            );
+        }
+    }
+
+    #[test]
+    fn zen_tables_encode_the_extended_event_select() {
+        // PMCx1A0 is only reachable with event-select bit 8, at config bit 32.
+        let zen5 = find_cpu_family(pmu_data::AMDZEN5).unwrap();
+        assert_eq!(
+            zen5.events["de_no_dispatch_per_slot.backend_stalls"].code,
+            0x1_0000_1ea0
+        );
+        // Uncore events live on other PMUs and must not be offered as core ones.
+        for id in ["zen1", "zen2", "zen3", "zen4", "zen5", "zen6"] {
+            let family = find_cpu_family(id).unwrap();
+            assert!(
+                !family.events.keys().any(|name| name.starts_with("l3_")),
+                "{id} lists an L3 uncore event"
+            );
+        }
     }
 
     #[test]

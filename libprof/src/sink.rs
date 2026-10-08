@@ -104,8 +104,9 @@ pub struct Sample {
     pub value: u64,
     /// Kernel-provided instruction-pointer callchain.
     pub callstack: SmallVec<[u64; 8]>,
-    /// Call stack reconstructed from the hardware branch stack (Intel LBR
-    /// call-stack mode). Empty when branch records were not requested.
+    /// Call stack reconstructed from the hardware branch records (Intel LBR
+    /// call-stack mode, AMD BRS / LbrV2 replay). Empty when branch records
+    /// were not requested.
     pub lbr_callstack: SmallVec<[u64; 8]>,
     /// Raw user register state for post-hoc unwinding.
     pub user_regs: Option<UserRegs>,

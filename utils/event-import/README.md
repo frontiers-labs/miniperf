@@ -18,6 +18,21 @@ compatibility alias for this directory-oriented usage. Uncore files and event
 encodings requiring extra MSRs are excluded because `PlatformDesc` cannot yet
 represent them.
 
+Import a Linux perf AMD family directory (`tools/perf/pmu-events/arch/x86/amdzen*`):
+
+```text
+cargo run -p event-import -- amd-linux <linux-family-dir> <output.json> <family-id> <name>
+```
+
+The AMD importer keeps core PMU events and skips the ones with a `Unit`, which
+belong to the L3, data-fabric, and memory-controller PMUs. It also skips
+deprecated aliases. A counter mask that a perf metric applies inline
+(`cpu@event\,cmask\=0x8@`) becomes an event of its own, named
+`<event>_cmask<n>`. The importer writes the family's top-down scenario too: the
+dispatch-slot model where the family has `de_no_dispatch_per_slot`, with the
+dispatch width read from perf's `total_dispatch_slots` metric, and the
+fetch-stall model otherwise.
+
 Import the `events` object from an [Arm Telemetry Solution] CPU PMU file:
 
 ```text

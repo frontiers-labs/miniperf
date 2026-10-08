@@ -1,0 +1,2028 @@
+{
+  "family_id": "zen5",
+  "name": "AMD Zen 5",
+  "vendor": "AMD",
+  "arch": "x86_64",
+  "max_counters": 4,
+  "leader_event": null,
+  "events": [
+    {
+      "name": "bp_de_redirect",
+      "desc": "Number of times an early redirect is sent to branch predictor. This happens when either the decoder or dispatch logic is able to detect that the branch predictor needs to be redirected.",
+      "code": "0x91"
+    },
+    {
+      "name": "bp_dyn_ind_pred",
+      "desc": "Dynamic indirect predictions (branch used the indirect predictor to make a prediction).",
+      "code": "0x8E"
+    },
+    {
+      "name": "bp_l1_tlb_fetch_hit.all",
+      "desc": "Instruction fetches that hit in the L1 ITLB for all page sizes.",
+      "code": "0x794"
+    },
+    {
+      "name": "bp_l1_tlb_fetch_hit.if1g",
+      "desc": "Instruction fetches that hit in the L1 ITLB for 1G pages.",
+      "code": "0x494"
+    },
+    {
+      "name": "bp_l1_tlb_fetch_hit.if2m",
+      "desc": "Instruction fetches that hit in the L1 ITLB for 2M pages.",
+      "code": "0x294"
+    },
+    {
+      "name": "bp_l1_tlb_fetch_hit.if4k",
+      "desc": "Instruction fetches that hit in the L1 ITLB for 4k or coalesced pages. A coalesced page is a 16k page created from four adjacent 4k pages.",
+      "code": "0x194"
+    },
+    {
+      "name": "bp_l1_tlb_miss_l2_tlb_hit",
+      "desc": "Instruction fetches that miss in the L1 ITLB but hit in the L2 ITLB.",
+      "code": "0x84"
+    },
+    {
+      "name": "bp_l1_tlb_miss_l2_tlb_miss.all",
+      "desc": "Instruction fetches that miss in both the L1 and L2 ITLBs (page-table walks are requested) for all page sizes.",
+      "code": "0xF85"
+    },
+    {
+      "name": "bp_l1_tlb_miss_l2_tlb_miss.coalesced_4k",
+      "desc": "Instruction fetches that miss in both the L1 and L2 ITLBs (page-table walks are requested) for coalesced pages. A coalesced page is a 16k page created from four adjacent 4k pages.",
+      "code": "0x885"
+    },
+    {
+      "name": "bp_l1_tlb_miss_l2_tlb_miss.if1g",
+      "desc": "Instruction fetches that miss in both the L1 and L2 ITLBs (page-table walks are requested) for 1G pages.",
+      "code": "0x485"
+    },
+    {
+      "name": "bp_l1_tlb_miss_l2_tlb_miss.if2m",
+      "desc": "Instruction fetches that miss in both the L1 and L2 ITLBs (page-table walks are requested) for 2M pages.",
+      "code": "0x285"
+    },
+    {
+      "name": "bp_l1_tlb_miss_l2_tlb_miss.if4k",
+      "desc": "Instruction fetches that miss in both the L1 and L2 ITLBs (page-table walks are requested) for 4k pages.",
+      "code": "0x185"
+    },
+    {
+      "name": "bp_l2_btb_correct",
+      "desc": "L2 branch prediction overrides existing prediction (speculative).",
+      "code": "0x8B"
+    },
+    {
+      "name": "bp_redirects.all",
+      "desc": "Redirects of the branch predictor.",
+      "code": "0x9F"
+    },
+    {
+      "name": "bp_redirects.ex_redir",
+      "desc": "Redirects of the branch predictor caused by mispredicts.",
+      "code": "0x29F"
+    },
+    {
+      "name": "bp_redirects.resync",
+      "desc": "Redirects of the branch predictor caused by resyncs.",
+      "code": "0x19F"
+    },
+    {
+      "name": "de_additional_resource_stalls.dispatch_stalls",
+      "desc": "Counts additional cycles where dispatch is stalled due to a lack of dispatch resources.",
+      "code": "0x1000030A2"
+    },
+    {
+      "name": "de_dis_ops_from_decoder.any_fp_dispatch",
+      "desc": "Number of ops dispatched to the floating-point unit.",
+      "code": "0x4AB"
+    },
+    {
+      "name": "de_dis_ops_from_decoder.any_integer_dispatch",
+      "desc": "Number of ops dispatched to the integer execution unit.",
+      "code": "0x8AB"
+    },
+    {
+      "name": "de_dispatch_stall_cycle_dynamic_tokens_part1.fp_sch_rsrc_stall",
+      "desc": "Cycles where a dispatch group is valid but does not get dispatched due to a floating-point non-schedulable queue token stall.",
+      "code": "0x40AE"
+    },
+    {
+      "name": "de_dispatch_stall_cycle_dynamic_tokens_part1.int_phy_reg_file_rsrc_stall",
+      "desc": "Cycles where a dispatch group is valid but does not get dispatched due to an integer physical register file resource stall.",
+      "code": "0x1AE"
+    },
+    {
+      "name": "de_dispatch_stall_cycle_dynamic_tokens_part1.load_queue_rsrc_stall",
+      "desc": "Cycles where a dispatch group is valid but does not get dispatched due to a lack of load queue tokens.",
+      "code": "0x2AE"
+    },
+    {
+      "name": "de_dispatch_stall_cycle_dynamic_tokens_part1.store_queue_rsrc_stall",
+      "desc": "Cycles where a dispatch group is valid but does not get dispatched due to a lack of store queue tokens.",
+      "code": "0x4AE"
+    },
+    {
+      "name": "de_dispatch_stall_cycle_dynamic_tokens_part1.taken_brnch_buffer_rsrc",
+      "desc": "Cycles where a dispatch group is valid but does not get dispatched due to a taken branch buffer resource stall.",
+      "code": "0x10AE"
+    },
+    {
+      "name": "de_dispatch_stall_cycle_dynamic_tokens_part2.ag_tokens",
+      "desc": "Cycles where a dispatch group is valid but does not get dispatched due to unavailability of agen tokens.",
+      "code": "0x2AF"
+    },
+    {
+      "name": "de_dispatch_stall_cycle_dynamic_tokens_part2.al_tokens",
+      "desc": "Cycles where a dispatch group is valid but does not get dispatched due to unavailability of ALU tokens.",
+      "code": "0x1AF"
+    },
+    {
+      "name": "de_dispatch_stall_cycle_dynamic_tokens_part2.ex_flush_recovery",
+      "desc": "Cycles where a dispatch group is valid but does not get dispatched due to a pending integer execution flush recovery.",
+      "code": "0x4AF"
+    },
+    {
+      "name": "de_dispatch_stall_cycle_dynamic_tokens_part2.retq",
+      "desc": "Cycles where a dispatch group is valid but does not get dispatched due to unavailability of retire queue tokens.",
+      "code": "0x20AF"
+    },
+    {
+      "name": "de_no_dispatch_per_slot.backend_stalls",
+      "desc": "In each cycle counts ops unable to dispatch because of back-end stalls.",
+      "code": "0x100001EA0"
+    },
+    {
+      "name": "de_no_dispatch_per_slot.no_ops_from_frontend",
+      "desc": "In each cycle counts dispatch slots left empty because the front-end did not supply ops.",
+      "code": "0x1000001A0"
+    },
+    {
+      "name": "de_no_dispatch_per_slot.no_ops_from_frontend_cmask8",
+      "desc": "Cycles in which this event counts at least 8: In each cycle counts dispatch slots left empty because the front-end did not supply ops.",
+      "code": "0x1080001A0"
+    },
+    {
+      "name": "de_no_dispatch_per_slot.smt_contention",
+      "desc": "In each cycle counts ops unable to dispatch because the dispatch cycle was granted to the other SMT thread.",
+      "code": "0x1000060A0"
+    },
+    {
+      "name": "de_op_queue_empty",
+      "desc": "Cycles where the op queue is empty. Such cycles indicate that the front-end is not delivering instructions fast enough.",
+      "code": "0xA9"
+    },
+    {
+      "name": "de_src_op_disp.all",
+      "desc": "Ops dispatched from any source.",
+      "code": "0x7AA"
+    },
+    {
+      "name": "de_src_op_disp.op_cache",
+      "desc": "Ops dispatched from op cache.",
+      "code": "0x2AA"
+    },
+    {
+      "name": "de_src_op_disp.x86_decoder",
+      "desc": "Ops dispatched from x86 decoder.",
+      "code": "0x1AA"
+    },
+    {
+      "name": "ex_div_busy",
+      "desc": "Number of cycles the divider is busy.",
+      "code": "0xD3"
+    },
+    {
+      "name": "ex_div_count",
+      "desc": "Divide ops executed.",
+      "code": "0xD4"
+    },
+    {
+      "name": "ex_no_retire.all",
+      "desc": "Cycles with no retire for any reason.",
+      "code": "0x1BD6"
+    },
+    {
+      "name": "ex_no_retire.empty",
+      "desc": "Cycles with no retire due  to the lack of valid ops in the retire queue (may be caused by front-end bottlenecks or pipeline redirects).",
+      "code": "0x1D6"
+    },
+    {
+      "name": "ex_no_retire.load_not_complete",
+      "desc": "Cycles with no retire while the oldest op is waiting for load data.",
+      "code": "0xA2D6"
+    },
+    {
+      "name": "ex_no_retire.not_complete",
+      "desc": "Cycles with no retire while the oldest op is waiting to be executed.",
+      "code": "0x2D6"
+    },
+    {
+      "name": "ex_no_retire.other",
+      "desc": "Cycles with no retire caused by other reasons (retire breaks, traps, faults, etc.).",
+      "code": "0x8D6"
+    },
+    {
+      "name": "ex_no_retire.thread_not_selected",
+      "desc": "Cycles with no retire because thread arbitration did not select the thread.",
+      "code": "0x10D6"
+    },
+    {
+      "name": "ex_ret_brn",
+      "desc": "Retired branch instructions (all types of architectural control flow changes, including exceptions and interrupts).",
+      "code": "0xC2"
+    },
+    {
+      "name": "ex_ret_brn_far",
+      "desc": "Retired far control transfers (far call/jump/return, IRET, SYSCALL and SYSRET, plus exceptions and interrupts). Far control transfers are not subject to branch prediction.",
+      "code": "0xC6"
+    },
+    {
+      "name": "ex_ret_brn_ind_misp",
+      "desc": "Retired indirect branch instructions mispredicted (only EX mispredicts). Each misprediction incurs the same penalty as a mispredicted conditional branch instruction.",
+      "code": "0xCA"
+    },
+    {
+      "name": "ex_ret_brn_misp",
+      "desc": "Retired branch instructions mispredicted.",
+      "code": "0xC3"
+    },
+    {
+      "name": "ex_ret_brn_tkn",
+      "desc": "Retired taken branch instructions (all types of architectural control flow changes, including exceptions and interrupts).",
+      "code": "0xC4"
+    },
+    {
+      "name": "ex_ret_brn_tkn_misp",
+      "desc": "Retired taken branch instructions mispredicted.",
+      "code": "0xC5"
+    },
+    {
+      "name": "ex_ret_cond",
+      "desc": "Retired conditional branch instructions.",
+      "code": "0xD1"
+    },
+    {
+      "name": "ex_ret_fused_instr",
+      "desc": "Retired fused instructions.",
+      "code": "0x1000000D0"
+    },
+    {
+      "name": "ex_ret_ind_brch_instr",
+      "desc": "Retired indirect branch instructions.",
+      "code": "0xCC"
+    },
+    {
+      "name": "ex_ret_instr",
+      "desc": "Retired instructions.",
+      "code": "0xC0"
+    },
+    {
+      "name": "ex_ret_mmx_fp_instr.mmx",
+      "desc": "Retired MMX instructions.",
+      "code": "0x2CB"
+    },
+    {
+      "name": "ex_ret_mmx_fp_instr.sse",
+      "desc": "Retired SSE instructions (includes SSE, SSE2, SSE3, SSSE3, SSE4A, SSE41, SSE42 and AVX).",
+      "code": "0x4CB"
+    },
+    {
+      "name": "ex_ret_mmx_fp_instr.x87",
+      "desc": "Retired x87 instructions.",
+      "code": "0x1CB"
+    },
+    {
+      "name": "ex_ret_msprd_brnch_instr_dir_msmtch",
+      "desc": "Retired branch instructions mispredicted due to direction mismatch.",
+      "code": "0x1000000C7"
+    },
+    {
+      "name": "ex_ret_near_ret",
+      "desc": "Retired near returns (RET or RET Iw).",
+      "code": "0xC8"
+    },
+    {
+      "name": "ex_ret_near_ret_mispred",
+      "desc": "Retired near returns mispredicted. Each misprediction incurs the same penalty as a mispredicted conditional branch instruction.",
+      "code": "0xC9"
+    },
+    {
+      "name": "ex_ret_ops",
+      "desc": "Retired macro-ops.",
+      "code": "0xC1"
+    },
+    {
+      "name": "ex_ret_ucode_instr",
+      "desc": "Retired microcoded instructions.",
+      "code": "0x1000000C1"
+    },
+    {
+      "name": "ex_ret_ucode_ops",
+      "desc": "Retired microcode ops.",
+      "code": "0x1000000C2"
+    },
+    {
+      "name": "ex_ret_uncond_brnch_instr",
+      "desc": "Retired unconditional branch instructions.",
+      "code": "0x1000000C9"
+    },
+    {
+      "name": "ex_ret_uncond_brnch_instr_mispred",
+      "desc": "Retired unconditional indirect branch instructions mispredicted.",
+      "code": "0x1000000C8"
+    },
+    {
+      "name": "ex_tagged_ibs_ops.ibs_count_rollover",
+      "desc": "Ops not tagged by IBS due to a previous tagged op that has not yet signaled interrupt.",
+      "code": "0x1000004CF"
+    },
+    {
+      "name": "ex_tagged_ibs_ops.ibs_tagged_ops",
+      "desc": "Ops tagged by IBS.",
+      "code": "0x1000001CF"
+    },
+    {
+      "name": "ex_tagged_ibs_ops.ibs_tagged_ops_ret",
+      "desc": "Ops tagged by IBS that retired.",
+      "code": "0x1000002CF"
+    },
+    {
+      "name": "fp_disp_faults.all",
+      "desc": "Floating-point dispatch faults of all types.",
+      "code": "0xF0E"
+    },
+    {
+      "name": "fp_disp_faults.sse_avx_all",
+      "desc": "Floating-point dispatch faults of all types for SSE and AVX ops.",
+      "code": "0xE0E"
+    },
+    {
+      "name": "fp_disp_faults.x87_fill_fault",
+      "desc": "Floating-point dispatch faults for x87 fills.",
+      "code": "0x10E"
+    },
+    {
+      "name": "fp_disp_faults.xmm_fill_fault",
+      "desc": "Floating-point dispatch faults for XMM fills.",
+      "code": "0x20E"
+    },
+    {
+      "name": "fp_disp_faults.ymm_fill_fault",
+      "desc": "Floating-point dispatch faults for YMM fills.",
+      "code": "0x40E"
+    },
+    {
+      "name": "fp_disp_faults.ymm_spill_fault",
+      "desc": "Floating-point dispatch faults for YMM spills.",
+      "code": "0x80E"
+    },
+    {
+      "name": "fp_ops_retired_by_type.all",
+      "desc": "Retired floating-point ops of all types.",
+      "code": "0xFF0A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.scalar_add",
+      "desc": "Retired scalar floating-point add ops.",
+      "code": "0x10A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.scalar_all",
+      "desc": "Retired scalar floating-point ops of all types.",
+      "code": "0xF0A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.scalar_bfloat",
+      "desc": "Retired scalar floating-point bfloat ops.",
+      "code": "0xC0A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.scalar_blend",
+      "desc": "Retired scalar floating-point blend ops.",
+      "code": "0x90A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.scalar_cmp",
+      "desc": "Retired scalar floating-point compare ops.",
+      "code": "0x70A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.scalar_cvt",
+      "desc": "Retired scalar floating-point convert ops.",
+      "code": "0x80A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.scalar_div",
+      "desc": "Retired scalar floating-point divide ops.",
+      "code": "0x50A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.scalar_logical",
+      "desc": "Retired scalar floating-point logical ops.",
+      "code": "0xD0A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.scalar_mac",
+      "desc": "Retired scalar floating-point multiply-accumulate ops.",
+      "code": "0x40A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.scalar_mov",
+      "desc": "Retired scalar floating-point MOV ops.",
+      "code": "0xA0A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.scalar_mul",
+      "desc": "Retired scalar floating-point multiply ops.",
+      "code": "0x30A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.scalar_other",
+      "desc": "Retired scalar floating-point ops of other types.",
+      "code": "0xE0A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.scalar_shuffle",
+      "desc": "Retired scalar floating-point shuffle ops (may include instructions not necessarily thought of as including shuffles e.g. horizontal add, dot product, and certain MOV instructions).",
+      "code": "0xB0A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.scalar_sqrt",
+      "desc": "Retired scalar floating-point square root ops.",
+      "code": "0x60A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.scalar_sub",
+      "desc": "Retired scalar floating-point subtract ops.",
+      "code": "0x20A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.vector_add",
+      "desc": "Retired vector floating-point add ops.",
+      "code": "0x100A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.vector_all",
+      "desc": "Retired vector floating-point ops of all types.",
+      "code": "0xF00A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.vector_bfloat",
+      "desc": "Retired vector floating-point bfloat ops.",
+      "code": "0xC00A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.vector_blend",
+      "desc": "Retired vector floating-point blend ops.",
+      "code": "0x900A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.vector_cmp",
+      "desc": "Retired vector floating-point compare ops.",
+      "code": "0x700A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.vector_cvt",
+      "desc": "Retired vector floating-point convert ops.",
+      "code": "0x800A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.vector_div",
+      "desc": "Retired vector floating-point divide ops.",
+      "code": "0x500A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.vector_logical",
+      "desc": "Retired vector floating-point logical ops.",
+      "code": "0xD00A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.vector_mac",
+      "desc": "Retired vector floating-point multiply-accumulate ops.",
+      "code": "0x400A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.vector_mov",
+      "desc": "Retired vector floating-point MOV ops.",
+      "code": "0xA00A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.vector_mul",
+      "desc": "Retired vector floating-point multiply ops.",
+      "code": "0x300A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.vector_other",
+      "desc": "Retired vector floating-point ops of other types.",
+      "code": "0xE00A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.vector_shuffle",
+      "desc": "Retired vector floating-point shuffle ops (may include instructions not necessarily thought of as including shuffles e.g. horizontal add, dot product, and certain MOV instructions).",
+      "code": "0xB00A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.vector_sqrt",
+      "desc": "Retired vector floating-point square root ops.",
+      "code": "0x600A"
+    },
+    {
+      "name": "fp_ops_retired_by_type.vector_sub",
+      "desc": "Retired vector floating-point subtract ops.",
+      "code": "0x200A"
+    },
+    {
+      "name": "fp_ops_retired_by_width.all",
+      "desc": "Retired floating-point ops of all widths.",
+      "code": "0x3F08"
+    },
+    {
+      "name": "fp_ops_retired_by_width.mmx_uops_retired",
+      "desc": "Retired MMX floating-point ops.",
+      "code": "0x208"
+    },
+    {
+      "name": "fp_ops_retired_by_width.pack_128_uops_retired",
+      "desc": "Retired packed 128-bit floating-point ops.",
+      "code": "0x808"
+    },
+    {
+      "name": "fp_ops_retired_by_width.pack_256_uops_retired",
+      "desc": "Retired packed 256-bit floating-point ops.",
+      "code": "0x1008"
+    },
+    {
+      "name": "fp_ops_retired_by_width.pack_512_uops_retired",
+      "desc": "Retired packed 512-bit floating-point ops.",
+      "code": "0x2008"
+    },
+    {
+      "name": "fp_ops_retired_by_width.scalar_uops_retired",
+      "desc": "Retired scalar floating-point ops.",
+      "code": "0x408"
+    },
+    {
+      "name": "fp_ops_retired_by_width.x87_uops_retired",
+      "desc": "Retired x87 floating-point ops.",
+      "code": "0x108"
+    },
+    {
+      "name": "fp_pack_ops_retired.all",
+      "desc": "Retired packed floating-point ops of all types.",
+      "code": "0xFF0C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp128_add",
+      "desc": "Retired 128-bit packed floating-point add ops.",
+      "code": "0x10C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp128_all",
+      "desc": "Retired 128-bit packed floating-point ops of all types.",
+      "code": "0xF0C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp128_bfloat",
+      "desc": "Retired 128-bit packed floating-point bfloat ops.",
+      "code": "0xC0C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp128_blend",
+      "desc": "Retired 128-bit packed floating-point blend ops.",
+      "code": "0x90C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp128_cmp",
+      "desc": "Retired 128-bit packed floating-point compare ops.",
+      "code": "0x70C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp128_cvt",
+      "desc": "Retired 128-bit packed floating-point convert ops.",
+      "code": "0x80C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp128_div",
+      "desc": "Retired 128-bit packed floating-point divide ops.",
+      "code": "0x50C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp128_logical",
+      "desc": "Retired 128-bit packed floating-point logical ops.",
+      "code": "0xD0C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp128_mac",
+      "desc": "Retired 128-bit packed floating-point multiply-accumulate ops.",
+      "code": "0x40C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp128_mov",
+      "desc": "Retired 128-bit packed floating-point MOV ops.",
+      "code": "0xA0C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp128_mul",
+      "desc": "Retired 128-bit packed floating-point multiply ops.",
+      "code": "0x30C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp128_other",
+      "desc": "Retired 128-bit packed floating-point ops of other types.",
+      "code": "0xE0C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp128_shuffle",
+      "desc": "Retired 128-bit packed floating-point shuffle ops (may include instructions not necessarily thought of as including shuffles e.g. horizontal add, dot product, and certain MOV instructions).",
+      "code": "0xB0C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp128_sqrt",
+      "desc": "Retired 128-bit packed floating-point square root ops.",
+      "code": "0x60C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp128_sub",
+      "desc": "Retired 128-bit packed floating-point subtract ops.",
+      "code": "0x20C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp256_add",
+      "desc": "Retired 256-bit packed floating-point add ops.",
+      "code": "0x100C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp256_all",
+      "desc": "Retired 256-bit packed floating-point ops of all types.",
+      "code": "0xF00C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp256_bfloat",
+      "desc": "Retired 256-bit packed floating-point bfloat ops.",
+      "code": "0xC00C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp256_blend",
+      "desc": "Retired 256-bit packed floating-point blend ops.",
+      "code": "0x900C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp256_cmp",
+      "desc": "Retired 256-bit packed floating-point compare ops.",
+      "code": "0x700C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp256_cvt",
+      "desc": "Retired 256-bit packed floating-point convert ops.",
+      "code": "0x800C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp256_div",
+      "desc": "Retired 256-bit packed floating-point divide ops.",
+      "code": "0x500C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp256_logical",
+      "desc": "Retired 256-bit packed floating-point logical ops.",
+      "code": "0xD00C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp256_mac",
+      "desc": "Retired 256-bit packed floating-point multiply-accumulate ops.",
+      "code": "0x400C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp256_mov",
+      "desc": "Retired 256-bit packed floating-point MOV ops.",
+      "code": "0xA00C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp256_mul",
+      "desc": "Retired 256-bit packed floating-point multiply ops.",
+      "code": "0x300C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp256_other",
+      "desc": "Retired 256-bit packed floating-point ops of other types.",
+      "code": "0xE00C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp256_shuffle",
+      "desc": "Retired 256-bit packed floating-point shuffle ops (may include instructions not necessarily thought of as including shuffles e.g. horizontal add, dot product, and certain MOV instructions).",
+      "code": "0xB00C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp256_sqrt",
+      "desc": "Retired 256-bit packed floating-point square root ops.",
+      "code": "0x600C"
+    },
+    {
+      "name": "fp_pack_ops_retired.fp256_sub",
+      "desc": "Retired 256-bit packed floating-point subtract ops.",
+      "code": "0x200C"
+    },
+    {
+      "name": "fp_ret_sse_avx_ops.add_sub_flops",
+      "desc": "Retired SSE and AVX floating-point add and subtract ops.",
+      "code": "0x103"
+    },
+    {
+      "name": "fp_ret_sse_avx_ops.all",
+      "desc": "Retired SSE and AVX floating-point ops of all types.",
+      "code": "0xF03"
+    },
+    {
+      "name": "fp_ret_sse_avx_ops.bfloat16_flops",
+      "desc": "Retired SSE and AVX floating-point bfloat16 ops.",
+      "code": "0x2003"
+    },
+    {
+      "name": "fp_ret_sse_avx_ops.div_flops",
+      "desc": "Retired SSE and AVX floating-point divide and square root ops.",
+      "code": "0x403"
+    },
+    {
+      "name": "fp_ret_sse_avx_ops.mac_flops",
+      "desc": "Retired SSE and AVX floating-point multiply-accumulate ops (each operation is counted as 2 ops).",
+      "code": "0x803"
+    },
+    {
+      "name": "fp_ret_sse_avx_ops.mult_flops",
+      "desc": "Retired SSE and AVX floating-point multiply ops.",
+      "code": "0x203"
+    },
+    {
+      "name": "fp_ret_sse_avx_ops.packed_double_flops",
+      "desc": "Retired SSE and AVX floating-point packed double-precision ops.",
+      "code": "0xA003"
+    },
+    {
+      "name": "fp_ret_sse_avx_ops.packed_single_flops",
+      "desc": "Retired SSE and AVX floating-point packed single-precision ops.",
+      "code": "0x6003"
+    },
+    {
+      "name": "fp_ret_sse_avx_ops.scalar_double_flops",
+      "desc": "Retired SSE and AVX floating-point scalar double-precision ops.",
+      "code": "0x8003"
+    },
+    {
+      "name": "fp_ret_sse_avx_ops.scalar_single_flops",
+      "desc": "Retired SSE and AVX floating-point scalar single-precision ops.",
+      "code": "0x4003"
+    },
+    {
+      "name": "fp_ret_x87_fp_ops.add_sub_ops",
+      "desc": "Retired x87 floating-point add and subtract ops.",
+      "code": "0x102"
+    },
+    {
+      "name": "fp_ret_x87_fp_ops.all",
+      "desc": "Retired x87 floating-point ops of all types.",
+      "code": "0x702"
+    },
+    {
+      "name": "fp_ret_x87_fp_ops.div_sqrt_ops",
+      "desc": "Retired x87 floating-point divide and square root ops.",
+      "code": "0x402"
+    },
+    {
+      "name": "fp_ret_x87_fp_ops.mul_ops",
+      "desc": "Retired x87 floating-point multiply ops.",
+      "code": "0x202"
+    },
+    {
+      "name": "ic_cache_fill_l2",
+      "desc": "Instruction cache lines (64 bytes) fulfilled from the L2 cache.",
+      "code": "0x82"
+    },
+    {
+      "name": "ic_cache_fill_sys",
+      "desc": "Instruction cache lines (64 bytes) fulfilled from system memory or another cache.",
+      "code": "0x83"
+    },
+    {
+      "name": "ic_fetch_ibs_events.fetch_tagged",
+      "desc": "Fetches tagged by Fetch IBS. Not all tagged fetches result in a valid sample and an IBS interrupt.",
+      "code": "0x100000288"
+    },
+    {
+      "name": "ic_fetch_ibs_events.sample_discarded",
+      "desc": "Fetches discarded after being tagged by Fetch IBS due to reasons other than IBS filtering.",
+      "code": "0x100000488"
+    },
+    {
+      "name": "ic_fetch_ibs_events.sample_filtered",
+      "desc": "Fetches discarded after being tagged by Fetch IBS due to IBS filtering.",
+      "code": "0x100000888"
+    },
+    {
+      "name": "ic_fetch_ibs_events.sample_valid",
+      "desc": "Fetches tagged by Fetch IBS that result in a valid sample and an IBS interrupt.",
+      "code": "0x100001088"
+    },
+    {
+      "name": "ic_tag_hit_miss.all_instruction_cache_accesses",
+      "desc": "Instruction cache accesses of all types.",
+      "code": "0x100001F8E"
+    },
+    {
+      "name": "ic_tag_hit_miss.instruction_cache_hit",
+      "desc": "Instruction cache hits.",
+      "code": "0x10000078E"
+    },
+    {
+      "name": "ic_tag_hit_miss.instruction_cache_miss",
+      "desc": "Instruction cache misses.",
+      "code": "0x10000188E"
+    },
+    {
+      "name": "l2_cache_req_stat.all",
+      "desc": "Core to L2 cache requests (not including L2 prefetch) for data and instruction cache access.",
+      "code": "0xFF64"
+    },
+    {
+      "name": "l2_cache_req_stat.dc_access_in_l2",
+      "desc": "Core to L2 cache requests (not including L2 prefetch) for data cache access.",
+      "code": "0xF864"
+    },
+    {
+      "name": "l2_cache_req_stat.dc_hit_in_l2",
+      "desc": "Core to L2 cache requests (not including L2 prefetch) for data cache hits.",
+      "code": "0xF064"
+    },
+    {
+      "name": "l2_cache_req_stat.ic_access_in_l2",
+      "desc": "Core to L2 cache requests (not including L2 prefetch) for instruction cache access.",
+      "code": "0x764"
+    },
+    {
+      "name": "l2_cache_req_stat.ic_dc_hit_in_l2",
+      "desc": "Core to L2 cache requests (not including L2 prefetch) for data and instruction cache hits.",
+      "code": "0xF664"
+    },
+    {
+      "name": "l2_cache_req_stat.ic_dc_miss_in_l2",
+      "desc": "Core to L2 cache requests (not including L2 prefetch) for data and instruction cache misses.",
+      "code": "0x964"
+    },
+    {
+      "name": "l2_cache_req_stat.ic_fill_hit_s",
+      "desc": "Core to L2 cache requests (not including L2 prefetch) with status: instruction cache hit non-modifiable line in L2.",
+      "code": "0x264"
+    },
+    {
+      "name": "l2_cache_req_stat.ic_fill_hit_x",
+      "desc": "Core to L2 cache requests (not including L2 prefetch) with status: instruction cache hit modifiable line in L2.",
+      "code": "0x464"
+    },
+    {
+      "name": "l2_cache_req_stat.ic_fill_miss",
+      "desc": "Core to L2 cache requests (not including L2 prefetch) with status: instruction cache request miss in L2.",
+      "code": "0x164"
+    },
+    {
+      "name": "l2_cache_req_stat.ic_hit_in_l2",
+      "desc": "Core to L2 cache requests (not including L2 prefetch) for instruction cache hits.",
+      "code": "0x664"
+    },
+    {
+      "name": "l2_cache_req_stat.ls_rd_blk_c",
+      "desc": "Core to L2 cache requests (not including L2 prefetch) with status: data cache request miss in L2.",
+      "code": "0x864"
+    },
+    {
+      "name": "l2_cache_req_stat.ls_rd_blk_cs",
+      "desc": "Core to L2 cache requests (not including L2 prefetch) with status: data cache shared read hit in L2.",
+      "code": "0x8064"
+    },
+    {
+      "name": "l2_cache_req_stat.ls_rd_blk_l_hit_s",
+      "desc": "Core to L2 cache requests (not including L2 prefetch) with status: data cache read hit non-modifiable line in L2.",
+      "code": "0x2064"
+    },
+    {
+      "name": "l2_cache_req_stat.ls_rd_blk_l_hit_x",
+      "desc": "Core to L2 cache requests (not including L2 prefetch) with status: data cache read hit modifiable line in L2.",
+      "code": "0x4064"
+    },
+    {
+      "name": "l2_cache_req_stat.ls_rd_blk_x",
+      "desc": "Core to L2 cache requests (not including L2 prefetch) with status: data cache store or state change hit in L2.",
+      "code": "0x1064"
+    },
+    {
+      "name": "l2_fill_rsp_src.all",
+      "desc": "L2 cache fills from all types of data sources.",
+      "code": "0x10000DE65"
+    },
+    {
+      "name": "l2_fill_rsp_src.alternate_memories",
+      "desc": "L2 cache fills from extension memory.",
+      "code": "0x100008065"
+    },
+    {
+      "name": "l2_fill_rsp_src.dram_io_far",
+      "desc": "L2 cache fills from either DRAM or MMIO in a different NUMA node (same or different socket).",
+      "code": "0x100004065"
+    },
+    {
+      "name": "l2_fill_rsp_src.dram_io_near",
+      "desc": "L2 cache fills from either DRAM or MMIO in the same NUMA node.",
+      "code": "0x100000865"
+    },
+    {
+      "name": "l2_fill_rsp_src.far_cache",
+      "desc": "L2 cache fills from cache of another CCX when the address was in a different NUMA node.",
+      "code": "0x100001065"
+    },
+    {
+      "name": "l2_fill_rsp_src.local_ccx",
+      "desc": "L2 cache fills from L3 cache or different L2 cache in the same CCX.",
+      "code": "0x100000265"
+    },
+    {
+      "name": "l2_fill_rsp_src.near_cache",
+      "desc": "L2 cache fills from cache of another CCX when the address was in the same NUMA node.",
+      "code": "0x100000465"
+    },
+    {
+      "name": "l2_pf_hit_l2.l1_dc_hwpf",
+      "desc": "L2 prefetches accepted by the L2 pipeline which hit in the L2 cache and are generated from L1 data hardware prefetchers.",
+      "code": "0xE070"
+    },
+    {
+      "name": "l2_pf_hit_l2.l1_dc_l2_hwpf",
+      "desc": "L2 prefetches accepted by the L2 pipeline which hit in the L2 cache and are generated from L1 data and L2 hardware prefetchers.",
+      "code": "0xFF70"
+    },
+    {
+      "name": "l2_pf_hit_l2.l2_hwpf",
+      "desc": "L2 prefetches accepted by the L2 pipeline which hit in the L2 cache and are generated from L2 hardware prefetchers.",
+      "code": "0x1F70"
+    },
+    {
+      "name": "l2_pf_miss_l2_hit_l3.l1_dc_hwpf",
+      "desc": "L2 prefetches accepted by the L2 pipeline which miss the L2 cache but hit in the L3 cache and are generated from L1 data hardware prefetchers.",
+      "code": "0xE071"
+    },
+    {
+      "name": "l2_pf_miss_l2_hit_l3.l1_dc_l2_hwpf",
+      "desc": "L2 prefetches accepted by the L2 pipeline which miss the L2 cache but hit in the L3 cache and are generated from L1 data and L2 hardware prefetchers.",
+      "code": "0xFF71"
+    },
+    {
+      "name": "l2_pf_miss_l2_hit_l3.l2_hwpf",
+      "desc": "L2 prefetches accepted by the L2 pipeline which miss the L2 cache but hit in the L3 cache and are generated from L2 hardware prefetchers.",
+      "code": "0x1F71"
+    },
+    {
+      "name": "l2_pf_miss_l2_l3.l1_dc_hwpf",
+      "desc": "L2 prefetches accepted by the L2 pipeline which miss the L2 as well as the L3 caches and are generated from L1 data hardware prefetchers.",
+      "code": "0xE072"
+    },
+    {
+      "name": "l2_pf_miss_l2_l3.l1_dc_l2_hwpf",
+      "desc": "L2 prefetches accepted by the L2 pipeline which miss the L2 as well as the L3 caches and are generated from L1 data and L2 hardware prefetchers.",
+      "code": "0xFF72"
+    },
+    {
+      "name": "l2_pf_miss_l2_l3.l2_hwpf",
+      "desc": "L2 prefetches accepted by the L2 pipeline which miss the L2 as well as the L3 caches and are generated from L2 hardware prefetchers.",
+      "code": "0x1F72"
+    },
+    {
+      "name": "l2_request_g1.all",
+      "desc": "L2 cache requests of all types.",
+      "code": "0xF760"
+    },
+    {
+      "name": "l2_request_g1.all_dc",
+      "desc": "L2 cache requests of common types from L1 data cache (including prefetches).",
+      "code": "0xE060"
+    },
+    {
+      "name": "l2_request_g1.all_no_prefetch",
+      "desc": "L2 cache requests of common types not including prefetches.",
+      "code": "0xF160"
+    },
+    {
+      "name": "l2_request_g1.cacheable_ic_read",
+      "desc": "L2 cache requests: instruction cache reads.",
+      "code": "0x1060"
+    },
+    {
+      "name": "l2_request_g1.group2",
+      "desc": "L2 cache requests of non-cacheable type (non-cached data and instructions reads, self-modifying code checks).",
+      "code": "0x160"
+    },
+    {
+      "name": "l2_request_g1.l2_hw_pf",
+      "desc": "L2 cache requests: from hardware prefetchers to prefetch directly into L2 (hit or miss).",
+      "code": "0x260"
+    },
+    {
+      "name": "l2_request_g1.ls_rd_blk_c_s",
+      "desc": "L2 cache requests: data cache shared reads.",
+      "code": "0x2060"
+    },
+    {
+      "name": "l2_request_g1.prefetch_l2_cmd",
+      "desc": "L2 cache requests: prefetch directly into L2.",
+      "code": "0x460"
+    },
+    {
+      "name": "l2_request_g1.rd_blk_l",
+      "desc": "L2 cache requests: data cache reads including hardware and software prefetch.",
+      "code": "0x8060"
+    },
+    {
+      "name": "l2_request_g1.rd_blk_x",
+      "desc": "L2 cache requests: data cache stores.",
+      "code": "0x4060"
+    },
+    {
+      "name": "l2_request_g2.ls_rd_sized",
+      "desc": "L2 cache requests: coherent, non-cacheable LS sized reads.",
+      "code": "0x4061"
+    },
+    {
+      "name": "l2_request_g2.ls_rd_sized_nc",
+      "desc": "L2 cache requests: non-coherent, non-cacheable LS sized reads.",
+      "code": "0x2061"
+    },
+    {
+      "name": "l2_wcb_req.wcb_close",
+      "desc": "Write Combining Buffer (WCB) closures.",
+      "code": "0x2063"
+    },
+    {
+      "name": "ls_alloc_mab_count",
+      "desc": "In-flight L1 data cache misses i.e. Miss Address Buffer (MAB) allocations each cycle.",
+      "code": "0x5F"
+    },
+    {
+      "name": "ls_any_fills_from_sys.all",
+      "desc": "Any data cache fills from all types of data sources.",
+      "code": "0xFF44"
+    },
+    {
+      "name": "ls_any_fills_from_sys.alternate_memories",
+      "desc": "Any data cache fills from extension memory.",
+      "code": "0x8044"
+    },
+    {
+      "name": "ls_any_fills_from_sys.dram_io_all",
+      "desc": "Any data cache fills from either DRAM or MMIO in any NUMA node (same or different socket).",
+      "code": "0x4844"
+    },
+    {
+      "name": "ls_any_fills_from_sys.dram_io_far",
+      "desc": "Any data cache fills from either DRAM or MMIO in a different NUMA node (same or different socket).",
+      "code": "0x4044"
+    },
+    {
+      "name": "ls_any_fills_from_sys.dram_io_near",
+      "desc": "Any data cache fills from either DRAM or MMIO in the same NUMA node.",
+      "code": "0x844"
+    },
+    {
+      "name": "ls_any_fills_from_sys.far_all",
+      "desc": "Any data cache fills from either cache of another CCX, DRAM or MMIO when the address was in a different NUMA node (same or different socket).",
+      "code": "0x5044"
+    },
+    {
+      "name": "ls_any_fills_from_sys.far_cache",
+      "desc": "Any data cache fills from cache of another CCX when the address was in a different NUMA node.",
+      "code": "0x1044"
+    },
+    {
+      "name": "ls_any_fills_from_sys.local_all",
+      "desc": "Any data cache fills from local L2 cache or L3 cache or different L2 cache in the same CCX.",
+      "code": "0x344"
+    },
+    {
+      "name": "ls_any_fills_from_sys.local_ccx",
+      "desc": "Any data cache fills from L3 cache or different L2 cache in the same CCX.",
+      "code": "0x244"
+    },
+    {
+      "name": "ls_any_fills_from_sys.local_l2",
+      "desc": "Any data cache fills from local L2 cache.",
+      "code": "0x144"
+    },
+    {
+      "name": "ls_any_fills_from_sys.near_cache",
+      "desc": "Any data cache fills from cache of another CCX when the address was in the same NUMA node.",
+      "code": "0x444"
+    },
+    {
+      "name": "ls_any_fills_from_sys.remote_cache",
+      "desc": "Any data cache fills from cache of another CCX when the address was in the same or a different NUMA node.",
+      "code": "0x1444"
+    },
+    {
+      "name": "ls_bad_status2.stli_other",
+      "desc": "Store-to-load conflicts (load unable to complete due to a non-forwardable conflict with an older store).",
+      "code": "0x224"
+    },
+    {
+      "name": "ls_dispatch.all",
+      "desc": "Number of memory operations dispatched to the load-store unit.",
+      "code": "0x729"
+    },
+    {
+      "name": "ls_dispatch.ld_dispatch",
+      "desc": "Number of memory load operations dispatched to the load-store unit.",
+      "code": "0x129"
+    },
+    {
+      "name": "ls_dispatch.ld_st_dispatch",
+      "desc": "Number of memory load-store operations dispatched to the load-store unit.",
+      "code": "0x429"
+    },
+    {
+      "name": "ls_dispatch.store_dispatch",
+      "desc": "Number of memory store operations dispatched to the load-store unit.",
+      "code": "0x229"
+    },
+    {
+      "name": "ls_dmnd_fills_from_sys.all",
+      "desc": "Demand data cache fills from all types of data sources.",
+      "code": "0xFF43"
+    },
+    {
+      "name": "ls_dmnd_fills_from_sys.alternate_memories",
+      "desc": "Demand data cache fills from extension memory.",
+      "code": "0x8043"
+    },
+    {
+      "name": "ls_dmnd_fills_from_sys.dram_io_all",
+      "desc": "Demand data cache fills from either DRAM or MMIO in the same or a different NUMA node (same or different socket).",
+      "code": "0x4843"
+    },
+    {
+      "name": "ls_dmnd_fills_from_sys.dram_io_far",
+      "desc": "Demand data cache fills from either DRAM or MMIO in a different NUMA node (same or different socket).",
+      "code": "0x4043"
+    },
+    {
+      "name": "ls_dmnd_fills_from_sys.dram_io_near",
+      "desc": "Demand data cache fills from either DRAM or MMIO in the same NUMA node.",
+      "code": "0x843"
+    },
+    {
+      "name": "ls_dmnd_fills_from_sys.far_all",
+      "desc": "Demand data cache fills from either cache of another CCX, DRAM or MMIO when the address was in a different NUMA node (same or different socket).",
+      "code": "0x5043"
+    },
+    {
+      "name": "ls_dmnd_fills_from_sys.far_cache",
+      "desc": "Demand data cache fills from cache of another CCX when the address was in a different NUMA node.",
+      "code": "0x1043"
+    },
+    {
+      "name": "ls_dmnd_fills_from_sys.local_all",
+      "desc": "Demand data cache fills from local L2 cache, L3 cache or different L2 cache in the same CCX.",
+      "code": "0x343"
+    },
+    {
+      "name": "ls_dmnd_fills_from_sys.local_ccx",
+      "desc": "Demand data cache fills from L3 cache or different L2 cache in the same CCX.",
+      "code": "0x243"
+    },
+    {
+      "name": "ls_dmnd_fills_from_sys.local_l2",
+      "desc": "Demand data cache fills from local L2 cache.",
+      "code": "0x143"
+    },
+    {
+      "name": "ls_dmnd_fills_from_sys.near_cache",
+      "desc": "Demand data cache fills from cache of another CCX when the address was in the same NUMA node.",
+      "code": "0x443"
+    },
+    {
+      "name": "ls_dmnd_fills_from_sys.remote_cache",
+      "desc": "Demand data cache fills from cache of another CCX when the address was in the same or a different NUMA node.",
+      "code": "0x1443"
+    },
+    {
+      "name": "ls_hw_pf_dc_fills.all",
+      "desc": "Hardware prefetch data cache fills from all types of data sources.",
+      "code": "0xDF5A"
+    },
+    {
+      "name": "ls_hw_pf_dc_fills.alternate_memories",
+      "desc": "Hardware prefetch data cache fills from extension memory.",
+      "code": "0x805A"
+    },
+    {
+      "name": "ls_hw_pf_dc_fills.dram_io_all",
+      "desc": "Hardware prefetch data cache fills from either DRAM or MMIO in the same or a different NUMA node (same or different socket).",
+      "code": "0x485A"
+    },
+    {
+      "name": "ls_hw_pf_dc_fills.dram_io_far",
+      "desc": "Hardware prefetch data cache fills from either DRAM or MMIO in a different NUMA node (same or different socket).",
+      "code": "0x405A"
+    },
+    {
+      "name": "ls_hw_pf_dc_fills.dram_io_near",
+      "desc": "Hardware prefetch data cache fills from either DRAM or MMIO in the same NUMA node.",
+      "code": "0x85A"
+    },
+    {
+      "name": "ls_hw_pf_dc_fills.far_all",
+      "desc": "Hardware prefetch data cache fills from either cache of another CCX, DRAM or MMIO when the address was in a different NUMA node (same or different socket).",
+      "code": "0x505A"
+    },
+    {
+      "name": "ls_hw_pf_dc_fills.far_cache",
+      "desc": "Hardware prefetch data cache fills from cache of another CCX when the address was in a different NUMA node.",
+      "code": "0x105A"
+    },
+    {
+      "name": "ls_hw_pf_dc_fills.local_all",
+      "desc": "Hardware prefetch data cache fills from local L2 cache, L3 cache or different L2 cache in the same CCX.",
+      "code": "0x35A"
+    },
+    {
+      "name": "ls_hw_pf_dc_fills.local_ccx",
+      "desc": "Hardware prefetch data cache fills from L3 cache or different L2 cache in the same CCX.",
+      "code": "0x25A"
+    },
+    {
+      "name": "ls_hw_pf_dc_fills.local_l2",
+      "desc": "Hardware prefetch data cache fills from local L2 cache.",
+      "code": "0x15A"
+    },
+    {
+      "name": "ls_hw_pf_dc_fills.near_cache",
+      "desc": "Hardware prefetch data cache fills from cache of another CCX when the address was in the same NUMA node.",
+      "code": "0x45A"
+    },
+    {
+      "name": "ls_hw_pf_dc_fills.remote_cache",
+      "desc": "Hardware prefetch data cache fills from cache of another CCX when the address was in the same or a different NUMA node.",
+      "code": "0x145A"
+    },
+    {
+      "name": "ls_inef_sw_pref.all",
+      "desc": "",
+      "code": "0x352"
+    },
+    {
+      "name": "ls_inef_sw_pref.data_pipe_sw_pf_dc_hit",
+      "desc": "Software prefetches that did not fetch data outside of the processor core as the PREFETCH instruction saw a data cache hit.",
+      "code": "0x152"
+    },
+    {
+      "name": "ls_inef_sw_pref.mab_mch_cnt",
+      "desc": "Software prefetches that did not fetch data outside of the processor core as the PREFETCH instruction saw a match on an already allocated Miss Address Buffer (MAB).",
+      "code": "0x252"
+    },
+    {
+      "name": "ls_int_taken",
+      "desc": "Interrupts taken.",
+      "code": "0x2C"
+    },
+    {
+      "name": "ls_l1_d_tlb_miss.all",
+      "desc": "L1 DTLB misses for all page sizes.",
+      "code": "0xFF45"
+    },
+    {
+      "name": "ls_l1_d_tlb_miss.all_l2_miss",
+      "desc": "L1 DTLB misses with L2 DTLB misses (page-table walks are requested) for all page sizes.",
+      "code": "0xF045"
+    },
+    {
+      "name": "ls_l1_d_tlb_miss.tlb_reload_1g_l2_hit",
+      "desc": "L1 DTLB misses with L2 DTLB hits for 1G pages.",
+      "code": "0x845"
+    },
+    {
+      "name": "ls_l1_d_tlb_miss.tlb_reload_1g_l2_miss",
+      "desc": "L1 DTLB misses with L2 DTLB misses (page-table walks are requested) for 1G pages.",
+      "code": "0x8045"
+    },
+    {
+      "name": "ls_l1_d_tlb_miss.tlb_reload_2m_l2_hit",
+      "desc": "L1 DTLB misses with L2 DTLB hits for 2M pages.",
+      "code": "0x445"
+    },
+    {
+      "name": "ls_l1_d_tlb_miss.tlb_reload_2m_l2_miss",
+      "desc": "L1 DTLB misses with L2 DTLB misses (page-table walks are requested) for 2M pages.",
+      "code": "0x4045"
+    },
+    {
+      "name": "ls_l1_d_tlb_miss.tlb_reload_4k_l2_hit",
+      "desc": "L1 DTLB misses with L2 DTLB hits for 4k pages.",
+      "code": "0x145"
+    },
+    {
+      "name": "ls_l1_d_tlb_miss.tlb_reload_4k_l2_miss",
+      "desc": "L1 DTLB misses with L2 DTLB misses (page-table walks are requested) for 4k pages.",
+      "code": "0x1045"
+    },
+    {
+      "name": "ls_l1_d_tlb_miss.tlb_reload_coalesced_page_hit",
+      "desc": "L1 DTLB misses with L2 DTLB hits for coalesced pages. A coalesced page is a 16k page created from four adjacent 4k pages.",
+      "code": "0x245"
+    },
+    {
+      "name": "ls_l1_d_tlb_miss.tlb_reload_coalesced_page_miss",
+      "desc": "L1 DTLB misses with L2 DTLB misses (page-table walks are requested) for coalesced pages. A coalesced page is a 16k page created from four adjacent 4k pages.",
+      "code": "0x2045"
+    },
+    {
+      "name": "ls_locks.all",
+      "desc": "Retired lock instructions of all types.",
+      "code": "0x1F25"
+    },
+    {
+      "name": "ls_locks.bus_lock",
+      "desc": "Retired lock instructions which caused a bus lock.",
+      "code": "0x125"
+    },
+    {
+      "name": "ls_mab_alloc.all_allocations",
+      "desc": "Miss Address Buffer (MAB) entries allocated by a Load-Store (LS) pipe for all types of allocations.",
+      "code": "0xF41"
+    },
+    {
+      "name": "ls_mab_alloc.hardware_prefetcher_allocations",
+      "desc": "Miss Address Buffer (MAB) entries allocated by a Load-Store (LS) pipe for hardware prefetcher allocations.",
+      "code": "0x841"
+    },
+    {
+      "name": "ls_mab_alloc.load_store_allocations",
+      "desc": "Miss Address Buffer (MAB) entries allocated by a Load-Store (LS) pipe for load-store allocations.",
+      "code": "0x741"
+    },
+    {
+      "name": "ls_misal_loads.ma4k",
+      "desc": "4kB misaligned (page crossing) loads.",
+      "code": "0x247"
+    },
+    {
+      "name": "ls_misal_loads.ma64",
+      "desc": "64B misaligned (cacheline crossing) loads.",
+      "code": "0x147"
+    },
+    {
+      "name": "ls_not_halted_cyc",
+      "desc": "Core cycles not in halt.",
+      "code": "0x76"
+    },
+    {
+      "name": "ls_not_halted_p0_cyc.p0_freq_cyc",
+      "desc": "Reference cycles (P0 frequency) not in halt .",
+      "code": "0x100000120"
+    },
+    {
+      "name": "ls_pref_instr_disp.all",
+      "desc": "Software prefetch instructions dispatched (speculative) of all types.",
+      "code": "0x74B"
+    },
+    {
+      "name": "ls_pref_instr_disp.prefetch",
+      "desc": "Software prefetch instructions dispatched (speculative) of type PrefetchT0 (move data to all cache levels), T1 (move data to all cache levels except L1) and T2 (move data to all cache levels except L1 and L2).",
+      "code": "0x14B"
+    },
+    {
+      "name": "ls_pref_instr_disp.prefetch_nta",
+      "desc": "Software prefetch instructions dispatched (speculative) of type PrefetchNTA (move data with minimum cache pollution i.e. non-temporal access).",
+      "code": "0x44B"
+    },
+    {
+      "name": "ls_pref_instr_disp.prefetch_w",
+      "desc": "Software prefetch instructions dispatched (speculative) of type PrefetchW (move data to L1 cache and mark it modifiable).",
+      "code": "0x24B"
+    },
+    {
+      "name": "ls_ret_cl_flush",
+      "desc": "Retired CLFLUSH instructions.",
+      "code": "0x26"
+    },
+    {
+      "name": "ls_ret_cpuid",
+      "desc": "Retired CPUID instructions.",
+      "code": "0x27"
+    },
+    {
+      "name": "ls_smi_rx",
+      "desc": "SMIs received.",
+      "code": "0x2B"
+    },
+    {
+      "name": "ls_st_commit_cancel2.st_commit_cancel_wcb_full",
+      "desc": "Non-cacheable store commits cancelled due to the non-cacheable commit buffer being full.",
+      "code": "0x137"
+    },
+    {
+      "name": "ls_stlf",
+      "desc": "Store-to-load-forward (STLF) hits.",
+      "code": "0x35"
+    },
+    {
+      "name": "ls_sw_pf_dc_fills.all",
+      "desc": "Software prefetch data cache fills from all types of data sources.",
+      "code": "0xDF59"
+    },
+    {
+      "name": "ls_sw_pf_dc_fills.alternate_memories",
+      "desc": "Software prefetch data cache fills from extension memory.",
+      "code": "0x8059"
+    },
+    {
+      "name": "ls_sw_pf_dc_fills.dram_io_all",
+      "desc": "Software prefetch data cache fills from either DRAM or MMIO in the same or a different NUMA node (same or different socket).",
+      "code": "0x4859"
+    },
+    {
+      "name": "ls_sw_pf_dc_fills.dram_io_far",
+      "desc": "Software prefetch data cache fills from either DRAM or MMIO in a different NUMA node (same or different socket).",
+      "code": "0x4059"
+    },
+    {
+      "name": "ls_sw_pf_dc_fills.dram_io_near",
+      "desc": "Software prefetch data cache fills from either DRAM or MMIO in the same NUMA node.",
+      "code": "0x859"
+    },
+    {
+      "name": "ls_sw_pf_dc_fills.far_all",
+      "desc": "Software prefetch data cache fills from either cache of another CCX, DRAM or MMIO when the address was in a different NUMA node (same or different socket).",
+      "code": "0x5059"
+    },
+    {
+      "name": "ls_sw_pf_dc_fills.far_cache",
+      "desc": "Software prefetch data cache fills from cache of another CCX in a different NUMA node.",
+      "code": "0x1059"
+    },
+    {
+      "name": "ls_sw_pf_dc_fills.local_all",
+      "desc": "Software prefetch data cache fills from local L2 cache, L3 cache or different L2 cache in the same CCX.",
+      "code": "0x359"
+    },
+    {
+      "name": "ls_sw_pf_dc_fills.local_ccx",
+      "desc": "Software prefetch data cache fills from L3 cache or different L2 cache in the same CCX.",
+      "code": "0x259"
+    },
+    {
+      "name": "ls_sw_pf_dc_fills.local_l2",
+      "desc": "Software prefetch data cache fills from local L2 cache.",
+      "code": "0x159"
+    },
+    {
+      "name": "ls_sw_pf_dc_fills.near_cache",
+      "desc": "Software prefetch data cache fills from cache of another CCX in the same NUMA node.",
+      "code": "0x459"
+    },
+    {
+      "name": "ls_sw_pf_dc_fills.remote_cache",
+      "desc": "Software prefetch data cache fills from cache of another CCX when the address was in the same or a different NUMA node.",
+      "code": "0x1459"
+    },
+    {
+      "name": "ls_tlb_flush.all",
+      "desc": "All TLB Flushes.",
+      "code": "0xFF78"
+    },
+    {
+      "name": "op_cache_hit_miss.all_op_cache_accesses",
+      "desc": "Op cache accesses of all types.",
+      "code": "0x20000078F"
+    },
+    {
+      "name": "op_cache_hit_miss.op_cache_hit",
+      "desc": "Op cache hits.",
+      "code": "0x20000038F"
+    },
+    {
+      "name": "op_cache_hit_miss.op_cache_miss",
+      "desc": "Op cache misses.",
+      "code": "0x20000048F"
+    },
+    {
+      "name": "packed_int_op_type.all",
+      "desc": "Retired packed integer ops of all types.",
+      "code": "0xFF0D"
+    },
+    {
+      "name": "packed_int_op_type.int128_add",
+      "desc": "Retired 128-bit packed integer add ops.",
+      "code": "0x10D"
+    },
+    {
+      "name": "packed_int_op_type.int128_aes",
+      "desc": "Retired 128-bit packed integer AES ops.",
+      "code": "0x50D"
+    },
+    {
+      "name": "packed_int_op_type.int128_all",
+      "desc": "Retired 128-bit packed integer ops of all types.",
+      "code": "0xF0D"
+    },
+    {
+      "name": "packed_int_op_type.int128_cmp",
+      "desc": "Retired 128-bit packed integer compare ops.",
+      "code": "0x70D"
+    },
+    {
+      "name": "packed_int_op_type.int128_cvt",
+      "desc": "Retired 128-bit packed integer convert or pack ops.",
+      "code": "0x80D"
+    },
+    {
+      "name": "packed_int_op_type.int128_logical",
+      "desc": "Retired 128-bit packed integer logical ops.",
+      "code": "0xD0D"
+    },
+    {
+      "name": "packed_int_op_type.int128_mac",
+      "desc": "Retired 128-bit packed integer multiply-accumulate ops.",
+      "code": "0x40D"
+    },
+    {
+      "name": "packed_int_op_type.int128_mov",
+      "desc": "Retired 128-bit packed integer MOV ops.",
+      "code": "0xA0D"
+    },
+    {
+      "name": "packed_int_op_type.int128_mul",
+      "desc": "Retired 128-bit packed integer multiply ops.",
+      "code": "0x30D"
+    },
+    {
+      "name": "packed_int_op_type.int128_other",
+      "desc": "Retired 128-bit packed integer ops of other types.",
+      "code": "0xE0D"
+    },
+    {
+      "name": "packed_int_op_type.int128_sha",
+      "desc": "Retired 128-bit packed integer SHA ops.",
+      "code": "0x60D"
+    },
+    {
+      "name": "packed_int_op_type.int128_shift",
+      "desc": "Retired 128-bit packed integer shift or rotate ops.",
+      "code": "0x90D"
+    },
+    {
+      "name": "packed_int_op_type.int128_shuffle",
+      "desc": "Retired 128-bit packed integer shuffle ops (may include instructions not necessarily thought of as including shuffles e.g. horizontal add, dot product, and certain MOV instructions).",
+      "code": "0xB0D"
+    },
+    {
+      "name": "packed_int_op_type.int128_sub",
+      "desc": "Retired 128-bit packed integer subtract ops.",
+      "code": "0x20D"
+    },
+    {
+      "name": "packed_int_op_type.int128_vnni",
+      "desc": "Retired 128-bit packed integer VNNI ops.",
+      "code": "0xC0D"
+    },
+    {
+      "name": "packed_int_op_type.int256_add",
+      "desc": "Retired 256-bit packed integer add ops.",
+      "code": "0x100D"
+    },
+    {
+      "name": "packed_int_op_type.int256_aes",
+      "desc": "Retired 256-bit packed integer AES ops.",
+      "code": "0x500D"
+    },
+    {
+      "name": "packed_int_op_type.int256_all",
+      "desc": "Retired 256-bit packed integer ops of all types.",
+      "code": "0xF00D"
+    },
+    {
+      "name": "packed_int_op_type.int256_cmp",
+      "desc": "Retired 256-bit packed integer compare ops.",
+      "code": "0x700D"
+    },
+    {
+      "name": "packed_int_op_type.int256_cvt",
+      "desc": "Retired 256-bit packed integer convert or pack ops.",
+      "code": "0x800D"
+    },
+    {
+      "name": "packed_int_op_type.int256_logical",
+      "desc": "Retired 256-bit packed integer logical ops.",
+      "code": "0xD00D"
+    },
+    {
+      "name": "packed_int_op_type.int256_mac",
+      "desc": "Retired 256-bit packed integer multiply-accumulate ops.",
+      "code": "0x400D"
+    },
+    {
+      "name": "packed_int_op_type.int256_mov",
+      "desc": "Retired 256-bit packed integer MOV ops.",
+      "code": "0xA00D"
+    },
+    {
+      "name": "packed_int_op_type.int256_mul",
+      "desc": "Retired 256-bit packed integer multiply ops.",
+      "code": "0x300D"
+    },
+    {
+      "name": "packed_int_op_type.int256_other",
+      "desc": "Retired 256-bit packed integer ops of other types.",
+      "code": "0xE00D"
+    },
+    {
+      "name": "packed_int_op_type.int256_sha",
+      "desc": "Retired 256-bit packed integer SHA ops.",
+      "code": "0x600D"
+    },
+    {
+      "name": "packed_int_op_type.int256_shift",
+      "desc": "Retired 256-bit packed integer shift or rotate ops.",
+      "code": "0x900D"
+    },
+    {
+      "name": "packed_int_op_type.int256_shuffle",
+      "desc": "Retired 256-bit packed integer shuffle ops (may include instructions not necessarily thought of as including shuffles e.g. horizontal add, dot product, and certain MOV instructions).",
+      "code": "0xB00D"
+    },
+    {
+      "name": "packed_int_op_type.int256_sub",
+      "desc": "Retired 256-bit packed integer subtract ops.",
+      "code": "0x200D"
+    },
+    {
+      "name": "packed_int_op_type.int256_vnni",
+      "desc": "Retired 256-bit packed integer VNNI ops.",
+      "code": "0xC00D"
+    },
+    {
+      "name": "sse_avx_ops_retired.all",
+      "desc": "Retired SSE, AVX and MMX integer ops of all types.",
+      "code": "0xFF0B"
+    },
+    {
+      "name": "sse_avx_ops_retired.mmx_add",
+      "desc": "Retired MMX integer add ops.",
+      "code": "0x10B"
+    },
+    {
+      "name": "sse_avx_ops_retired.mmx_aes",
+      "desc": "Retired MMX integer AES ops.",
+      "code": "0x50B"
+    },
+    {
+      "name": "sse_avx_ops_retired.mmx_all",
+      "desc": "Retired MMX integer ops of all types.",
+      "code": "0xF0B"
+    },
+    {
+      "name": "sse_avx_ops_retired.mmx_cmp",
+      "desc": "Retired MMX integer compare ops.",
+      "code": "0x70B"
+    },
+    {
+      "name": "sse_avx_ops_retired.mmx_cvt",
+      "desc": "Retired MMX integer convert or pack ops.",
+      "code": "0x80B"
+    },
+    {
+      "name": "sse_avx_ops_retired.mmx_logical",
+      "desc": "Retired MMX integer logical ops.",
+      "code": "0xD0B"
+    },
+    {
+      "name": "sse_avx_ops_retired.mmx_mac",
+      "desc": "Retired MMX integer multiply-accumulate ops.",
+      "code": "0x40B"
+    },
+    {
+      "name": "sse_avx_ops_retired.mmx_mov",
+      "desc": "Retired MMX integer MOV ops.",
+      "code": "0xA0B"
+    },
+    {
+      "name": "sse_avx_ops_retired.mmx_mul",
+      "desc": "Retired MMX integer multiply ops.",
+      "code": "0x30B"
+    },
+    {
+      "name": "sse_avx_ops_retired.mmx_other",
+      "desc": "Retired MMX integer multiply ops of other types.",
+      "code": "0xE0B"
+    },
+    {
+      "name": "sse_avx_ops_retired.mmx_sha",
+      "desc": "Retired MMX integer SHA ops.",
+      "code": "0x60B"
+    },
+    {
+      "name": "sse_avx_ops_retired.mmx_shift",
+      "desc": "Retired MMX integer shift or rotate ops.",
+      "code": "0x90B"
+    },
+    {
+      "name": "sse_avx_ops_retired.mmx_shuffle",
+      "desc": "Retired MMX integer shuffle ops (may include instructions not necessarily thought of as including shuffles e.g. horizontal add, dot product, and certain MOV instructions).",
+      "code": "0xB0B"
+    },
+    {
+      "name": "sse_avx_ops_retired.mmx_sub",
+      "desc": "Retired MMX integer subtract ops.",
+      "code": "0x20B"
+    },
+    {
+      "name": "sse_avx_ops_retired.mmx_vnni",
+      "desc": "Retired MMX integer VNNI ops.",
+      "code": "0xC0B"
+    },
+    {
+      "name": "sse_avx_ops_retired.sse_avx_add",
+      "desc": "Retired SSE and AVX integer add ops.",
+      "code": "0x100B"
+    },
+    {
+      "name": "sse_avx_ops_retired.sse_avx_aes",
+      "desc": "Retired SSE and AVX integer AES ops.",
+      "code": "0x500B"
+    },
+    {
+      "name": "sse_avx_ops_retired.sse_avx_all",
+      "desc": "Retired SSE and AVX integer ops of all types.",
+      "code": "0xF00B"
+    },
+    {
+      "name": "sse_avx_ops_retired.sse_avx_cmp",
+      "desc": "Retired SSE and AVX integer compare ops.",
+      "code": "0x700B"
+    },
+    {
+      "name": "sse_avx_ops_retired.sse_avx_cvt",
+      "desc": "Retired SSE and AVX integer convert or pack ops.",
+      "code": "0x800B"
+    },
+    {
+      "name": "sse_avx_ops_retired.sse_avx_logical",
+      "desc": "Retired SSE and AVX integer logical ops.",
+      "code": "0xD00B"
+    },
+    {
+      "name": "sse_avx_ops_retired.sse_avx_mac",
+      "desc": "Retired SSE and AVX integer multiply-accumulate ops.",
+      "code": "0x400B"
+    },
+    {
+      "name": "sse_avx_ops_retired.sse_avx_mov",
+      "desc": "Retired SSE and AVX integer MOV ops.",
+      "code": "0xA00B"
+    },
+    {
+      "name": "sse_avx_ops_retired.sse_avx_mul",
+      "desc": "Retired SSE and AVX integer multiply ops.",
+      "code": "0x300B"
+    },
+    {
+      "name": "sse_avx_ops_retired.sse_avx_other",
+      "desc": "Retired SSE and AVX integer ops of other types.",
+      "code": "0xE00B"
+    },
+    {
+      "name": "sse_avx_ops_retired.sse_avx_sha",
+      "desc": "Retired SSE and AVX integer SHA ops.",
+      "code": "0x600B"
+    },
+    {
+      "name": "sse_avx_ops_retired.sse_avx_shift",
+      "desc": "Retired SSE and AVX integer shift or rotate ops.",
+      "code": "0x900B"
+    },
+    {
+      "name": "sse_avx_ops_retired.sse_avx_shuffle",
+      "desc": "Retired SSE and AVX integer shuffle ops (may include instructions not necessarily thought of as including shuffles e.g. horizontal add, dot product, and certain MOV instructions).",
+      "code": "0xB00B"
+    },
+    {
+      "name": "sse_avx_ops_retired.sse_avx_sub",
+      "desc": "Retired SSE and AVX integer subtract ops.",
+      "code": "0x200B"
+    },
+    {
+      "name": "sse_avx_ops_retired.sse_avx_vnni",
+      "desc": "Retired SSE and AVX integer VNNI ops.",
+      "code": "0xC00B"
+    },
+    {
+      "name": "wcb_close.full_line_64b",
+      "desc": "Number of events that caused a Write Combining Buffer (WCB) entry to close because all 64 bytes of the entry have been written to.",
+      "code": "0x150"
+    }
+  ],
+  "aliases": [
+    {
+      "target": "cycles",
+      "origin": "ls_not_halted_cyc"
+    },
+    {
+      "target": "instructions",
+      "origin": "ex_ret_instr"
+    },
+    {
+      "target": "branches",
+      "origin": "ex_ret_brn"
+    },
+    {
+      "target": "branch_misses",
+      "origin": "ex_ret_brn_misp"
+    },
+    {
+      "target": "cache_misses",
+      "origin": "l2_cache_req_stat.ic_dc_miss_in_l2"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "IPC",
+      "desc": "Instructions retired per CPU cycle.",
+      "expression": "instructions / cycles",
+      "unit": "insn/cycle"
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "tma",
+      "events": [
+        "cycles",
+        "instructions",
+        "de_src_op_disp.all",
+        "ex_ret_ops",
+        "ex_ret_ucode_ops",
+        "de_no_dispatch_per_slot.backend_stalls",
+        "ex_ret_brn_misp",
+        "bp_redirects.resync",
+        "ex_no_retire.load_not_complete",
+        "ex_no_retire.not_complete",
+        "de_no_dispatch_per_slot.smt_contention",
+        "de_no_dispatch_per_slot.no_ops_from_frontend",
+        "de_no_dispatch_per_slot.no_ops_from_frontend_cmask8"
+      ],
+      "groups": [
+        {
+          "name": "retiring",
+          "events": [
+            "cycles",
+            "ex_ret_ops"
+          ]
+        },
+        {
+          "name": "bad_speculation",
+          "events": [
+            "cycles",
+            "de_src_op_disp.all",
+            "ex_ret_ops"
+          ]
+        },
+        {
+          "name": "fe_bound",
+          "events": [
+            "cycles",
+            "de_no_dispatch_per_slot.no_ops_from_frontend"
+          ]
+        },
+        {
+          "name": "be_bound",
+          "events": [
+            "cycles",
+            "de_no_dispatch_per_slot.backend_stalls"
+          ]
+        },
+        {
+          "name": "smt_contention",
+          "events": [
+            "cycles",
+            "de_no_dispatch_per_slot.smt_contention"
+          ]
+        },
+        {
+          "name": "microcode",
+          "events": [
+            "ex_ret_ucode_ops",
+            "ex_ret_ops"
+          ]
+        },
+        {
+          "name": "flushes",
+          "events": [
+            "ex_ret_brn_misp",
+            "bp_redirects.resync"
+          ]
+        },
+        {
+          "name": "fetch_latency",
+          "events": [
+            "cycles",
+            "de_no_dispatch_per_slot.no_ops_from_frontend_cmask8"
+          ]
+        },
+        {
+          "name": "no_retire",
+          "events": [
+            "ex_no_retire.load_not_complete",
+            "ex_no_retire.not_complete"
+          ]
+        }
+      ],
+      "precise_attribution": false,
+      "constants": [
+        {
+          "name": "dispatch_width",
+          "value": 8
+        }
+      ],
+      "metrics": [
+        {
+          "name": "retiring",
+          "desc": "Dispatch slots used by ops that retired",
+          "formula": "ex_ret_ops / ($dispatch_width * cycles)",
+          "group": "retiring"
+        },
+        {
+          "name": "bad_speculation",
+          "desc": "Dispatch slots used by ops that did not retire",
+          "formula": "(de_src_op_disp.all - ex_ret_ops) / ($dispatch_width * cycles)",
+          "group": "bad_speculation"
+        },
+        {
+          "name": "fe_bound",
+          "desc": "Dispatch slots left empty because the frontend supplied no ops",
+          "formula": "de_no_dispatch_per_slot.no_ops_from_frontend / ($dispatch_width * cycles)",
+          "group": "fe_bound"
+        },
+        {
+          "name": "be_bound",
+          "desc": "Dispatch slots left empty because the backend stalled",
+          "formula": "de_no_dispatch_per_slot.backend_stalls / ($dispatch_width * cycles)",
+          "group": "be_bound"
+        },
+        {
+          "name": "smt_contention",
+          "desc": "Dispatch slots given to the sibling hardware thread",
+          "formula": "de_no_dispatch_per_slot.smt_contention / ($dispatch_width * cycles)",
+          "group": "smt_contention"
+        },
+        {
+          "name": "retiring.microcode",
+          "desc": "Retiring slots used by microcoded ops",
+          "formula": "retiring * ex_ret_ucode_ops / ex_ret_ops",
+          "group": "microcode"
+        },
+        {
+          "name": "retiring.fastpath",
+          "desc": "Retiring slots used by fastpath ops",
+          "formula": "retiring * (1 - ex_ret_ucode_ops / ex_ret_ops)",
+          "group": "microcode"
+        },
+        {
+          "name": "bad_speculation.branch_mispredict",
+          "desc": "Bad speculation flushed by mispredicted branches",
+          "formula": "bad_speculation * ex_ret_brn_misp / (ex_ret_brn_misp + bp_redirects.resync)",
+          "group": "flushes"
+        },
+        {
+          "name": "bad_speculation.pipeline_restarts",
+          "desc": "Bad speculation flushed by pipeline restarts (resyncs)",
+          "formula": "bad_speculation * bp_redirects.resync / (ex_ret_brn_misp + bp_redirects.resync)",
+          "group": "flushes"
+        },
+        {
+          "name": "fe_bound.fetch_latency",
+          "desc": "Frontend slots lost in cycles that delivered no ops at all (cache and TLB misses, resteers)",
+          "formula": "de_no_dispatch_per_slot.no_ops_from_frontend_cmask8 / cycles",
+          "group": "fetch_latency"
+        },
+        {
+          "name": "fe_bound.fetch_bandwidth",
+          "desc": "Frontend slots lost in cycles that delivered some ops, but fewer than the dispatch width",
+          "formula": "fe_bound - fe_bound.fetch_latency",
+          "group": "fetch_latency"
+        },
+        {
+          "name": "be_bound.memory_bound",
+          "desc": "Backend stalls while the oldest op waited on a load",
+          "formula": "be_bound * ex_no_retire.load_not_complete / ex_no_retire.not_complete",
+          "group": "no_retire"
+        },
+        {
+          "name": "be_bound.core_bound",
+          "desc": "Backend stalls while the oldest op waited on something other than a load",
+          "formula": "be_bound * (1 - ex_no_retire.load_not_complete / ex_no_retire.not_complete)",
+          "group": "no_retire"
+        }
+      ]
+    }
+  ]
+}

@@ -44,6 +44,7 @@ The middle of the table lists the hardware mechanisms miniperf can use on this C
 |---|---|
 | `precise sampling (Intel PEBS)`, `(AMD IBS)`, `(Arm SPE)` | Memory access samples with data address, latency, and cache level. Feeds the `mem_samples` tables. |
 | `fixed topdown (PERF_METRICS)`, `topdown (Arm pmuv3 slots)` | Exact top-down level-1 metrics from dedicated hardware. |
+| `topdown (AMD dispatch slots)` | Slot-based top-down level 1 and 2 on Zen 4 and newer, from programmable counters. |
 | `branch records (LBR call stacks)` | Call stacks from the branch record buffer, which avoids copying the user stack on every sample. |
 | `uncore memory bandwidth` | Memory-controller read and write bytes, for measured DRAM traffic. |
 | `baseline counters` | The fallback for everything: ordinary programmable counters. |
