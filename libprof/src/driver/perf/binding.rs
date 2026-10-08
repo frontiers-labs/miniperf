@@ -60,8 +60,8 @@ pub fn direct(
     Ok(handles)
 }
 
-/// Open one planned sampling group for a task on one CPU (`-1` follows the
-/// task). The first event leads; `sampled` indexes the one that owns the ring.
+/// Open one planned sampling group for a task on one CPU. The first event
+/// leads; `sampled` indexes the one that owns the ring.
 pub fn open_group(
     events: &mut [(Counter, perf_event_attr)],
     sampled: usize,

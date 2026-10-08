@@ -874,16 +874,14 @@ impl PerfSamplingDriver {
 
         let mut native_handles: Vec<NativeCounterHandle> = Vec::new();
         for (pmu, groups) in zip(&pmus, &plans) {
-            let cpus = match pid {
-                // Linux cannot mmap a sampling ring for an inherited event
-                // opened with `cpu == -1`, so a target is paired with every
-                // CPU it may run on, which gives equivalent coverage.
-                Some(pid) => target_allowed_cpus(pid)?
-                    .into_iter()
-                    .filter(|cpu| pmu.covers(*cpu))
-                    .collect(),
-                None => vec![-1],
-            };
+            // Linux cannot mmap a sampling ring for an inherited event opened
+            // with `cpu == -1`, so the task (this thread when there is no
+            // target) is paired with every CPU it may run on, which gives
+            // equivalent coverage.
+            let cpus = target_allowed_cpus(pid.unwrap_or(0))?
+                .into_iter()
+                .filter(|cpu| pmu.covers(*cpu))
+                .collect::<Vec<_>>();
             match pmu.open(groups, options, pid, &cpus) {
                 Ok(handles) => native_handles.extend(handles),
                 Err(error) => {
@@ -893,10 +891,9 @@ impl PerfSamplingDriver {
             }
         }
         if native_handles.is_empty() {
-            return Err(Error::InvalidConfiguration(match pid {
-                Some(pid) => format!("no profiled CPUs are available for target PID {pid}"),
-                None => "no sampling counters are available".to_owned(),
-            }));
+            return Err(Error::InvalidConfiguration(
+                "no sampling counters are available on the CPUs the target may run on".to_owned(),
+            ));
         }
 
         Self::from_handles(
@@ -1051,7 +1048,7 @@ impl SamplingPmu {
         Some(attr)
     }
 
-    /// Open `groups` for a task on each of `cpus` (`-1` follows the task).
+    /// Open `groups` for a task on each of `cpus`.
     fn open(
         &self,
         groups: &[plan::Group],

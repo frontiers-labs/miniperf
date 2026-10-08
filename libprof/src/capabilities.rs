@@ -386,7 +386,12 @@ mod tests {
             return; // No core PMU in a VM or a restricted container.
         };
         assert!(cpu.type_id.is_some());
-        assert!(!cpu.events.is_empty());
+        // Not every core PMU names events in sysfs: SpacemiT X100 has no
+        // `events/` directory at all.
+        let listed =
+            std::fs::read_dir(format!("/sys/bus/event_source/devices/{}/events", cpu.name))
+                .map_or(0, Iterator::count);
+        assert_eq!(cpu.events.len(), listed);
     }
 
     #[test]
