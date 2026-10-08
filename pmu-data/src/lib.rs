@@ -165,6 +165,105 @@ pub struct TmaGroup {
     /// Events in the group. `cycles` and `instructions` must be listed when a
     /// formula uses them; they are intentionally not injected implicitly.
     pub events: Vec<String>,
+    /// CPUs whose PMU schedules this group, as a sysfs cpumask (`0,5-11`). Set
+    /// on heterogeneous hosts for a group that belongs to one core type's
+    /// formulas; `None` means every CPU.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpus: Option<String>,
+}
+
+impl TmaScenario {
+    /// This scenario as one core cluster of a heterogeneous host evaluates it.
+    ///
+    /// Each core type has its own formulas, so two clusters' scenarios cannot
+    /// share names: groups and metrics get a `.cluster` suffix, constants a
+    /// `_cluster` suffix, and formulas are rewritten to match. Groups and
+    /// metrics are restricted to `cpus`, the cluster's sysfs cpumask.
+    pub fn for_cluster(&self, cluster: &str, cpus: &str) -> TmaScenario {
+        let rename = |token: &str| match token.strip_prefix('$') {
+            Some(constant) if self.constants.iter().any(|c| c.name == constant) => {
+                format!("${constant}_{cluster}")
+            }
+            None if self.metrics.iter().any(|metric| metric.name == token) => {
+                format!("{token}.{cluster}")
+            }
+            _ => token.to_owned(),
+        };
+        let rewrite = |formula: &str| {
+            let mut rewritten = String::with_capacity(formula.len());
+            let mut rest = formula;
+            while let Some(first) = rest.chars().next() {
+                // Identifiers, `$constants` and numbers share their tail
+                // characters, so a number is consumed whole and never matched.
+                let end = if first.is_ascii_alphanumeric() || matches!(first, '_' | '$' | '.') {
+                    rest[1..]
+                        .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.')))
+                        .map_or(rest.len(), |end| end + 1)
+                } else {
+                    first.len_utf8()
+                };
+                rewritten.push_str(&rename(&rest[..end]));
+                rest = &rest[end..];
+            }
+            rewritten
+        };
+
+        TmaScenario {
+            name: self.name.clone(),
+            events: self.events.clone(),
+            groups: self
+                .groups
+                .iter()
+                .map(|group| TmaGroup {
+                    name: format!("{}.{cluster}", group.name),
+                    events: group.events.clone(),
+                    cpus: Some(cpus.to_owned()),
+                })
+                .collect(),
+            precise_attribution: self.precise_attribution,
+            constants: self
+                .constants
+                .iter()
+                .map(|constant| TmaConstant {
+                    name: format!("{}_{cluster}", constant.name),
+                    value: constant.value,
+                })
+                .collect(),
+            metrics: self
+                .metrics
+                .iter()
+                .map(|metric| TmaMetric {
+                    name: format!("{}.{cluster}", metric.name),
+                    desc: metric.desc.clone(),
+                    formula: rewrite(&metric.formula),
+                    group: metric
+                        .group
+                        .as_ref()
+                        .map(|group| format!("{group}.{cluster}")),
+                    cpus: Some(cpus.to_owned()),
+                })
+                .collect(),
+            ui: None,
+        }
+    }
+
+    /// Joins per-cluster scenarios into the one a heterogeneous host records.
+    /// `None` when there is nothing to join.
+    pub fn merge(clusters: impl IntoIterator<Item = TmaScenario>) -> Option<TmaScenario> {
+        clusters.into_iter().reduce(|mut merged, cluster| {
+            for event in cluster.events {
+                if !merged.events.contains(&event) {
+                    merged.events.push(event);
+                }
+            }
+            merged.groups.extend(cluster.groups);
+            merged.precise_attribution &= cluster.precise_attribution;
+            merged.constants.extend(cluster.constants);
+            merged.metrics.extend(cluster.metrics);
+            merged.ui = None;
+            merged
+        })
+    }
 }
 
 /// A named integer constant referenced by a TMA formula.
@@ -609,6 +708,93 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn two_level_scenario() -> TmaScenario {
+        TmaScenario {
+            name: "tma".to_owned(),
+            events: vec!["cycles".to_owned(), "stall.fe".to_owned()],
+            groups: vec![TmaGroup {
+                name: "fe".to_owned(),
+                events: vec!["cycles".to_owned(), "stall.fe".to_owned()],
+                cpus: None,
+            }],
+            precise_attribution: true,
+            constants: vec![TmaConstant {
+                name: "width".to_owned(),
+                value: 4,
+            }],
+            metrics: vec![
+                TmaMetric {
+                    name: "fe_bound".to_owned(),
+                    desc: String::new(),
+                    formula: "stall.fe / ($width * cycles)".to_owned(),
+                    group: Some("fe".to_owned()),
+                    cpus: None,
+                },
+                TmaMetric {
+                    name: "fe_bound.rest".to_owned(),
+                    desc: String::new(),
+                    formula: "1.5 - fe_bound * 2".to_owned(),
+                    group: Some("fe".to_owned()),
+                    cpus: None,
+                },
+            ],
+            ui: None,
+        }
+    }
+
+    #[test]
+    fn a_cluster_scenario_renames_what_another_cluster_could_also_define() {
+        let big = two_level_scenario().for_cluster("big", "0-1,6-11");
+
+        assert_eq!(big.groups[0].name, "fe.big");
+        assert_eq!(big.groups[0].cpus.as_deref(), Some("0-1,6-11"));
+        assert_eq!(big.constants[0].name, "width_big");
+        assert_eq!(big.metrics[0].name, "fe_bound.big");
+        assert_eq!(big.metrics[0].group.as_deref(), Some("fe.big"));
+        assert_eq!(big.metrics[0].cpus.as_deref(), Some("0-1,6-11"));
+        // Events keep their names: they are columns of the recording.
+        assert_eq!(big.metrics[0].formula, "stall.fe / ($width_big * cycles)");
+        // A metric reference follows the rename; a number is left alone.
+        assert_eq!(big.metrics[1].formula, "1.5 - fe_bound.big * 2");
+    }
+
+    #[test]
+    fn merged_clusters_keep_their_own_formulas_and_share_events() {
+        let mut little = two_level_scenario();
+        little.events.push("stall.be".to_owned());
+        little.constants[0].value = 3;
+        little.precise_attribution = false;
+        let merged = TmaScenario::merge([
+            two_level_scenario().for_cluster("big", "0-1"),
+            little.for_cluster("little", "2-5"),
+        ])
+        .unwrap();
+
+        assert_eq!(merged.events, ["cycles", "stall.fe", "stall.be"]);
+        assert_eq!(
+            merged
+                .constants
+                .iter()
+                .map(|constant| (constant.name.as_str(), constant.value))
+                .collect::<Vec<_>>(),
+            [("width_big", 4), ("width_little", 3)]
+        );
+        assert_eq!(
+            merged
+                .metrics
+                .iter()
+                .map(|metric| metric.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "fe_bound.big",
+                "fe_bound.rest.big",
+                "fe_bound.little",
+                "fe_bound.rest.little"
+            ]
+        );
+        assert!(!merged.precise_attribution);
+    }
 
     #[test]
     fn evaluates_metric_expression_with_precedence_and_parentheses() {

@@ -4,8 +4,8 @@ use anyhow::Result;
 
 use super::{Availability, SessionContext, Source, SourceDecl};
 use crate::{
-    capabilities, platform, resolve, Counter, Feature, SamplingDriver, SamplingDriverBuilder,
-    SourceStatus,
+    capabilities, platform, resolve, CoScheduled, Counter, Feature, SamplingDriver,
+    SamplingDriverBuilder, SourceStatus,
 };
 
 /// Counter-based sampling. The counter list and rate come from the caller:
@@ -13,7 +13,7 @@ use crate::{
 /// the hardware.
 pub struct PmuSamplingSource {
     counters: Vec<Counter>,
-    co_scheduled: Vec<Vec<Counter>>,
+    co_scheduled: Vec<CoScheduled>,
     sample_freq: Option<u64>,
     stack_dump_size: Option<u32>,
     drivers: Vec<Box<dyn SamplingDriver>>,
@@ -35,9 +35,9 @@ impl PmuSamplingSource {
         }
     }
 
-    /// Names sets of counters one formula reads together. Each set is sampled
-    /// in one group.
-    pub fn co_scheduled(mut self, sets: Vec<Vec<Counter>>) -> Self {
+    /// Names the counter sets formulas read together. Each is sampled in one
+    /// group.
+    pub fn co_scheduled(mut self, sets: Vec<CoScheduled>) -> Self {
         self.co_scheduled = sets;
         self
     }

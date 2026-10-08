@@ -212,6 +212,7 @@ fn tma_group(name: &str, events: &[&str]) -> TmaGroup {
     TmaGroup {
         name: name.to_owned(),
         events: events.iter().map(|event| (*event).to_owned()).collect(),
+        cpus: None,
     }
 }
 

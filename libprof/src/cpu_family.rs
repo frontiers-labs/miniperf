@@ -45,6 +45,34 @@ pub fn host_tma_scenario() -> Option<TmaScenario> {
         .or_else(|| Some(architectural_tma_fallback()))
 }
 
+/// The event-arithmetic scenario of a heterogeneous host. Each core type has
+/// its own formulas, so every cluster contributes its family's scenario,
+/// restricted to its own CPUs. `None` on a host with one core PMU.
+pub fn cluster_tma_scenario() -> Option<TmaScenario> {
+    let pmus = host_core_pmus();
+    if pmus.len() < 2 {
+        return None;
+    }
+    // Clusters of one family share its formulas, and so its metric names.
+    let mut clusters: Vec<(&str, String)> = Vec::new();
+    for pmu in &pmus {
+        match clusters
+            .iter_mut()
+            .find(|(family, _)| *family == pmu.family_id)
+        {
+            Some((_, cpus)) => *cpus = format!("{cpus},{}", pmu.cpus),
+            None => clusters.push((pmu.family_id, pmu.cpus.clone())),
+        }
+    }
+    TmaScenario::merge(clusters.iter().map(|(family, cpus)| {
+        find_cpu_family(family)
+            .and_then(|family| family.scenarios.get("tma"))
+            .cloned()
+            .unwrap_or_else(architectural_tma_fallback)
+            .for_cluster(family, cpus)
+    }))
+}
+
 /// Conservative level-one fallback for CPUs without a vendor TMA definition.
 /// It uses only architectural perf events and labels its estimates accordingly.
 fn architectural_tma_fallback() -> TmaScenario {
@@ -60,6 +88,7 @@ fn architectural_tma_fallback() -> TmaScenario {
             pmu_data::TmaGroup {
                 name: "retiring".to_owned(),
                 events: vec!["cycles".to_owned(), "instructions".to_owned()],
+                cpus: None,
             },
             pmu_data::TmaGroup {
                 name: "fe_bound".to_owned(),
@@ -68,6 +97,7 @@ fn architectural_tma_fallback() -> TmaScenario {
                     "instructions".to_owned(),
                     "stalled_cycles_frontend".to_owned(),
                 ],
+                cpus: None,
             },
             pmu_data::TmaGroup {
                 name: "be_bound".to_owned(),
@@ -76,6 +106,7 @@ fn architectural_tma_fallback() -> TmaScenario {
                     "instructions".to_owned(),
                     "stalled_cycles_backend".to_owned(),
                 ],
+                cpus: None,
             },
         ],
         precise_attribution: false,

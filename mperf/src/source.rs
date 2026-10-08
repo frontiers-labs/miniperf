@@ -184,12 +184,13 @@ pub fn pmu_sampling_source(scenario: Scenario) -> PmuSamplingSource {
             libprof::tma_scenario()
                 .iter()
                 .flat_map(|scenario| &scenario.groups)
-                .map(|group| {
-                    group
+                .map(|group| libprof::CoScheduled {
+                    counters: group
                         .events
                         .iter()
                         .map(|e| libprof::tma_counter(e))
-                        .collect()
+                        .collect(),
+                    cpus: group.cpus.clone(),
                 })
                 .collect(),
         ),

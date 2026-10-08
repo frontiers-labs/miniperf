@@ -131,10 +131,22 @@ pub struct CountingDriverBuilder {
     pinned: bool,
 }
 
+/// Counters one formula reads from a single sample. They are sampled in one
+/// group, so they cover the same interval.
+#[derive(Debug, Clone)]
+pub struct CoScheduled {
+    /// The counters the formula reads.
+    pub counters: Vec<Counter>,
+    /// The core cluster the formula was written for, as a sysfs cpumask
+    /// (`0,5-11`). Other clusters' PMUs do not plan for it. `None` means every
+    /// CPU.
+    pub cpus: Option<String>,
+}
+
 /// Builder for a sampling driver.
 pub struct SamplingDriverBuilder {
     counters: Vec<Counter>,
-    co_scheduled: Vec<Vec<Counter>>,
+    co_scheduled: Vec<CoScheduled>,
     sample_freq: u64,
     pid: Option<i32>,
     prefer_raw_events: bool,
@@ -313,9 +325,9 @@ impl SamplingDriverBuilder {
         self
     }
 
-    /// Names sets of counters that one formula reads from a single sample.
-    /// Each set is kept in one group, so its counters cover the same interval.
-    pub fn co_scheduled(mut self, sets: &[Vec<Counter>]) -> Self {
+    /// Names the counter sets formulas read together. Each is kept in one
+    /// group on the PMUs it applies to.
+    pub fn co_scheduled(mut self, sets: &[CoScheduled]) -> Self {
         self.co_scheduled = sets.to_vec();
         self
     }

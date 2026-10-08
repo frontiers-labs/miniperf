@@ -28,9 +28,9 @@ pub use cpu_family::{host_cpu_description, host_metrics};
 pub use criterion_measurement::CriterionCounter;
 pub use driver::{inherited_sampling_supported, mem_sampling_driver};
 pub use driver::{
-    list_supported_counters, CoreId, CounterEntry, CounterResult, CounterValue, CountingDriver,
-    CountingDriverBuilder, DriverKind, MeasurementQuality, SamplingDriver, SamplingDriverBuilder,
-    UnwindMode,
+    list_supported_counters, CoScheduled, CoreId, CounterEntry, CounterResult, CounterValue,
+    CountingDriver, CountingDriverBuilder, DriverKind, MeasurementQuality, SamplingDriver,
+    SamplingDriverBuilder, UnwindMode,
 };
 #[cfg(feature = "criterion")]
 pub use event_timer::CounterCheckpoint;
@@ -72,9 +72,11 @@ pub fn host_tma_scenario() -> Option<pmu_data::TmaScenario> {
 
 /// The top-down scenario a recording will actually use: the hardware's fixed
 /// topdown counters when it has them, otherwise the event arithmetic defined
-/// for the detected CPU family.
+/// for the detected CPU family, or for each core type of a heterogeneous host.
 pub fn tma_scenario() -> Option<pmu_data::TmaScenario> {
-    topdown::scenario(&capabilities()).or_else(host_tma_scenario)
+    topdown::scenario(&capabilities())
+        .or_else(cpu_family::cluster_tma_scenario)
+        .or_else(host_tma_scenario)
 }
 
 /// The counter a top-down scenario event name maps to.

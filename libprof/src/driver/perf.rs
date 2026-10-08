@@ -37,8 +37,8 @@ pub use mem::PerfMemSamplingDriver;
 pub use spe::{spe_pmu_path, PerfSpeSamplingDriver};
 
 use super::{
-    CoreId, CounterEntry, CounterResult, CounterValue, CountingDriver, MeasurementQuality,
-    SamplingDriver, Sink,
+    CoScheduled, CoreId, CounterEntry, CounterResult, CounterValue, CountingDriver,
+    MeasurementQuality, SamplingDriver, Sink,
 };
 
 /// Counting driver is used for simple collection of system's performance counters values. On Linux,
@@ -798,10 +798,9 @@ fn apply_sampling_flags(
 impl PerfSamplingDriver {
     /// Plan the sampling groups of every core PMU, check that each PMU
     /// schedules its plan, and open the plans wherever the target may run.
-    /// `co_scheduled` lists the events each formula reads from one sample.
     pub fn new(
         counters: &[Counter],
-        co_scheduled: &[Vec<Counter>],
+        co_scheduled: &[CoScheduled],
         options: &SampleOptions,
         pid: Option<i32>,
         prefer_raw_events: bool,
@@ -818,8 +817,19 @@ impl PerfSamplingDriver {
                 .filter(|counter| pmu.attr(counter).is_some())
                 .cloned()
                 .collect::<Vec<_>>();
+            // Each core type has its own formulas: another cluster's must not
+            // shape this PMU's groups.
+            let formulas = co_scheduled
+                .iter()
+                .filter(|set| {
+                    set.cpus
+                        .as_deref()
+                        .is_none_or(|cpus| parse_cpu_list(cpus).iter().any(|cpu| pmu.covers(*cpu)))
+                })
+                .map(|set| set.counters.clone())
+                .collect::<Vec<_>>();
             let groups =
-                plan::plan(pmu.family(), reserved, &available, co_scheduled).map_err(|wide| {
+                plan::plan(pmu.family(), reserved, &available, &formulas).map_err(|wide| {
                     Error::InvalidConfiguration(format!(
                         "events {} must be sampled in one group, but the {} PMU schedules only \
                          {} events beyond cycles and instructions",

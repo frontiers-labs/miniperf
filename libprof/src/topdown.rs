@@ -224,6 +224,7 @@ fn intel_scenario(level_two: bool) -> TmaScenario {
         groups: vec![TmaGroup {
             name: "topdown".to_owned(),
             events: events.clone(),
+            cpus: None,
         }],
         events,
         precise_attribution: false,
@@ -276,6 +277,7 @@ fn arm_scenario(caps: &Capabilities) -> Option<TmaScenario> {
         groups: vec![TmaGroup {
             name: "topdown".to_owned(),
             events: events.clone(),
+            cpus: None,
         }],
         events,
         precise_attribution: false,
