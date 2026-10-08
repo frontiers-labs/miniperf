@@ -176,17 +176,23 @@ impl TmaScenario {
     /// This scenario as one core cluster of a heterogeneous host evaluates it.
     ///
     /// Each core type has its own formulas, so two clusters' scenarios cannot
-    /// share names: groups and metrics get a `.cluster` suffix, constants a
-    /// `_cluster` suffix, and formulas are rewritten to match. Groups and
-    /// metrics are restricted to `cpus`, the cluster's sysfs cpumask.
+    /// share names: groups, metrics and constants get a `_cluster` suffix, and
+    /// formulas are rewritten to match. A metric name is a dotted path through
+    /// the hierarchy, so every segment is suffixed and a metric keeps its
+    /// depth and its parent. Groups and metrics are restricted to `cpus`, the
+    /// cluster's sysfs cpumask.
     pub fn for_cluster(&self, cluster: &str, cpus: &str) -> TmaScenario {
+        let suffixed = |name: &str| {
+            name.split('.')
+                .map(|segment| format!("{segment}_{cluster}"))
+                .collect::<Vec<_>>()
+                .join(".")
+        };
         let rename = |token: &str| match token.strip_prefix('$') {
             Some(constant) if self.constants.iter().any(|c| c.name == constant) => {
-                format!("${constant}_{cluster}")
+                format!("${}", suffixed(constant))
             }
-            None if self.metrics.iter().any(|metric| metric.name == token) => {
-                format!("{token}.{cluster}")
-            }
+            None if self.metrics.iter().any(|metric| metric.name == token) => suffixed(token),
             _ => token.to_owned(),
         };
         let rewrite = |formula: &str| {
@@ -215,7 +221,7 @@ impl TmaScenario {
                 .groups
                 .iter()
                 .map(|group| TmaGroup {
-                    name: format!("{}.{cluster}", group.name),
+                    name: suffixed(&group.name),
                     events: group.events.clone(),
                     cpus: Some(cpus.to_owned()),
                 })
@@ -225,7 +231,7 @@ impl TmaScenario {
                 .constants
                 .iter()
                 .map(|constant| TmaConstant {
-                    name: format!("{}_{cluster}", constant.name),
+                    name: suffixed(&constant.name),
                     value: constant.value,
                 })
                 .collect(),
@@ -233,13 +239,10 @@ impl TmaScenario {
                 .metrics
                 .iter()
                 .map(|metric| TmaMetric {
-                    name: format!("{}.{cluster}", metric.name),
+                    name: suffixed(&metric.name),
                     desc: metric.desc.clone(),
                     formula: rewrite(&metric.formula),
-                    group: metric
-                        .group
-                        .as_ref()
-                        .map(|group| format!("{group}.{cluster}")),
+                    group: metric.group.as_deref().map(suffixed),
                     cpus: Some(cpus.to_owned()),
                 })
                 .collect(),
@@ -747,16 +750,18 @@ mod tests {
     fn a_cluster_scenario_renames_what_another_cluster_could_also_define() {
         let big = two_level_scenario().for_cluster("big", "0-1,6-11");
 
-        assert_eq!(big.groups[0].name, "fe.big");
+        assert_eq!(big.groups[0].name, "fe_big");
         assert_eq!(big.groups[0].cpus.as_deref(), Some("0-1,6-11"));
         assert_eq!(big.constants[0].name, "width_big");
-        assert_eq!(big.metrics[0].name, "fe_bound.big");
-        assert_eq!(big.metrics[0].group.as_deref(), Some("fe.big"));
+        assert_eq!(big.metrics[0].name, "fe_bound_big");
+        assert_eq!(big.metrics[0].group.as_deref(), Some("fe_big"));
         assert_eq!(big.metrics[0].cpus.as_deref(), Some("0-1,6-11"));
         // Events keep their names: they are columns of the recording.
         assert_eq!(big.metrics[0].formula, "stall.fe / ($width_big * cycles)");
+        // A child keeps its depth and its parent.
+        assert_eq!(big.metrics[1].name, "fe_bound_big.rest_big");
         // A metric reference follows the rename; a number is left alone.
-        assert_eq!(big.metrics[1].formula, "1.5 - fe_bound.big * 2");
+        assert_eq!(big.metrics[1].formula, "1.5 - fe_bound_big * 2");
     }
 
     #[test]
@@ -787,10 +792,10 @@ mod tests {
                 .map(|metric| metric.name.as_str())
                 .collect::<Vec<_>>(),
             [
-                "fe_bound.big",
-                "fe_bound.rest.big",
-                "fe_bound.little",
-                "fe_bound.rest.little"
+                "fe_bound_big",
+                "fe_bound_big.rest_big",
+                "fe_bound_little",
+                "fe_bound_little.rest_little"
             ]
         );
         assert!(!merged.precise_attribution);

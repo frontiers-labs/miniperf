@@ -260,7 +260,7 @@ fn arm_scenario(caps: &Capabilities) -> Option<TmaScenario> {
         for (name, desc, formula) in arm_metrics(&constant) {
             metrics.push(TmaMetric {
                 name: if hybrid {
-                    format!("{name}.{}", cluster.name)
+                    format!("{name}_{}", cluster.name)
                 } else {
                     name.to_owned()
                 },

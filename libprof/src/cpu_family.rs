@@ -47,7 +47,7 @@ pub fn host_tma_scenario() -> Option<TmaScenario> {
 
 /// The event-arithmetic scenario of a heterogeneous host. Each core type has
 /// its own formulas, so every cluster contributes its family's scenario,
-/// restricted to its own CPUs. `None` on a host with one core PMU.
+/// restricted to its own CPUs. `None` when every core is of one family.
 pub fn cluster_tma_scenario() -> Option<TmaScenario> {
     let pmus = host_core_pmus();
     if pmus.len() < 2 {
@@ -63,6 +63,10 @@ pub fn cluster_tma_scenario() -> Option<TmaScenario> {
             Some((_, cpus)) => *cpus = format!("{cpus},{}", pmu.cpus),
             None => clusters.push((pmu.family_id, pmu.cpus.clone())),
         }
+    }
+    // One family means one formula set, which the host scenario already is.
+    if clusters.len() < 2 {
+        return None;
     }
     TmaScenario::merge(clusters.iter().map(|(family, cpus)| {
         find_cpu_family(family)
