@@ -74,7 +74,7 @@ pub struct PlatformDesc {
     pub vendor: String,
     /// Rust target architecture containing this PMU.
     pub arch: String,
-    /// Maximum number of events supported in one scheduling group.
+    /// Events one sampling group can schedule beyond cycles and instructions.
     pub max_counters: Option<usize>,
     /// Optional event that must lead sampling groups on this PMU.
     pub leader_event: Option<String>,

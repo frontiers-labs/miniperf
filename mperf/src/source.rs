@@ -178,6 +178,21 @@ pub fn pmu_sampling_source(scenario: Scenario) -> PmuSamplingSource {
         Scenario::Snapshot => source
             .sample_freq(SNAPSHOT_SAMPLE_FREQUENCY_HZ)
             .stack_dump_size(2 * 1024),
+        // A formula is evaluated over the samples of one group, so the
+        // driver has to know which events each formula reads.
+        Scenario::TMA => source.co_scheduled(
+            libprof::tma_scenario()
+                .iter()
+                .flat_map(|scenario| &scenario.groups)
+                .map(|group| {
+                    group
+                        .events
+                        .iter()
+                        .map(|e| libprof::tma_counter(e))
+                        .collect()
+                })
+                .collect(),
+        ),
         _ => source,
     }
 }

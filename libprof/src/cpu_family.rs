@@ -115,11 +115,6 @@ pub fn host_has_event(name: &str) -> bool {
     find_cpu_family(get_host_cpu_family()).is_some_and(|family| family.events.contains_key(name))
 }
 
-/// Maximum number of events the host PMU can schedule in one coherent group.
-pub fn host_max_counters() -> Option<usize> {
-    find_cpu_family(get_host_cpu_family()).and_then(|family| family.max_counters)
-}
-
 #[cfg(target_arch = "x86_64")]
 pub fn get_host_cpu_family() -> &'static str {
     const EAX_VENDOR_INFO: u32 = 0x1;
@@ -531,7 +526,6 @@ pub fn host_pmu_type() -> Option<u32> {
 #[derive(Clone, Debug)]
 pub struct CorePmu {
     /// Dynamic `perf_event` PMU `type` id read from sysfs.
-    #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
     pub pmu_type: u32,
     /// Known family id (e.g. `"cortex_a720"`), or `"unknown"` for a cluster we
     /// have no event data for.
