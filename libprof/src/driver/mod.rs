@@ -147,8 +147,8 @@ pub struct SamplingDriverBuilder {
 /// Open precise memory sampling (data address, data source and latency per
 /// access) for a target process, alongside whatever counter-based sampling is
 /// already running: Arm SPE where an `arm_spe_*` PMU exists, Intel PEBS
-/// `mem-loads`/`mem-stores` on x86-64, AMD IBS op where the core PMU has no
-/// precise aliases but `ibs_op` exists.
+/// `mem-loads`/`mem-stores` on x86-64, or AMD IBS op where the core PMU has
+/// no such events.
 ///
 /// Fails with [`Error::UnsupportedDriver`] on a host with no such facility;
 /// callers resolve [`crate::Feature::PreciseMem`] first to find out.
@@ -173,27 +173,13 @@ pub fn mem_sampling_driver(
             } else {
                 perf::dwarf_register_mask()
             };
-            match perf::PerfMemSamplingDriver::new(
+            return Ok(Box::new(perf::PerfMemSamplingDriver::new(
                 pid,
                 sample_freq,
                 stack_dump_size,
                 dwarf,
                 lbr_callstack,
-            ) {
-                Ok(driver) => return Ok(Box::new(driver)),
-                Err(_) if perf::ibs_pmu_path().is_some() => {
-                    // AMD: the core PMU exposes no `mem-loads` alias to drive
-                    // PEBS-style sampling with, but IBS tags the same loads.
-                    return Ok(Box::new(perf::PerfIbsSamplingDriver::new(
-                        pid,
-                        sample_freq,
-                        stack_dump_size,
-                        dwarf,
-                        lbr_callstack,
-                    )?));
-                }
-                Err(error) => return Err(error),
-            }
+            )?));
         }
     }
     #[allow(unreachable_code)]

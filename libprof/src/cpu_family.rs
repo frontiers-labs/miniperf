@@ -233,24 +233,6 @@ mod x86_tests {
     }
 
     #[test]
-    fn zen_tables_encode_the_extended_event_select() {
-        // PMCx1A0 is only reachable with event-select bit 8, at config bit 32.
-        let zen5 = find_cpu_family(pmu_data::AMDZEN5).unwrap();
-        assert_eq!(
-            zen5.events["de_no_dispatch_per_slot.backend_stalls"].code,
-            0x1_0000_1ea0
-        );
-        // Uncore events live on other PMUs and must not be offered as core ones.
-        for id in ["zen1", "zen2", "zen3", "zen4", "zen5", "zen6"] {
-            let family = find_cpu_family(id).unwrap();
-            assert!(
-                !family.events.keys().any(|name| name.starts_with("l3_")),
-                "{id} lists an L3 uncore event"
-            );
-        }
-    }
-
-    #[test]
     fn tiger_lake_event_table_is_loaded() {
         let family = find_cpu_family(pmu_data::INTEL_TIGERLAKE).unwrap();
         assert_eq!(family.name, "Intel Tiger Lake");

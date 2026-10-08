@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -26,9 +27,19 @@ use super::{sampling_ring_pages, target_allowed_cpus, UnsafeMmap};
 /// that floods the ring with L1 hits.
 const DEFAULT_LOAD_LATENCY: u64 = 30;
 
-/// Precise memory sampling (Intel PEBS `mem-loads`/`mem-stores`). Runs as its
-/// own event set alongside the cycles-based sampling group, and reports
-/// per-access data address, data source and latency.
+const IBS_OP_PMU: &str = "/sys/bus/event_source/devices/ibs_op";
+
+/// `perf_mem_data_src.mem_op` bits of a load or a store.
+const MEM_OP_LOAD_STORE: u64 = 0x2 | 0x4;
+
+/// Precise memory sampling: Intel PEBS `mem-loads`/`mem-stores`, or AMD IBS op
+/// where the core PMU has no such events. Runs as its own event set alongside
+/// the cycles-based sampling group, and reports per-access data address, data
+/// source and latency.
+///
+/// IBS samples every retired op and tags the memory ones, so its period
+/// counts ops, not loads (hence the `Estimated` quality), and the driver drops
+/// the samples that are neither a load nor a store.
 pub struct PerfMemSamplingDriver {
     fds: Vec<i32>,
     mmaps: Vec<UnsafeMmap>,
@@ -40,6 +51,7 @@ pub struct PerfMemSamplingDriver {
     sample_regs_user: u64,
     branch_mode: Option<BranchMode>,
     events: Vec<String>,
+    loads_and_stores_only: bool,
 }
 
 unsafe impl Send for PerfMemSamplingDriver {}
@@ -47,7 +59,7 @@ unsafe impl Sync for PerfMemSamplingDriver {}
 
 impl PerfMemSamplingDriver {
     /// Open `mem-loads` and `mem-stores` on every core PMU that exposes them,
-    /// for each CPU the target may run on.
+    /// or `ibs_op` when none does, for each CPU the target may run on.
     pub fn new(
         pid: i32,
         sample_freq: u64,
@@ -56,7 +68,8 @@ impl PerfMemSamplingDriver {
         branch_records: bool,
     ) -> Result<PerfMemSamplingDriver, Error> {
         // Same authoritative probe as the counter groups: ask the branch
-        // recorder for its best mode and let the kernel refuse.
+        // recorder for its best mode and let the kernel refuse. The IBS PMU
+        // refuses every mode and opens on the last, branch-free attempt.
         let modes: &[BranchMode] = if branch_records {
             &BranchMode::LADDER
         } else {
@@ -82,9 +95,7 @@ impl PerfMemSamplingDriver {
         branch_mode: Option<BranchMode>,
     ) -> Result<PerfMemSamplingDriver, Error> {
         let cpus = target_allowed_cpus(pid)?;
-        let mut fds = Vec::new();
-        let mut events = Vec::new();
-
+        let mut candidates = Vec::new();
         for pmu in sysfs::core_pmu_paths() {
             for event in ["mem-loads", "mem-stores"] {
                 let Some(mut attr) = sysfs::event_attr(&pmu, event) else {
@@ -95,26 +106,39 @@ impl PerfMemSamplingDriver {
                 if sysfs::alias_has_term(&pmu, event, "ldlat") {
                     sysfs::set_format_field(&mut attr, &pmu, "ldlat", DEFAULT_LOAD_LATENCY);
                 }
-                apply_memory_sampling_flags(
-                    &mut attr,
-                    sample_freq,
-                    stack_dump_size,
-                    dwarf_mask,
-                    branch_mode,
-                );
-                let opened = cpus
-                    .iter()
-                    .map(|&cpu| unsafe { sys::perf_event_open(&mut attr, pid, cpu, -1, 0) })
-                    .collect::<Vec<_>>();
-                if opened.iter().any(|fd| *fd < 0) {
-                    for fd in opened.into_iter().filter(|fd| *fd >= 0) {
-                        unsafe { close(fd) };
-                    }
-                    continue;
-                }
-                events.push(event.to_owned());
-                fds.extend(opened);
+                attr.set_precise_ip(2);
+                candidates.push((event, attr));
             }
+        }
+        // AMD: the core PMU has no `mem-loads` alias, but IBS tags the same
+        // loads and stores among the ops it samples.
+        let ibs = candidates.is_empty();
+        if ibs {
+            candidates.extend(ibs_op_attr().map(|attr| ("ibs_op", attr)));
+        }
+
+        let mut fds = Vec::new();
+        let mut events = Vec::new();
+        for (event, mut attr) in candidates {
+            apply_memory_sampling_flags(
+                &mut attr,
+                sample_freq,
+                stack_dump_size,
+                dwarf_mask,
+                branch_mode,
+            );
+            let opened = cpus
+                .iter()
+                .map(|&cpu| unsafe { sys::perf_event_open(&mut attr, pid, cpu, -1, 0) })
+                .collect::<Vec<_>>();
+            if opened.iter().any(|fd| *fd < 0) {
+                for fd in opened.into_iter().filter(|fd| *fd >= 0) {
+                    unsafe { close(fd) };
+                }
+                continue;
+            }
+            events.push(event.to_owned());
+            fds.extend(opened);
         }
 
         if fds.is_empty() {
@@ -151,7 +175,7 @@ impl PerfMemSamplingDriver {
                     unsafe { close(*fd) };
                 }
                 return Err(Error::PerfMmap {
-                    counter: "mem-loads".to_owned(),
+                    counter: events.join(","),
                     length,
                     source,
                 });
@@ -170,8 +194,24 @@ impl PerfMemSamplingDriver {
             sample_regs_user: dwarf_mask,
             branch_mode,
             events,
+            loads_and_stores_only: ibs,
         })
     }
+}
+
+/// The `ibs_op` event, restricted to user space. IBS has no hardware privilege
+/// filter: the kernel accepts `exclude_kernel` only together with its software
+/// filter.
+fn ibs_op_attr() -> Option<perf_event_attr> {
+    let pmu = Path::new(IBS_OP_PMU);
+    let mut attr = perf_event_attr::default();
+    attr.type_ = std::fs::read_to_string(pmu.join("type"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    sysfs::set_format_field(&mut attr, pmu, "swfilt", 1);
+    Some(attr)
 }
 
 impl SamplingDriver for PerfMemSamplingDriver {
@@ -189,6 +229,7 @@ impl SamplingDriver for PerfMemSamplingDriver {
         let mmaps = self.mmaps.clone();
         let sample_regs_user = self.sample_regs_user;
         let branch_mode = self.branch_mode;
+        let loads_and_stores_only = self.loads_and_stores_only;
 
         self.thread_handle = Some(thread::spawn(move || loop {
             for entry in &mmaps {
@@ -207,20 +248,22 @@ impl SamplingDriver for PerfMemSamplingDriver {
                             lbr_callstack,
                             user_regs,
                             user_stack,
-                        } => callback.record(Record::MemSample(MemSample {
-                            ip,
-                            pid,
-                            tid,
-                            cpu,
-                            time,
-                            data_addr,
-                            latency,
-                            data_src,
-                            callstack,
-                            lbr_callstack,
-                            user_regs,
-                            user_stack,
-                        })),
+                        } if !loads_and_stores_only || data_src & MEM_OP_LOAD_STORE != 0 => {
+                            callback.record(Record::MemSample(MemSample {
+                                ip,
+                                pid,
+                                tid,
+                                cpu,
+                                time,
+                                data_addr,
+                                latency,
+                                data_src,
+                                callstack,
+                                lbr_callstack,
+                                user_regs,
+                                user_stack,
+                            }))
+                        }
                         MmapRecord::Address {
                             pid,
                             start,
@@ -298,7 +341,6 @@ fn apply_memory_sampling_flags(
     attr.set_exclude_kernel(1);
     attr.set_exclude_hv(1);
     attr.set_inherit(1);
-    attr.set_precise_ip(2);
     attr.set_use_clockid(1);
     attr.clockid = libc::CLOCK_MONOTONIC;
     attr.sample_freq = sample_freq;
