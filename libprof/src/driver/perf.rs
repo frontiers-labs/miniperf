@@ -499,6 +499,7 @@ impl SamplingDriver for PerfSamplingDriver {
     }
 
     fn stop(&mut self) -> Result<(), Error> {
+        let mut disable_error = None;
         for handle in &self.native_handles {
             if !handle.leader {
                 continue;
@@ -507,15 +508,20 @@ impl SamplingDriver for PerfSamplingDriver {
             let res_enable =
                 unsafe { sys::ioctls::DISABLE(handle.fd, sys::bindings::PERF_IOC_FLAG_GROUP) };
 
-            if res_enable < 0 {
-                return Err(Error::perf_ioctl("DISABLE", &handle.kind));
+            if res_enable < 0 && disable_error.is_none() {
+                disable_error = Some(Error::perf_ioctl("DISABLE", &handle.kind));
             }
         }
 
+        // The worker is stopped whatever the ioctls returned: a driver that
+        // reports an error and keeps its reader running is still live.
         self.running.store(false, Ordering::SeqCst);
 
         if let Some(handle) = self.thread_handle.take() {
             handle.join().map_err(|_| Error::WorkerPanicked)?;
+        }
+        if let Some(error) = disable_error {
+            return Err(error);
         }
 
         if self.groups_scheduled() == Some(false) {
@@ -1123,6 +1129,13 @@ pub(super) fn dwarf_register_mask() -> u64 {
 
 impl Drop for PerfSamplingDriver {
     fn drop(&mut self) {
+        // The worker reads the rings through raw pointers. A driver dropped
+        // without `stop()`, as when a later source fails to start, must not
+        // unmap them under it.
+        self.running.store(false, Ordering::SeqCst);
+        if let Some(handle) = self.thread_handle.take() {
+            let _ = handle.join();
+        }
         for &mmap in &self.mmaps {
             unsafe {
                 munmap(

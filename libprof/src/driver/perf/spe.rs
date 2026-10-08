@@ -293,6 +293,13 @@ impl SamplingDriver for PerfSpeSamplingDriver {
 
 impl Drop for PerfSpeSamplingDriver {
     fn drop(&mut self) {
+        // The worker reads the rings through raw pointers. A driver dropped
+        // without `stop()`, as when a later source fails to start, must not
+        // unmap them under it.
+        self.running.store(false, Ordering::SeqCst);
+        if let Some(handle) = self.thread_handle.take() {
+            let _ = handle.join();
+        }
         for channel in &self.channels {
             unsafe {
                 munmap(channel.aux.ptr.cast(), channel.aux_len);

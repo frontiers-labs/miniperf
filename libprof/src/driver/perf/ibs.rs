@@ -263,6 +263,13 @@ impl SamplingDriver for PerfIbsSamplingDriver {
 
 impl Drop for PerfIbsSamplingDriver {
     fn drop(&mut self) {
+        // The worker reads the rings through raw pointers. A driver dropped
+        // without `stop()`, as when a later source fails to start, must not
+        // unmap them under it.
+        self.running.store(false, Ordering::SeqCst);
+        if let Some(handle) = self.thread_handle.take() {
+            let _ = handle.join();
+        }
         let length = self.page_size * (self.mmap_pages + 1);
         for entry in &self.mmaps {
             unsafe { munmap(entry.ptr as *mut std::ffi::c_void, length) };
