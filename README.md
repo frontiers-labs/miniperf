@@ -1,8 +1,9 @@
 # miniperf
 
-miniperf is a sampling profiler for native applications on Linux and macOS,
-across x86-64, AArch64, and RISC-V. It uses the same kernel interfaces as
-Linux perf and adds scenario-driven analysis on top: a USE-method system
+miniperf is a sampling profiler for native applications on Linux, macOS, and
+Windows. It supports x86-64, AArch64, and RISC-V where the host provides the
+needed counters. It uses Linux perf, Apple's KPC/kperf, and Windows ETW and
+process APIs, then adds scenario-driven analysis: a USE-method system
 snapshot, top-down microarchitecture analysis, whole-process memory analysis
 with working sets and miss-ratio curves, and Roofline plots against calibrated
 machine ceilings. Every result records how it was measured and what the host
@@ -15,7 +16,9 @@ could not provide.
 Download the archive for your platform from the
 [releases page](https://github.com/frontiers-labs/miniperf/releases), unpack
 it, and add its `bin` directory to `PATH`. Linux packages bundle QEMU and
-DynamoRIO, so every scenario works out of the archive.
+DynamoRIO. Windows memory and Roofline recording use DynamoRIO; see the
+[Windows notes](https://frontiers-labs.github.io/miniperf/platforms/desktop.html)
+for its availability and hardware-counter requirements.
 
 To build from source you need Rust 1.85 or newer and a C compiler:
 
@@ -48,13 +51,12 @@ the SpacemiT RISC-V boards.
 ## Architecture
 
 The workspace has two tiers. `libprof` knows how to measure: PMU counting and
-sampling, precise memory sampling (PEBS, IBS, SPE), host clocks and thermals,
-memory-controller bandwidth, procfs, cgroup, and BPF telemetry, and post-hoc
-DWARF unwinding. Everything it exposes compiles on every target, and a host
-that cannot provide a source says so at runtime. `mperf` knows when and what to
-measure: scenarios, passes, counter selection, storage, postprocessing, and
-presentation. It contains no platform `cfg` outside Roofline calibration, and
-CI fails if one appears.
+sampling, host clocks and thermals, process and system telemetry, and symbol
+resolution. Platform implementations include Linux perf/procfs/BPF, Apple's
+KPC/kperf, and Windows ETW/PDH/IP Helper/DbgHelp. A host that cannot provide a
+source says so at runtime. `mperf` selects scenarios, passes, counters,
+storage, postprocessing, and presentation, with platform-specific setup kept
+behind narrow operating-system paths.
 
 Two rules follow. A new data source is one `Source` implementation in
 `libprof` writing through `Sink`, plus one registration line in the scenario

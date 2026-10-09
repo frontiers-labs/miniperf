@@ -118,7 +118,7 @@ fn collect(
             statuses.push(SourceStatus::new(
                 "host_telemetry",
                 "unavailable",
-                "sysfs",
+                HostTelemetry::source_name(),
                 "unavailable",
                 "the host exposes neither clock nor temperature sensors",
             ));
@@ -128,7 +128,7 @@ fn collect(
             statuses.push(SourceStatus::new(
                 "host_telemetry",
                 "unavailable",
-                "sysfs",
+                HostTelemetry::source_name(),
                 "unavailable",
                 &error.to_string(),
             ));
@@ -139,14 +139,14 @@ fn collect(
         statuses.push(SourceStatus::new(
             signal,
             "unavailable",
-            "sysfs",
+            HostTelemetry::source_name(),
             "unavailable",
             reason,
         ));
     }
 
     let start = Instant::now();
-    let mut source = "sysfs";
+    let mut source = HostTelemetry::source_name();
     loop {
         let timestamp_ns = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         match telemetry.sample() {
@@ -192,7 +192,7 @@ fn collect(
             "available",
             source,
             "exact_system",
-            "host clock and temperature sensors",
+            "host clock and available sensor readings",
         )
     });
     statuses

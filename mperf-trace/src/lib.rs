@@ -32,16 +32,46 @@ fn vtable() -> Option<&'static Vtable> {
     VTABLE
         .get_or_init(|| {
             std::env::var_os("MPERF_SESSION_DIR")?;
-            let library = std::env::var("MPERF_COLLECTOR_LIBRARY")
-                .unwrap_or_else(|_| "libmperf_collector.so".to_string());
+            let library = std::env::var("MPERF_COLLECTOR_LIBRARY").unwrap_or_else(|_| {
+                if cfg!(windows) {
+                    "mperf_collector.dll".to_string()
+                } else {
+                    "libmperf_collector.so".to_string()
+                }
+            });
             let library = CString::new(library).ok()?;
+            #[cfg(unix)]
             let core = unsafe { libc::dlopen(library.as_ptr(), libc::RTLD_NOW) };
+            #[cfg(windows)]
+            let core = {
+                let wide = library
+                    .to_string_lossy()
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect::<Vec<_>>();
+                (unsafe { windows_sys::Win32::System::LibraryLoader::LoadLibraryW(wide.as_ptr()) })
+                    as *mut c_void
+            };
+            #[cfg(not(any(unix, windows)))]
+            let core = std::ptr::null_mut();
             if core.is_null() {
                 return None;
             }
             let resolve = |name: &str| {
                 let name = CString::new(name).unwrap();
+                #[cfg(unix)]
                 let symbol = unsafe { libc::dlsym(core, name.as_ptr()) };
+                #[cfg(windows)]
+                let symbol = unsafe {
+                    windows_sys::Win32::System::LibraryLoader::GetProcAddress(
+                        core as windows_sys::Win32::Foundation::HMODULE,
+                        name.as_ptr().cast(),
+                    )
+                    .map(|function| function as *const () as *mut c_void)
+                    .unwrap_or(std::ptr::null_mut())
+                };
+                #[cfg(not(any(unix, windows)))]
+                let symbol = std::ptr::null_mut();
                 (!symbol.is_null()).then_some(symbol)
             };
             unsafe {

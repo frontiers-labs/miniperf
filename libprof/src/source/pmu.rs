@@ -8,6 +8,14 @@ use crate::{
     SourceStatus,
 };
 
+#[cfg(target_os = "windows")]
+#[path = "pmu/windows.rs"]
+mod host;
+
+#[cfg(not(target_os = "windows"))]
+#[path = "pmu/non_windows.rs"]
+mod host;
+
 /// Counter-based sampling. The counter list and rate come from the caller:
 /// which events are worth sampling is a question about the analysis, not about
 /// the hardware.
@@ -102,12 +110,14 @@ impl Source for PmuSamplingSource {
             }
             self.drivers.push(builder.build()?);
         }
+        for driver in &mut self.drivers {
+            driver.start(context.sink.clone())?;
+        }
+        // A Windows driver may switch to process CPU-time polling when ETW
+        // denies access. Read the opened counters after that choice is made.
         if let Some(driver) = self.drivers.first() {
             self.recorded = driver.counters();
             self.sample_rate = driver.sample_rate();
-        }
-        for driver in &mut self.drivers {
-            driver.start(context.sink.clone())?;
         }
         Ok(())
     }
@@ -143,10 +153,19 @@ impl Source for PmuSamplingSource {
                        (Linux < 6.12); threads created after exec are not sampled"
                 .to_string();
         }
+        if status == "available" {
+            if let Some((fallback_quality, fallback_message)) =
+                host::sampling_fallback(&self.recorded)
+            {
+                status = "degraded";
+                quality = fallback_quality;
+                message = fallback_message.to_owned();
+            }
+        }
         vec![SourceStatus::new(
             "pmu_sampling",
             status,
-            "perf_events",
+            host::source_name(),
             quality,
             &message,
         )]

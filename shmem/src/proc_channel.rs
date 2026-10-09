@@ -1,4 +1,3 @@
-use libc::EAGAIN;
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
@@ -44,6 +43,10 @@ struct Inner {
 }
 
 impl Inner {
+    fn semaphore_slot_size() -> usize {
+        platform::Semaphore::required_size().next_multiple_of(std::mem::align_of::<usize>())
+    }
+
     fn semaphore_name(channel_name: &str, suffix: char) -> String {
         let mut hasher = DefaultHasher::new();
         channel_name.hash(&mut hasher);
@@ -51,12 +54,7 @@ impl Inner {
     }
 
     fn data_offset() -> usize {
-        assert_eq!(
-            platform::Semaphore::required_size() % std::mem::align_of::<usize>(),
-            0
-        );
-        let metadata_size =
-            2 * platform::Semaphore::required_size() + 3 * std::mem::size_of::<usize>();
+        let metadata_size = 2 * Self::semaphore_slot_size() + 3 * std::mem::size_of::<usize>();
         metadata_size.next_multiple_of(std::mem::align_of::<usize>())
     }
 
@@ -78,11 +76,7 @@ impl Inner {
             (
                 platform::Semaphore::create(shmem.as_mut_ptr(), &sem_name)?,
                 platform::Semaphore::create(
-                    unsafe {
-                        shmem
-                            .as_mut_ptr()
-                            .byte_add(platform::Semaphore::required_size())
-                    },
+                    unsafe { shmem.as_mut_ptr().byte_add(Self::semaphore_slot_size()) },
                     &finish_sem_name,
                 )?,
             )
@@ -90,17 +84,13 @@ impl Inner {
             (
                 platform::Semaphore::open(shmem.as_mut_ptr(), &sem_name)?,
                 platform::Semaphore::open(
-                    unsafe {
-                        shmem
-                            .as_mut_ptr()
-                            .byte_add(platform::Semaphore::required_size())
-                    },
+                    unsafe { shmem.as_mut_ptr().byte_add(Self::semaphore_slot_size()) },
                     &finish_sem_name,
                 )?,
             )
         };
 
-        let sem_size = 2 * platform::Semaphore::required_size();
+        let sem_size = 2 * Self::semaphore_slot_size();
         let ptr = unsafe { shmem.as_mut_ptr().byte_add(Self::data_offset()) };
         let head = unsafe { shmem.as_mut_ptr().byte_add(sem_size).cast::<usize>() };
         let tail = unsafe {
@@ -285,7 +275,7 @@ impl<T: Sendable> Receiver<T> {
     pub async fn recv(&self) -> Option<T> {
         blocker(|| match self.inner.sem.try_wait() {
             Ok(()) => Ok(true),
-            Err(err) if err.raw_os_error() == Some(EAGAIN) => {
+            Err(err) if err.kind() == ErrorKind::WouldBlock => {
                 Ok(self.inner.finish_sem.counter()? > 0)
             }
             Err(err) => Err(err),

@@ -10,6 +10,9 @@ use anyhow::Result;
 use libprof::{Availability, Counter, Feature, PmuSamplingSource, SessionContext, Source};
 use mperf_data::{Scenario, SnapshotCollectorStatus};
 
+#[path = "source/windows.rs"]
+mod windows;
+
 /// Interrupt rate for the snapshot scenario, in hertz. A snapshot watches a
 /// whole process tree for as long as the user leaves it running, so it trades
 /// resolution for an overhead the user does not notice.
@@ -156,18 +159,35 @@ pub fn roofline_uncore_bandwidth() -> bool {
 
 /// Resolve a scenario's headline feature against the probed host.
 pub fn resolve_fidelity(scenario: Scenario) -> mperf_data::CaptureFidelity {
-    let resolution = libprof::resolve(scenario_feature(scenario), &libprof::capabilities());
-    mperf_data::CaptureFidelity {
-        scenario: format!("{scenario:?}").to_lowercase(),
-        rung: resolution.mechanism().name().to_string(),
-        rejected: resolution
-            .rejected
-            .into_iter()
-            .map(|(mechanism, reason)| mperf_data::RejectedRung {
-                rung: mechanism.name().to_string(),
-                reason,
-            })
-            .collect(),
+    if windows::is_host() {
+        windows::resolve_fidelity(scenario)
+    } else {
+        let resolution = libprof::resolve(scenario_feature(scenario), &libprof::capabilities());
+        mperf_data::CaptureFidelity {
+            scenario: format!("{scenario:?}").to_lowercase(),
+            rung: resolution.mechanism().name().to_string(),
+            rejected: resolution
+                .rejected
+                .into_iter()
+                .map(|(mechanism, reason)| mperf_data::RejectedRung {
+                    rung: mechanism.name().to_string(),
+                    reason,
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Record the Windows Snapshot sampling mode actually delivered by ETW.
+pub fn final_capture_fidelity(
+    scenario: Scenario,
+    fidelity: mperf_data::CaptureFidelity,
+    collectors: &[SnapshotCollectorStatus],
+) -> mperf_data::CaptureFidelity {
+    if windows::is_host() {
+        windows::finalize_fidelity(scenario, fidelity, collectors)
+    } else {
+        fidelity
     }
 }
 

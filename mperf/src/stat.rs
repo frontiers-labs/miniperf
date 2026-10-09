@@ -5,6 +5,9 @@ use comfy_table::{Cell, CellAlignment, Color, Table};
 use libprof::{Counter, CounterValue, Metric, Process};
 use num_format::{Locale, ToFormattedString};
 
+#[path = "windows_stat.rs"]
+mod windows_stat;
+
 /// PMU (hardware) counters, shown per-core on heterogeneous systems.
 fn pmu_counters() -> Vec<Counter> {
     vec![
@@ -41,24 +44,45 @@ pub fn do_stat(
         );
     }
 
+    if windows_stat::try_do_stat(pid, &command, &event_names, topdown_level)? {
+        return Ok(());
+    }
+
     let process = if pid.is_none() || !command.is_empty() {
         Some(Process::new(&command, &[])?)
     } else {
         None
     };
 
-    let capabilities = libprof::capabilities();
-    if !capabilities.hardware_counters {
-        eprintln!(
-            "notice: no hardware PMU detected (VM/container or permissions); hardware counters may be unavailable"
-        );
-    }
-
     let supported = libprof::list_supported_counters(libprof::DriverKind::Default);
+    windows_stat::notice_counter_availability(
+        &supported,
+        libprof::capabilities().hardware_counters,
+    );
     let host_metrics = libprof::host_metrics();
+    let explicit_events = !event_names.is_empty();
     let (mut counters, metrics) = if topdown_level.is_some() {
         let scenario =
             libprof::host_tma_scenario().expect("architectural TMA fallback is always available");
+        let unavailable: Vec<_> = scenario
+            .events
+            .iter()
+            .filter(|event| {
+                !supported
+                    .iter()
+                    .any(|counter| counter.name() == event.as_str())
+            })
+            .collect();
+        if !unavailable.is_empty() {
+            anyhow::bail!(
+                "Top-down analysis requires hardware events unavailable on this host: {}",
+                unavailable
+                    .into_iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
         let counters = scenario
             .events
             .iter()
@@ -74,10 +98,13 @@ pub fn do_stat(
     } else if event_names.is_empty() {
         let mut defaults = pmu_counters();
         defaults.extend(software_counters());
+        windows_stat::filter_default_counters(&mut defaults, &supported);
         let applicable = applicable_metrics(&host_metrics, &defaults);
         (defaults, applicable)
     } else {
-        requested_counters_and_metrics(&event_names, &supported, &host_metrics)?
+        let mut available = supported.clone();
+        windows_stat::add_explicit_candidates(&mut available);
+        requested_counters_and_metrics(&event_names, &available, &host_metrics)?
     };
 
     let mut driver = loop {
@@ -88,7 +115,10 @@ pub fn do_stat(
             .build()
         {
             Ok(driver) => break driver,
-            Err(error) if error.is_event_unsupported() => {
+            Err(error)
+                if error.is_event_unsupported()
+                    && !windows_stat::strict_explicit_events(explicit_events) =>
+            {
                 let unsupported = error.counter_name().unwrap_or_default();
                 let Some(index) = counters
                     .iter()
@@ -112,13 +142,14 @@ pub fn do_stat(
         process.cont();
         process.wait()?;
     } else if let Some(pid) = pid {
-        while unsafe { libc::kill(pid as i32, 0) } == 0 {
+        while libprof::process_alive(pid) {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }
     driver.stop()?;
 
     let result = driver.counters()?;
+    windows_stat::require_explicit_results(explicit_events, &counters, &result)?;
 
     if let Some(level) = topdown_level {
         let scenario =
@@ -145,6 +176,8 @@ Performance counter stats for '{}':
 ",
         pid.map_or_else(|| command.join(" "), |pid| format!("pid {pid}"))
     );
+
+    windows_stat::notice_cycles(&counters, &supported);
 
     let cores = result.cores();
 
@@ -345,7 +378,11 @@ fn render_table(
             continue;
         };
 
-        let info = info_cell(cntr, &value, cycles, instructions);
+        let info = if value.quality == libprof::MeasurementQuality::Estimated {
+            Cell::new("estimated")
+        } else {
+            info_cell(cntr, &value, cycles, instructions)
+        };
 
         table.add_row(vec![
             Cell::new(cntr.name()),

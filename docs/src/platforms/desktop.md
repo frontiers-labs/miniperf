@@ -15,4 +15,29 @@ To build the GUI from source you need Xcode and its command-line tools. If Cargo
 
 ## Windows
 
-Windows packages contain `mperf-gui.exe` and nothing else. Recording is not supported. Copy a recording directory from a Linux or macOS machine and open it in the viewer.
+Windows builds include `mperf.exe` and `mperf-gui.exe`. `mperf stat` counts the
+available process and ETW hardware events. `mperf record -s snapshot` gathers
+process-tree CPU, memory, and I/O measurements alongside disk, network, CPU
+frequency, and exposed ACPI thermal-zone metrics. Hardware profile sampling
+uses ETW when the host grants access; a lower-fidelity CPU-time sampler remains
+available when it does not. `mperf doctor` reports the available profile
+sources and tools.
+
+`mem` and `roofline` use the Windows DynamoRIO runner and the miniperf
+`dr_roofline.dll` client. Set `MPERF_DYNAMORIO` and `MPERF_DR_CLIENT` to their
+paths when building from source. Windows does not use QEMU. Hardware-dependent
+top-down analysis requires the corresponding PMU events to be exposed by the
+CPU, Windows, and the current security token; `mperf` reports unavailable
+events instead of substituting estimates. Thermal-zone readings are supplied
+only on machines whose firmware exposes them.
+
+The `tma` scenario and model-specific `stat` events use Windows Performance
+Recorder (`wpr.exe`) to capture a coherent counter vector on context switches.
+Run them from an elevated terminal with PMU access. TMA recording also captures
+timer instruction-pointer samples in the same ETW trace. It matches samples to
+measured intervals by process, thread, CPU, and time, then apportions each
+interval's counter vector among the sampled functions. The per-function values
+in `tma` are statistical estimates; `tma_summary` and `tma_intervals` retain the
+measured process totals. `tma_attribution` reports how many intervals and
+samples contributed to function estimates. Intervals without a sample remain
+in process totals and do not acquire an invented function.

@@ -4,7 +4,7 @@
 mperf record -s tma -o results/tma -- ./workload
 ```
 
-The `tma` scenario is the general-purpose CPU profile. It samples at 1000 Hz with call stacks and, in the same run, counts the events the host's top-down model needs. The result attributes both time and stall reasons to functions.
+The `tma` scenario is the general-purpose CPU profile. It samples at 1000 Hz and, in the same run, counts the events the host's top-down model needs. The result attributes both time and stall reasons to functions. On Windows, ETW timer samples provide instruction pointers and coherent context-switch counter vectors provide the event counts; function metrics are estimates apportioned from intervals containing samples. See [Windows](../platforms/desktop.md) for the coverage table and PMU requirements.
 
 ## What you get
 

@@ -5,9 +5,9 @@
 //! delivered. Sources know how to measure; deciding when and what to measure is
 //! the caller's job.
 //!
-//! Every source compiles on every target. A host that cannot run one says so
-//! from [`Source::probe`], so a scenario degrades at runtime instead of a build
-//! failing on a platform nobody tested.
+//! Shared sources compile on every target, while operating-system collectors
+//! live in platform modules. A host that cannot run a shared source says so
+//! from [`Source::probe`], so a scenario can degrade at runtime.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -15,17 +15,37 @@ use std::sync::Arc;
 
 use crate::{Process, ResourceSample, Sink, SourceStatus};
 
+#[cfg(not(target_os = "windows"))]
+mod bpf;
+#[cfg(target_os = "windows")]
+#[path = "bpf_stub.rs"]
 mod bpf;
 mod internal_events;
 mod pmu;
 mod procfs;
 mod telemetry;
+#[cfg(target_os = "windows")]
+mod windows;
 
 pub use bpf::BpfSource;
 pub use internal_events::InternalEventsSource;
 pub use pmu::{PmuSamplingSource, PreciseMemorySource};
 pub use procfs::ProcfsSource;
 pub use telemetry::HostTelemetrySource;
+#[cfg(target_os = "windows")]
+pub use windows::WindowsResourceSource;
+
+/// Process and system resource source for the current host.
+pub fn process_resource_source() -> Box<dyn Source> {
+    #[cfg(target_os = "windows")]
+    {
+        Box::new(WindowsResourceSource::default())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Box::new(ProcfsSource::default())
+    }
+}
 
 /// What a source is, declared before probing.
 pub struct SourceDecl {

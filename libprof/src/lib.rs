@@ -32,6 +32,11 @@ pub use driver::{
     CountingDriverBuilder, DriverKind, MeasurementQuality, SamplingDriver, SamplingDriverBuilder,
     UnwindMode,
 };
+#[cfg(target_os = "windows")]
+pub use driver::{
+    windows_counter_profile, windows_decode_pmc_etl, windows_max_pmc_sources,
+    windows_pmc_etl_totals, windows_switch_etl_totals, windows_tma_profile, WindowsTmaProfile,
+};
 #[cfg(feature = "criterion")]
 pub use event_timer::CounterCheckpoint;
 pub use event_timer::{
@@ -42,6 +47,7 @@ pub use features::{resolve, Feature, Mechanism, Resolution, Satisfied};
 pub use host_telemetry::{
     ClusterClocks, DeviceClocks, HostTelemetry, HostTelemetrySample, ThermalZone,
 };
+pub use platform::{configured_cpu_count, monotonic_timestamp_ns, process_rss_bytes};
 pub use platform::{current_thread_id, process_alive, process_modules, process_tree, ProcessStat};
 pub use platform_memory::{
     bandwidth_counters_present, MemoryControllerMonitor, MemoryControllerSample,
@@ -55,9 +61,11 @@ pub use sampling_probe::{probe_sampling_group, SamplingProbe};
 pub use sink::{
     MemSample, ProcAddr, ProcessInfo, Record, ResourceSample, Sample, Sink, SourceStatus, UserRegs,
 };
+#[cfg(target_os = "windows")]
+pub use source::WindowsResourceSource;
 pub use source::{
-    Availability, BpfSource, HostTelemetrySource, InternalEventsSource, PmuSamplingSource,
-    PreciseMemorySource, ProcfsSource, SessionContext, Source, SourceDecl,
+    process_resource_source, Availability, BpfSource, HostTelemetrySource, InternalEventsSource,
+    PmuSamplingSource, PreciseMemorySource, ProcfsSource, SessionContext, Source, SourceDecl,
 };
 pub use topdown::{is_topdown_event, sysfs_alias, GROUP_LEADER};
 pub use unwind::{Frames, PostHocUnwinder, StackSample};
@@ -297,7 +305,11 @@ impl Error {
 
     /// Returns whether the kernel reported that an event does not exist.
     pub fn is_event_unsupported(&self) -> bool {
-        matches!(self, Self::PerfEventOpen { errno, .. } if *errno == libc::ENOENT)
+        match self {
+            Self::PerfEventOpen { errno, .. } => *errno == libc::ENOENT,
+            Self::UnsupportedCounter { .. } => true,
+            _ => false,
+        }
     }
 
     /// Returns the affected counter name when the error carries one.

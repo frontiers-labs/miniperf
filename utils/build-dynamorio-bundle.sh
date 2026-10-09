@@ -3,8 +3,8 @@
 # DynamoRIO (pinned master commit; releases lack the riscv64 port) plus the
 # miniperf dr-roofline client linked against roofline-core.
 #
-# linux-x86_64 and linux-aarch64 build natively. linux-riscv64 cross-compiles
-# against the sysroot that utils/deps/setup-riscv64-sysroot.sh assembles.
+# linux-x86_64, linux-aarch64 and windows-x86_64 build natively.
+# linux-riscv64 cross-compiles against the assembled sysroot.
 #
 # usage: build-dynamorio-bundle.sh <platform> [output-directory]
 set -euo pipefail
@@ -35,12 +35,20 @@ case "${platform}" in
     linux-x86_64) rust_target=x86_64-unknown-linux-gnu ;;
     linux-aarch64) rust_target=aarch64-unknown-linux-gnu ;;
     linux-riscv64) rust_target=riscv64gc-unknown-linux-gnu ;;
+    windows-x86_64) rust_target=x86_64-pc-windows-msvc ;;
     *)
         printf 'DynamoRIO has no port for %s\n' "${platform}" >&2
         exit 2
         ;;
 esac
 
+if [[ "${platform}" == windows-* && -z "${DEPS_BUILD_PARENT:-}" ]]; then
+    windows_temp="${TEMP:-${TMP:-/tmp}}"
+    if command -v cygpath >/dev/null 2>&1; then
+        windows_temp="$(cygpath -u "${windows_temp}")"
+    fi
+    DEPS_BUILD_PARENT="$(cd "${windows_temp}" && pwd)"
+fi
 build_root="$(mktemp -d "${DEPS_BUILD_PARENT:-/tmp}/miniperf-dynamorio.XXXXXX")"
 cleanup() {
     local status=$?
@@ -75,6 +83,11 @@ if compgen -G "${patch_directory}/*.patch" >/dev/null; then
 fi
 
 cmake="${DYNAMORIO_CMAKE:-cmake}"
+# Native Windows tools cannot open MSYS paths and CMake flags must not be
+# rewritten by Git Bash. The mixed path form also works in shell operations.
+if [[ "${platform}" == windows-* ]]; then
+    export MSYS2_ARG_CONV_EXCL='*'
+fi
 # ZLIB_ROOT keeps non-system cmake installations (e.g. nix) finding the
 # distro zlib that drsyms requires.
 cmake_arguments=(
@@ -82,8 +95,15 @@ cmake_arguments=(
     -DBUILD_TESTS=OFF
     -DBUILD_SAMPLES=OFF
     -DBUILD_DOCS=OFF
-    -DZLIB_ROOT=/usr
 )
+if [[ "${platform}" == windows-* ]]; then
+    # Ninja's generic ASM detection can pick cl.exe, which accepts the build
+    # command but ignores the generated .s input and leaves the object absent.
+    # DynamoRIO's Windows assembly rules require the MSVC x64 assembler.
+    cmake_arguments+=(-G Ninja -DCMAKE_BUILD_TYPE=Release -DX64=ON -DCMAKE_ASM_COMPILER=ml64.exe)
+else
+    cmake_arguments+=(-DZLIB_ROOT=/usr)
+fi
 cargo_arguments=(--release -p miniperf-roofline-core --target "${rust_target}")
 
 if [[ "${platform}" == linux-riscv64 ]]; then
@@ -101,31 +121,44 @@ if [[ "${platform}" == linux-riscv64 ]]; then
     export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=${RISCV_TARGET_FEATURE:-+v,+zba,+zbb}"
 fi
 
-"${cmake}" -S "${source_directory}" -B "${build_directory}" "${cmake_arguments[@]}"
-"${cmake}" --build "${build_directory}" -j "$(nproc)"
+"${cmake}" -S "$(deps_native_path "${source_directory}")" \
+    -B "$(deps_native_path "${build_directory}")" "${cmake_arguments[@]}"
+"${cmake}" --build "$(deps_native_path "${build_directory}")" --parallel
 
-cargo build --manifest-path "${repository_root}/Cargo.toml" "${cargo_arguments[@]}"
-roofline_core_library="${repository_root}/target/${rust_target}/release/libroofline_core.a"
+cargo build --manifest-path "$(deps_native_path "${repository_root}/Cargo.toml")" "${cargo_arguments[@]}"
+if [[ "${platform}" == windows-* ]]; then
+    roofline_core_library="${repository_root}/target/${rust_target}/release/roofline_core.lib"
+    client_library="${client_build_directory}/dr_roofline.dll"
+    launcher="${bundle_directory}/dynamorio/bin64/drrun.exe"
+else
+    roofline_core_library="${repository_root}/target/${rust_target}/release/libroofline_core.a"
+    client_library="${client_build_directory}/libdr_roofline.so"
+    launcher="${bundle_directory}/dynamorio/bin64/drrun"
+fi
 
 client_cmake_arguments=(
-    "-DDynamoRIO_DIR=${build_directory}/cmake"
-    "-DROOFLINE_CORE_LIB=${roofline_core_library}"
+    "-DDynamoRIO_DIR=$(deps_native_path "${build_directory}/cmake")"
+    "-DROOFLINE_CORE_LIB=$(deps_native_path "${roofline_core_library}")"
 )
+if [[ "${platform}" == windows-* ]]; then
+    client_cmake_arguments+=(-G Ninja -DCMAKE_BUILD_TYPE=Release)
+fi
 if [[ "${platform}" == linux-riscv64 ]]; then
     client_cmake_arguments+=(
         "-DCMAKE_TOOLCHAIN_FILE=${source_directory}/make/toolchain-riscv64.cmake"
         -DCMAKE_FIND_ROOT_PATH=/usr/riscv64-linux-gnu
     )
 fi
-"${cmake}" -S "${repository_root}/utils/dr-roofline" -B "${client_build_directory}" \
+"${cmake}" -S "$(deps_native_path "${repository_root}/utils/dr-roofline")" \
+    -B "$(deps_native_path "${client_build_directory}")" \
     "${client_cmake_arguments[@]}"
-"${cmake}" --build "${client_build_directory}"
+"${cmake}" --build "$(deps_native_path "${client_build_directory}")"
 
 mkdir -p "${bundle_directory}/dynamorio"
 for directory in bin64 lib64 ext; do
     cp -a "${build_directory}/${directory}" "${bundle_directory}/dynamorio/"
 done
-cp "${client_build_directory}/libdr_roofline.so" "${bundle_directory}/"
+cp "${client_library}" "${bundle_directory}/"
 cp "${source_directory}/License.txt" "${bundle_directory}/DYNAMORIO_LICENSE.txt"
 {
     printf 'dynamorio_revision=%s\n' "${revision}"
@@ -146,9 +179,17 @@ if [[ "${platform}" == linux-riscv64 ]]; then
         exit 1
     fi
     test -x "${bundle_directory}/dynamorio/bin64/drrun"
+elif [[ "${platform}" == windows-* ]]; then
+    smoke_output="${build_root}/smoke.counts"
+    # cmd.exe invokes the native Windows loader; Git Bash can turn a failed
+    # image load into an unhelpful status 127.
+    cmd.exe /c "$(deps_native_path "${launcher}")" -disable_traces -max_bb_instrs 32 \
+        -c "$(deps_native_path "${bundle_directory}/dr_roofline.dll")" \
+        "output=$(deps_native_path "${smoke_output}")" memory-profile=off -- whoami.exe
+    grep -q '^instructions=' "${smoke_output}"
 else
     smoke_output="${build_root}/smoke.counts"
-    "${bundle_directory}/dynamorio/bin64/drrun" -disable_traces -max_bb_instrs 32 \
+    "${launcher}" -disable_traces -max_bb_instrs 32 \
         -c "${bundle_directory}/libdr_roofline.so" \
         "output=${smoke_output}" memory-profile=off -- /bin/true
     grep -q '^instructions=' "${smoke_output}"

@@ -2,13 +2,14 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use mperf_data::{EventType, ProcMapEntry, RecordInfo, ScenarioInfo};
-use object::{Object, ObjectSegment};
+use mperf_data::{EventType, RecordInfo, ScenarioInfo};
 use serde::Deserialize;
 use store::EventKind;
 
 use super::tables::{Columns, Tables};
 use crate::utils;
+
+mod platform;
 
 #[derive(Default)]
 struct RooflineLoopInfo {
@@ -688,14 +689,11 @@ fn collect_binary_loops(
         .with_context(|| format!("read Roofline executable '{}'", executable.display()))?;
     let object = object::File::parse(object_data.as_slice())
         .with_context(|| format!("parse Roofline executable '{}'", executable.display()))?;
-    let modules = utils::load_modules(tables.connection())?;
+    let modules = platform::load_modules(tables)?;
     let mappings =
-        executable_mappings(&modules, roofline_info.perf_pid as u32, executable, &object);
+        platform::executable_mappings(&modules, roofline_info.perf_pid as u32, executable, &object);
     if mappings.is_empty() {
-        anyhow::bail!(
-            "native Roofline samples have no executable mapping for '{}'",
-            executable.display()
-        );
+        platform::missing_mapping(executable)?;
     }
 
     let mut samples = Vec::new();
@@ -802,53 +800,6 @@ fn collect_binary_loops(
     }
 
     Ok(())
-}
-
-fn executable_mappings<'data>(
-    modules: &[ProcMapEntry],
-    pid: u32,
-    executable: &Path,
-    object: &object::File<'data>,
-) -> Vec<ModuleMapping> {
-    modules
-        .iter()
-        .filter(|mapping| mapping.pid == pid)
-        .filter(|mapping| paths_refer_to_same_file(Path::new(&mapping.filename), executable))
-        .filter_map(|mapping| {
-            let mapping_offset = mapping.offset as u64;
-            let segment = object
-                .segments()
-                .filter(|segment| {
-                    let (file_offset, file_size) = segment.file_range();
-                    mapping_offset >= (file_offset & !0xfff)
-                        && mapping_offset < file_offset.saturating_add(file_size)
-                })
-                .min_by_key(|segment| segment.file_range().0.abs_diff(mapping_offset))?;
-            let (file_offset, _) = segment.file_range();
-            Some(ModuleMapping {
-                runtime_start: mapping.address as u64,
-                runtime_end: mapping.address.saturating_add(mapping.size) as u64,
-                svma_start: segment
-                    .address()
-                    .saturating_add(mapping_offset)
-                    .saturating_sub(file_offset),
-            })
-        })
-        .collect()
-}
-
-fn paths_refer_to_same_file(left: &Path, right: &Path) -> bool {
-    let left_text = left.to_string_lossy();
-    let left = Path::new(
-        left_text
-            .strip_suffix(" (deleted)")
-            .unwrap_or(left_text.as_ref()),
-    );
-    left == right
-        || std::fs::canonicalize(left)
-            .ok()
-            .zip(std::fs::canonicalize(right).ok())
-            .is_some_and(|(left, right)| left == right)
 }
 
 fn normalize_sample_ip(ip: u64, mappings: &[ModuleMapping]) -> Option<u64> {

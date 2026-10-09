@@ -25,6 +25,8 @@ pub struct TmaData {
     pub intervals: Vec<TmaInterval>,
     /// Level-1 shares per function name, aligned with `level1`.
     pub functions: HashMap<String, Vec<f64>>,
+    /// Windows interval counters apportioned by timer instruction-pointer samples.
+    pub sampled_function_estimates: bool,
     pub error: Option<String>,
 }
 
@@ -47,6 +49,11 @@ impl TmaData {
         Some(Self {
             intervals: load_intervals(connection, &names),
             functions: load_functions(connection, &names),
+            sampled_function_estimates: connection
+                .prepare("SELECT method FROM tma_attribution LIMIT 1")
+                .ok()
+                .and_then(|mut query| query.query_row([], |row| row.get::<_, String>(0)).ok())
+                .is_some_and(|method| method == "sampled_interval"),
             level1,
             rows: summary.rows,
             error: summary.error,

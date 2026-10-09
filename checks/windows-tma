@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Run on an elevated Windows host with ETW PMC access. The workload and all
+# assertions use the shipped binaries and a fresh physical recording.
+# shellcheck source=checks/lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+[[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]] \
+    || skip "not a Windows host"
+
+dir="${CHECK_WORK}/rec-tma"
+# The dollar signs belong to PowerShell, not this shell.
+# shellcheck disable=SC2016
+powershell_code='$sw = [Diagnostics.Stopwatch]::StartNew(); while ($sw.Elapsed.TotalSeconds -lt 8) { $null = [Math]::Sqrt(12345) }'
+"${mperf}" record -s tma -o "${dir}" --duration 5s -- \
+    powershell.exe -NoProfile -Command "${powershell_code}" \
+    >"${dir}.log" 2>&1 || {
+        cat "${dir}.log" >&2
+        fail "Windows TMA recording failed"
+    }
+
+assert_sql "${dir}" "
+  SELECT COUNT(*) > 0 AS has_function_samples,
+         SUM(pmu_cycles) > 0 AS has_measured_cycles
+  FROM pmu_counters"
+assert_sql "${dir}" "
+  SELECT COUNT(*) > 0 AS has_functions,
+         SUM(cycles) > 0 AS has_attributed_cycles,
+         COUNT(DISTINCT func_name) > 0 AS has_named_functions
+  FROM tma"
+assert_sql "${dir}" "
+  SELECT measured_intervals > 0 AS has_intervals,
+         sampled_intervals > 0 AS has_sampled_intervals,
+         samples > 0 AS has_matched_samples
+  FROM tma_attribution"
+
+"${mperf_gui}" --tour "${dir}" >"${dir}.gui.log" 2>&1 || {
+    cat "${dir}.gui.log" >&2
+    fail "the GUI could not display the Windows TMA recording"
+}
+grep -qF 'tour: rendered Top-Down' "${dir}.gui.log" \
+    || fail "the GUI did not offer the Top-Down tab"
+note "Windows TMA produced function-attributed counters and a GUI Top-Down view"

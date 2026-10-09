@@ -27,7 +27,7 @@
         ,{ "name": "be_bound_l2", "events": ["cycles", "instructions", "TOPDOWN.SLOTS_P", "TOPDOWN.BACKEND_BOUND_SLOTS", "CYCLE_ACTIVITY.STALLS_MEM_ANY"] }
       ],
       "constants": [
-        { "name": "pipeline_width", "value": 4 }
+        { "name": "pipeline_width", "value": 5 }
       ],
       "metrics": [
         {

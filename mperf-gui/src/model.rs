@@ -108,12 +108,23 @@ fn finite_tma_value(value: Option<f64>) -> Option<f64> {
 
 impl SummaryStats {
     pub fn load(connection: &Connection) -> Result<Self> {
+        let columns = crate::sql::table_columns(connection, "pmu_counters");
+        if columns.is_empty() {
+            return Ok(Self::default());
+        }
+        let has = |name| columns.iter().any(|column| column.name == name);
+        let cycles = if has("pmu_cycles") { "pmu_cycles" } else { "0" };
+        let instructions = if has("pmu_instructions") {
+            "pmu_instructions"
+        } else {
+            "0"
+        };
         let mut statement = connection
-            .prepare(
-                "SELECT CAST(SUM(pmu_cycles) AS BIGINT) AS pmu_cycles,
-                        CAST(SUM(pmu_instructions) AS BIGINT) AS pmu_instructions
-                 FROM pmu_counters;",
-            )
+            .prepare(&format!(
+                "SELECT CAST(SUM({cycles}) AS BIGINT) AS pmu_cycles,
+                        CAST(SUM({instructions}) AS BIGINT) AS pmu_instructions
+                 FROM pmu_counters;"
+            ))
             .context("failed to prepare summary query")?;
         let mut rows = statement.query([]).context("failed to run summary query")?;
         let row = rows
