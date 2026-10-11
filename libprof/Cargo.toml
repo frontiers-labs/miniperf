@@ -2,7 +2,7 @@
 # recordings. See checks/lint/test-policy.
 [package]
 name = "libprof"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.85"
 description = "Local profiling sources: PMU counting and sampling, precise memory, host telemetry and resource monitoring"
@@ -33,7 +33,7 @@ anyhow = "1.0"
 cfg-if = "1.0.0"
 libc = "0.2.144"
 thiserror = "2.0.9"
-pmu-data = { package = "miniperf-pmu-data", path = "../pmu-data/", version = "0.1.0" }
+pmu-data = { package = "miniperf-pmu-data", path = "../pmu-data/", version = "0.2.0" }
 lazy_static = "1.5.0"
 proc-maps = "0.4.0"
 object = "0.39.1"
@@ -42,7 +42,7 @@ itertools = "0.14.0"
 uuid = { version = "1.16.0", features = ["v7"] }
 hashbrown = "0.15.2"
 criterion = { version = "0.5.1", optional = true, default-features = false }
-symbolize = { package = "miniperf-symbolize", path = "../symbolize", version = "0.1.0", optional = true }
+symbolize = { package = "miniperf-symbolize", path = "../symbolize", version = "0.2.0", optional = true }
 
 [dev-dependencies]
 insta = "1.42.2"
@@ -66,7 +66,7 @@ framehop-object = "0.2.0"
 [build-dependencies]
 serde = "1.0.217"
 serde_json = "1.0.138"
-pmu-data = { package = "miniperf-pmu-data", path = "../pmu-data/", version = "0.1.0" }
+pmu-data = { package = "miniperf-pmu-data", path = "../pmu-data/", version = "0.2.0" }
 glob = "0.3.2"
 quote = "1.0.38"
 proc-macro2 = "1.0"
