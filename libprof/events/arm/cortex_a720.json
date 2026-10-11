@@ -3,6 +3,7 @@
   "name": "ARM Cortex-A720",
   "vendor": "ARM",
   "arch": "aarch64",
+  "max_counters": 19,
   "scenarios": [
     {
       "name": "tma",

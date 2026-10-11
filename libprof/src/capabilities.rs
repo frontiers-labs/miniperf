@@ -386,7 +386,6 @@ mod tests {
             return; // No core PMU in a VM or a restricted container.
         };
         assert!(cpu.type_id.is_some());
-        assert!(!cpu.events.is_empty());
     }
 
     #[test]

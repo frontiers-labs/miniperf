@@ -4,19 +4,19 @@ mod events;
 #[cfg(target_arch = "x86_64")]
 mod mem;
 mod mmap;
+mod plan;
 mod spe;
 pub(crate) mod sysfs;
 
 use hashbrown::HashMap;
+use std::iter::zip;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use branch::BranchMode;
-use events::process_counter;
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-use events::resolve_counter_for_family;
+use events::{process_counter, resolve_counter_for_family};
 use libc::{close, mmap, munmap, sysconf, MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE};
 use mmap::{EventValue, ReadFormat, Records};
 use perf_event_open_sys::bindings::{
@@ -37,8 +37,8 @@ pub use mem::PerfMemSamplingDriver;
 pub use spe::{spe_pmu_path, PerfSpeSamplingDriver};
 
 use super::{
-    CoreId, CounterEntry, CounterResult, CounterValue, CountingDriver, MeasurementQuality,
-    SamplingDriver, Sink,
+    CoScheduled, CoreId, CounterEntry, CounterResult, CounterValue, CountingDriver,
+    MeasurementQuality, SamplingDriver, Sink,
 };
 
 /// Counting driver is used for simple collection of system's performance counters values. On Linux,
@@ -68,6 +68,8 @@ pub struct PerfSamplingDriver {
     enable_on_start: bool,
     sample_regs_user: u64,
     branch_mode: Option<BranchMode>,
+    /// The per-group frequency in use and the one the caller asked for.
+    sample_rate: (u64, u64),
 }
 
 #[derive(Debug, Clone)]
@@ -211,7 +213,6 @@ impl PerfCountingDriver {
 
 /// Build a display-friendly [`CoreId`] for a core PMU, resolving the family's
 /// human readable name where known.
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 fn core_id_of(pmu: &crate::cpu_family::CorePmu) -> CoreId {
     let name = crate::cpu_family::find_cpu_family(pmu.family_id)
         .map(|f| f.name.clone())
@@ -351,9 +352,7 @@ impl SamplingDriver for PerfSamplingDriver {
     }
 
     fn sample_rate(&self) -> Option<(u64, u64)> {
-        let effective = binding::LAST_SAMPLE_FREQ.load(Ordering::Relaxed);
-        let requested = binding::LAST_SAMPLE_FREQ_REQUESTED.load(Ordering::Relaxed);
-        (effective > 0 && requested > 0).then_some((effective, requested))
+        Some(self.sample_rate)
     }
 
     fn start(&mut self, callback: Arc<dyn Sink>) -> Result<(), Error> {
@@ -552,19 +551,17 @@ fn read_group_times(fd: i32) -> Option<(u64, u64)> {
     Some((buffer[1], buffer[2]))
 }
 
-/// Whether this host runs the sampling groups that `attrs` describe for
-/// `counters`. `perf_event_open` accepts a group wider than the PMU, or one
-/// naming an event the PMU does not implement, and then never runs it; one
-/// RISC-V host runs such groups for a forked task but never for a task that
-/// has exec'd. So the probe does what a recording does: fork a child, open
-/// the driver's own group plan on it with enable-on-exec, let it exec a
-/// spinning shell, and read the leaders after a moment. Software-only groups
-/// always schedule.
-fn group_schedules(counters: &[Counter], attrs: &[perf_event_attr]) -> Result<bool, Error> {
-    if counters.iter().all(Counter::is_software) {
-        return Ok(true);
-    }
-    let cpu = target_allowed_cpus(0)?[0];
+/// Whether this host runs the sampling groups `open` opens for a task on
+/// `cpu`. `perf_event_open` accepts a group wider than the PMU, or one naming
+/// an event the PMU does not implement, and then never runs it; one RISC-V
+/// host runs such groups for a forked task but never for a task that has
+/// exec'd. So the probe does what a recording does: fork a child pinned to
+/// `cpu`, open the driver's own plan on it with enable-on-exec, let it exec a
+/// spinning shell, and read the leaders after a moment.
+fn group_schedules(
+    cpu: i32,
+    open: impl FnOnce(i32) -> Result<Vec<NativeCounterHandle>, Error>,
+) -> Result<bool, Error> {
     let mut gate = [0_i32; 2];
     if unsafe { libc::pipe(gate.as_mut_ptr()) } != 0 {
         return Ok(true);
@@ -596,7 +593,7 @@ fn group_schedules(counters: &[Counter], attrs: &[perf_event_attr]) -> Result<bo
         }
     }
     unsafe { close(gate[0]) };
-    let opened = open_inherited_target_groups_on_cpus(counters, attrs, child, &[cpu]);
+    let opened = open(child);
     unsafe {
         libc::write(gate[1], [1_u8].as_ptr().cast(), 1);
         close(gate[1]);
@@ -622,9 +619,7 @@ fn group_schedules(counters: &[Counter], attrs: &[perf_event_attr]) -> Result<bo
                 break times.iter().all(|(enabled, _)| *enabled == 0);
             }
         };
-        for handle in &handles {
-            unsafe { close(handle.fd) };
-        }
+        binding::close_handles(&handles);
         verdict
     });
     unsafe {
@@ -684,11 +679,6 @@ impl PerfSamplingDriver {
     }
 }
 
-/// Whether a counter belongs to a fixed-topdown group.
-fn is_topdown(counter: &Counter) -> bool {
-    topdown_event_name(counter).is_some()
-}
-
 /// The topdown event name a counter carries, if it is one.
 fn topdown_event_name(counter: &Counter) -> Option<&str> {
     match counter {
@@ -697,10 +687,8 @@ fn topdown_event_name(counter: &Counter) -> Option<&str> {
     }
 }
 
-/// Flags for a counting member of a sampling group. Intel PERF_METRICS events
-/// and their `slots` leader are rejected by the kernel when they sample, so
-/// they join the group as plain counters and are reported through the sampling
-/// sibling's grouped read.
+/// Flags for a counting member of a sampling group, which is reported through
+/// the grouped read of the event that owns the ring.
 fn apply_grouped_counting_flags(attr: &mut perf_event_attr, enable_on_exec: bool) {
     attr.set_exclude_kernel(1);
     attr.set_exclude_user(0);
@@ -808,108 +796,104 @@ fn apply_sampling_flags(
 }
 
 impl PerfSamplingDriver {
+    /// Plan the sampling groups of every core PMU, check that each PMU
+    /// schedules its plan, and open the plans wherever the target may run.
     pub fn new(
         counters: &[Counter],
+        co_scheduled: &[CoScheduled],
         options: &SampleOptions,
         pid: Option<i32>,
         prefer_raw_events: bool,
     ) -> Result<PerfSamplingDriver, Error> {
-        // On a heterogeneous (big.LITTLE) host, open a sampling group on each
-        // cluster's PMU so the profile captures execution wherever the task
-        // runs, not just on one cluster.
-        let core_pmus = crate::cpu_family::host_core_pmus();
-        if core_pmus.len() > 1 {
-            #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-            return Self::new_per_core(counters, options, pid, &core_pmus);
+        let requested = options.sample_freq;
+        let reserved = binding::reserved_hardware_counters();
+        let pmus = sampling_pmus(prefer_raw_events);
+        let mut plans = Vec::with_capacity(pmus.len());
+        for pmu in &pmus {
+            // A counter this PMU's family does not implement is skipped here
+            // and still sampled on the clusters that have it.
+            let available = counters
+                .iter()
+                .filter(|counter| pmu.attr(counter).is_some())
+                .cloned()
+                .collect::<Vec<_>>();
+            // Each core type has its own formulas: another cluster's must not
+            // shape this PMU's groups.
+            let formulas = co_scheduled
+                .iter()
+                .filter(|set| {
+                    set.cpus
+                        .as_deref()
+                        .is_none_or(|cpus| parse_cpu_list(cpus).iter().any(|cpu| pmu.covers(*cpu)))
+                })
+                .map(|set| set.counters.clone())
+                .collect::<Vec<_>>();
+            let groups =
+                plan::plan(pmu.family(), reserved, &available, &formulas).map_err(|wide| {
+                    Error::InvalidConfiguration(format!(
+                        "events {} must be sampled in one group, but the {} PMU schedules only \
+                         {} events beyond cycles and instructions",
+                        wide.events.join(", "),
+                        pmu.family_id,
+                        wide.available
+                    ))
+                })?;
+            plans.push(groups);
         }
 
-        let mut attrs = get_native_counters(counters, prefer_raw_events)?;
-
-        for (counter, attr) in std::iter::zip(counters, &mut attrs) {
-            if is_topdown(counter) {
-                apply_grouped_counting_flags(attr, pid.is_some());
-                continue;
-            }
-            apply_sampling_flags(
-                attr,
-                options,
-                pid.is_some(),
-                options.branch_mode.filter(|_| !counter.is_software()),
-            );
-        }
-
-        if !group_schedules(counters, &attrs)? {
-            return Err(Error::SamplingGroupNeverScheduled {
-                groups: "probe".to_owned(),
-            });
-        }
-        let native_handles = match pid {
-            None => binding::grouped_all(counters, &mut attrs, None)?,
-            Some(pid) => open_inherited_target_groups(counters, &attrs, pid)?,
+        // Every group opens its own sampling leader on each CPU, so the rate
+        // each one may ask for depends on how many the widest plan has.
+        let sample_freq = plan::group_sample_freq(
+            options.sample_freq,
+            plans.iter().map(Vec::len).max().unwrap_or(1),
+            binding::host_max_sample_rate(),
+        );
+        let options = &SampleOptions {
+            sample_freq,
+            ..*options
         };
 
-        Self::from_handles(
-            native_handles,
-            dwarf_mask_for_mode(options.unwind_mode),
-            options.branch_mode,
-            pid.is_none(),
-        )
-    }
-
-    /// Faithful per-core sampling: open a sampling group on every cluster's PMU
-    /// (each with that cluster's event codes), so no cluster is invisible in the
-    /// profile. Each handle is tagged with the cluster it samples so downstream
-    /// consumers can attribute samples per core.
-    #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-    fn new_per_core(
-        counters: &[Counter],
-        options: &SampleOptions,
-        pid: Option<i32>,
-        core_pmus: &[crate::cpu_family::CorePmu],
-    ) -> Result<PerfSamplingDriver, Error> {
-        let mut native_handles: Vec<NativeCounterHandle> = Vec::new();
-
-        for pmu in core_pmus {
-            let core = core_id_of(pmu);
-
-            let mut attrs: Vec<perf_event_attr> = counters
+        let own_cpus = target_allowed_cpus(0)?;
+        for (pmu, groups) in zip(&pmus, &plans) {
+            let hardware = groups
                 .iter()
-                .map(|cntr| {
-                    let resolved = resolve_counter_for_family(cntr, pmu.family_id, true)
-                        .unwrap_or_else(|| cntr.clone());
-                    let mut attr = build_pmu_attr(&resolved, pmu.pmu_type)?;
-                    if is_topdown(cntr) {
-                        apply_grouped_counting_flags(&mut attr, pid.is_some());
-                        return Ok(attr);
-                    }
-                    apply_sampling_flags(
-                        &mut attr,
-                        options,
-                        pid.is_some(),
-                        options.branch_mode.filter(|_| !cntr.is_software()),
-                    );
-                    Ok(attr)
-                })
-                .collect::<Result<Vec<_>, Error>>()?;
-
-            let mut handles = if let Some(pid) = pid {
-                let cluster_cpus = parse_cpu_list(&pmu.cpus);
-                let cpus = target_allowed_cpus(pid)?
-                    .into_iter()
-                    .filter(|cpu| cluster_cpus.contains(cpu))
-                    .collect::<Vec<_>>();
-                if cpus.is_empty() {
-                    continue;
-                }
-                open_inherited_target_groups_on_cpus(counters, &attrs, pid, &cpus)?
-            } else {
-                binding::grouped_all(counters, &mut attrs, None)?
+                .flat_map(|group| &group.events)
+                .any(|counter| !counter.is_software());
+            let Some(cpu) = own_cpus.iter().copied().find(|cpu| pmu.covers(*cpu)) else {
+                continue;
             };
-            for handle in &mut handles {
-                handle.core = Some(core.clone());
+            // Software-only groups always schedule.
+            if hardware
+                && !group_schedules(cpu, |child| pmu.open(groups, options, Some(child), &[cpu]))?
+            {
+                return Err(Error::SamplingGroupNeverScheduled {
+                    groups: "probe".to_owned(),
+                });
             }
+        }
 
-            native_handles.extend(handles);
+        let mut native_handles: Vec<NativeCounterHandle> = Vec::new();
+        for (pmu, groups) in zip(&pmus, &plans) {
+            // Linux cannot mmap a sampling ring for an inherited event opened
+            // with `cpu == -1`, so the task (this thread when there is no
+            // target) is paired with every CPU it may run on, which gives
+            // equivalent coverage.
+            let cpus = target_allowed_cpus(pid.unwrap_or(0))?
+                .into_iter()
+                .filter(|cpu| pmu.covers(*cpu))
+                .collect::<Vec<_>>();
+            match pmu.open(groups, options, pid, &cpus) {
+                Ok(handles) => native_handles.extend(handles),
+                Err(error) => {
+                    binding::close_handles(&native_handles);
+                    return Err(error);
+                }
+            }
+        }
+        if native_handles.is_empty() {
+            return Err(Error::InvalidConfiguration(
+                "no sampling counters are available on the CPUs the target may run on".to_owned(),
+            ));
         }
 
         Self::from_handles(
@@ -917,6 +901,7 @@ impl PerfSamplingDriver {
             dwarf_mask_for_mode(options.unwind_mode),
             options.branch_mode,
             pid.is_none(),
+            (sample_freq, requested),
         )
     }
 
@@ -926,6 +911,7 @@ impl PerfSamplingDriver {
         sample_regs_user: u64,
         branch_mode: Option<BranchMode>,
         enable_on_start: bool,
+        sample_rate: (u64, u64),
     ) -> Result<PerfSamplingDriver, Error> {
         // Only hardware events carry a branch stack. When the counter fallback
         // left a software event owning the ring, its records have no branch
@@ -984,61 +970,151 @@ impl PerfSamplingDriver {
             sample_regs_user,
             branch_mode,
             enable_on_start,
+            sample_rate,
         })
     }
 }
 
-/// Open one inherited task group on every CPU where the target may run.
-///
-/// `perf_event_open(pid, -1, ...)` follows a task across CPUs, but Linux
-/// explicitly disallows mmap sampling for that combination when `inherit` is
-/// enabled. Pairing the target PID with each allowed CPU provides equivalent
-/// process-wide coverage and gives every group a valid sampling ring.
-fn open_inherited_target_groups(
-    counters: &[Counter],
-    attrs: &[perf_event_attr],
-    pid: i32,
-) -> Result<Vec<NativeCounterHandle>, Error> {
-    let cpus = target_allowed_cpus(pid)?;
-    open_inherited_target_groups_on_cpus(counters, attrs, pid, &cpus)
+/// One core PMU as the sampling driver plans and opens it. A host whose sysfs
+/// names no per-cluster PMUs is a single one of these covering every CPU.
+struct SamplingPmu {
+    family_id: &'static str,
+    /// Dynamic perf `type` to route hardware events to. `None` leaves them on
+    /// the generic encodings, which bind to the only core PMU there is.
+    pmu_type: Option<u32>,
+    /// CPUs this PMU counts on. `None` means all of them.
+    cpus: Option<std::collections::BTreeSet<i32>>,
+    /// Set on a heterogeneous host, to attribute samples per cluster.
+    core: Option<CoreId>,
+    prefer_raw_events: bool,
 }
 
-fn open_inherited_target_groups_on_cpus(
-    counters: &[Counter],
-    attrs: &[perf_event_attr],
-    pid: i32,
-    cpus: &[i32],
-) -> Result<Vec<NativeCounterHandle>, Error> {
-    if cpus.is_empty() {
-        return Err(Error::InvalidConfiguration(format!(
-            "no profiled CPUs are available for target PID {pid}"
-        )));
+fn sampling_pmus(prefer_raw_events: bool) -> Vec<SamplingPmu> {
+    let core_pmus = crate::cpu_family::host_core_pmus();
+    if core_pmus.is_empty() {
+        return vec![SamplingPmu {
+            family_id: crate::cpu_family::get_host_cpu_family(),
+            pmu_type: None,
+            cpus: None,
+            core: None,
+            prefer_raw_events,
+        }];
     }
-    let mut handles = Vec::new();
+    let heterogeneous = core_pmus.len() > 1;
+    core_pmus
+        .iter()
+        .map(|pmu| SamplingPmu {
+            family_id: pmu.family_id,
+            pmu_type: Some(pmu.pmu_type),
+            cpus: Some(parse_cpu_list(&pmu.cpus)),
+            core: heterogeneous.then(|| core_id_of(pmu)),
+            prefer_raw_events,
+        })
+        .collect()
+}
 
-    for &cpu in cpus {
-        let mut cpu_attrs = attrs.to_vec();
-        let opened = if counters.contains(&Counter::Cycles) {
-            binding::grouped_on_cpu(counters, &mut cpu_attrs, pid, cpu)
-        } else {
-            binding::grouped_software_on_cpu(counters, &mut cpu_attrs, pid, cpu)
-        };
+impl SamplingPmu {
+    fn family(&self) -> Option<&'static crate::cpu_family::CPUFamily> {
+        crate::cpu_family::find_cpu_family(self.family_id)
+    }
 
-        match opened {
-            Ok(mut cpu_handles) => handles.append(&mut cpu_handles),
-            Err(error) => {
-                for handle in &handles {
-                    unsafe { close(handle.fd) };
+    fn covers(&self, cpu: i32) -> bool {
+        self.cpus.as_ref().is_none_or(|cpus| cpus.contains(&cpu))
+    }
+
+    /// The event encoding of a counter on this PMU, or `None` when the PMU has
+    /// no such event. The family's table comes first; a topdown event the
+    /// table does not list is taken from the kernel's own sysfs alias.
+    fn attr(&self, counter: &Counter) -> Option<perf_event_attr> {
+        if let Some(resolved) =
+            resolve_counter_for_family(counter, self.family_id, self.prefer_raw_events)
+        {
+            return match self.pmu_type {
+                Some(pmu_type) => build_pmu_attr(&resolved, pmu_type).ok(),
+                None => {
+                    let (type_, config) = counter_type_config(&resolved).ok()?;
+                    let mut attr = base_counter_attr();
+                    attr.type_ = type_;
+                    attr.config = config;
+                    Some(attr)
                 }
-                return Err(error);
-            }
+            };
         }
+        let event = sysfs::core_event_attr(&crate::sysfs_alias(topdown_event_name(counter)?))?;
+        let mut attr = base_counter_attr();
+        // Architected events are encoded alike on every cluster's PMU.
+        attr.type_ = self.pmu_type.unwrap_or(event.type_);
+        attr.config = event.config;
+        Some(attr)
     }
 
-    Ok(handles)
+    /// Open `groups` for a task on each of `cpus`.
+    fn open(
+        &self,
+        groups: &[plan::Group],
+        options: &SampleOptions,
+        pid: Option<i32>,
+        cpus: &[i32],
+    ) -> Result<Vec<NativeCounterHandle>, Error> {
+        let mut handles: Vec<NativeCounterHandle> = Vec::new();
+        let mut open_all = || {
+            for &cpu in cpus {
+                for group in groups {
+                    let mut events = self.group_attrs(group, options, pid.is_some())?;
+                    handles.extend(binding::open_group(
+                        &mut events,
+                        group.sampled,
+                        pid.unwrap_or(0),
+                        cpu,
+                    )?);
+                }
+            }
+            Ok(())
+        };
+        if let Err(error) = open_all() {
+            binding::close_handles(&handles);
+            return Err(error);
+        }
+        for handle in &mut handles {
+            handle.core = self.core.clone();
+        }
+        Ok(handles)
+    }
+
+    /// Encode a group's events. Only the event that owns the ring buffer
+    /// overflows: a member left configured to sample costs one PMU interrupt
+    /// per period whose record has nowhere to be written.
+    fn group_attrs(
+        &self,
+        group: &plan::Group,
+        options: &SampleOptions,
+        enable_on_exec: bool,
+    ) -> Result<Vec<(Counter, perf_event_attr)>, Error> {
+        group
+            .events
+            .iter()
+            .enumerate()
+            .map(|(index, counter)| {
+                let mut attr = self
+                    .attr(counter)
+                    .ok_or_else(|| Error::UnsupportedCounter {
+                        counter: counter.name().to_owned(),
+                        family: self.family_id.to_owned(),
+                    })?;
+                if index == group.sampled {
+                    // Branch records exist only on the core PMU: asking a
+                    // software event for a branch stack fails the group open.
+                    let branch_mode = options.branch_mode.filter(|_| !counter.is_software());
+                    apply_sampling_flags(&mut attr, options, enable_on_exec, branch_mode);
+                } else {
+                    apply_grouped_counting_flags(&mut attr, enable_on_exec);
+                }
+                Ok((counter.clone(), attr))
+            })
+            .collect()
+    }
 }
 
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 fn parse_cpu_list(mask: &str) -> std::collections::BTreeSet<i32> {
     let mut cpus = std::collections::BTreeSet::new();
     for range in mask.trim().split(',') {
@@ -1284,7 +1360,6 @@ fn get_native_counters(
 /// PMU (`pmu_type`). Hardware and raw events are routed to that PMU so they
 /// count only while the task runs on that cluster; software events are left on
 /// the generic software PMU.
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 fn build_pmu_attr(resolved: &Counter, pmu_type: u32) -> Result<perf_event_attr, Error> {
     let mut attrs = base_counter_attr();
     let (type_, config) = counter_type_config(resolved)?;
@@ -1315,7 +1390,6 @@ fn build_pmu_attr(resolved: &Counter, pmu_type: u32) -> Result<perf_event_attr, 
 /// In practice the counting and sampling drivers request raw counters, so
 /// generic hardware events are already remapped via the platform aliases before
 /// they reach here; this is a defensive fallback for the non-raw path.
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 fn aarch64_hw_event_code(config: u64) -> Option<u64> {
     let code = match config as u32 {
         sys::bindings::PERF_COUNT_HW_CPU_CYCLES => 0x11, // CPU_CYCLES
