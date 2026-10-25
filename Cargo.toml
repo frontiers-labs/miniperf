@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["third_party/vendor/criterion"]
 members = [
     "collector-core",
     "libprof",

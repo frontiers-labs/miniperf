@@ -223,6 +223,8 @@ impl Index<Counter> for MeasurementStatistics {
 /// is deliberately neither [`Send`] nor [`Sync`]; create a timer inside every
 /// worker thread with [`EventTimer::new_for_thread`] instead of moving one.
 /// Events are scheduled as one perf group, so they run and multiplex together.
+/// Intel PERF_METRICS events use a grouped syscall read with `slots` as leader.
+/// Hardware counters spanning multiple Arm PMUs are unsupported.
 ///
 /// ```compile_fail
 /// fn require_send<T: Send>() {}
@@ -235,8 +237,10 @@ pub struct EventTimer {
     _thread_bound: PhantomData<Rc<()>>,
 }
 
-/// Opaque starting snapshot used by feature-gated measurement integrations.
-#[cfg(feature = "criterion")]
+/// An owned starting snapshot for [`EventTimer::since`].
+///
+/// It must be consumed on the creating thread by the same timer that produced it.
+/// Unlike [`MeasurementSpan`], it does not borrow the timer.
 pub struct CounterCheckpoint {
     start: backend::Snapshot,
     wall_start: Instant,
@@ -303,16 +307,23 @@ impl EventTimer {
         })
     }
 
-    #[cfg(feature = "criterion")]
-    pub(crate) fn checkpoint(&self) -> Result<CounterCheckpoint, Error> {
+    /// Takes an owned snapshot without stopping or resetting the counters.
+    ///
+    /// Pass it to [`EventTimer::since`] on this thread and this timer to measure
+    /// the subsequent interval. Multiple checkpoints may be outstanding.
+    pub fn checkpoint(&self) -> Result<CounterCheckpoint, Error> {
         Ok(CounterCheckpoint {
             start: self.backend.snapshot()?,
             wall_start: Instant::now(),
         })
     }
 
-    #[cfg(feature = "criterion")]
-    pub(crate) fn since(&self, checkpoint: CounterCheckpoint) -> Result<Measurements, Error> {
+    /// Consumes a checkpoint and returns counter deltas since that snapshot.
+    ///
+    /// The checkpoint must come from this timer on this thread. Counters keep
+    /// running after the measurement. Returns an error when the group did not
+    /// run during the measured interval.
+    pub fn since(&self, checkpoint: CounterCheckpoint) -> Result<Measurements, Error> {
         finish_measurement(
             &self.counters,
             &self.backend,
@@ -383,6 +394,8 @@ pub struct MeasurementSpan<'timer> {
 
 impl MeasurementSpan<'_> {
     /// Stops the scope and returns scaled counter and wall-time deltas.
+    ///
+    /// Returns an error when the group did not run during the measured interval.
     pub fn stop(self) -> Result<Measurements, Error> {
         finish_measurement(
             &self.timer.counters,
@@ -403,6 +416,14 @@ fn finish_measurement(
     let end = backend.snapshot()?;
     let enabled = end.time_enabled.saturating_sub(start.time_enabled);
     let running = end.time_running.saturating_sub(start.time_running);
+    if running == 0 {
+        return Err(Error::PerfRead {
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "counter group did not run during the measured interval",
+            ),
+        });
+    }
     // perf time is in nanoseconds and follows the exact interval between
     // counter snapshots. The metadata fast path advances it from TSC when
     // cap_user_time is available; retain Instant as a defensive fallback.
@@ -411,7 +432,7 @@ fn finish_measurement(
     } else {
         wall_elapsed.as_nanos().min(u128::from(u64::MAX)) as u64
     };
-    let scaling = multiplex_scaling(enabled, running);
+    let scaling = enabled as f64 / running as f64;
     let entries = counters
         .iter()
         .cloned()
@@ -427,14 +448,6 @@ fn finish_measurement(
         })
         .collect();
     Ok(Measurements { entries, wall_ns })
-}
-
-fn multiplex_scaling(enabled: u64, running: u64) -> f64 {
-    if running > 0 {
-        enabled as f64 / running as f64
-    } else {
-        1.0
-    }
 }
 
 fn calibrate_read_cost(backend: &backend::Backend) -> Result<Duration, Error> {
@@ -474,6 +487,7 @@ mod backend {
         fd: i32,
         metadata: *mut perf_event_mmap_page,
         map_len: usize,
+        position: usize,
     }
 
     impl Drop for Event {
@@ -492,6 +506,15 @@ mod backend {
 
     impl Backend {
         pub(super) fn new(counters: &[Counter], kernel: bool) -> Result<Self, Error> {
+            #[cfg(target_arch = "aarch64")]
+            if crate::cpu_family::host_core_pmus().len() > 1
+                && counters.iter().any(|counter| !counter.is_software())
+            {
+                return Err(Error::InvalidConfiguration(
+                    "EventTimer does not support hardware counters across multiple Arm PMUs"
+                        .to_owned(),
+                ));
+            }
             let page_size = unsafe { libc::sysconf(libc::_SC_PAGE_SIZE) };
             if page_size <= 0 {
                 return Err(Error::InvalidConfiguration(
@@ -502,9 +525,16 @@ mod backend {
             let mut events = Vec::with_capacity(counters.len());
             let mut leader_fd = -1;
 
-            for (index, counter) in counters.iter().enumerate() {
-                let resolved = resolve_counter(counter)?;
-                let mut attr = attr_for(&resolved, kernel)?;
+            let mut order: Vec<usize> = (0..counters.len()).collect();
+            if let Some(slots) = counters
+                .iter()
+                .position(|counter| counter.name() == crate::GROUP_LEADER)
+            {
+                order[..=slots].rotate_right(1);
+            }
+            for (index, &position) in order.iter().enumerate() {
+                let counter = &counters[position];
+                let mut attr = attr_for(counter, kernel)?;
                 attr.set_disabled((index == 0).into());
                 let fd = unsafe { sys::perf_event_open(&mut attr, 0, -1, leader_fd, 0) };
                 #[cfg(target_arch = "aarch64")]
@@ -527,16 +557,22 @@ mod backend {
                     fd,
                     metadata: std::ptr::null_mut(),
                     map_len,
+                    position,
                 });
             }
 
             let enable =
                 unsafe { sys::ioctls::ENABLE(leader_fd, sys::bindings::PERF_IOC_FLAG_GROUP) };
             if enable < 0 {
-                return Err(Error::perf_ioctl("ENABLE group", &counters[0]));
+                return Err(Error::perf_ioctl("ENABLE group", &counters[order[0]]));
             }
 
-            let mut user_read = cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
+            // PERF_METRICS virtual counters need the kernel's grouped read to
+            // convert their packed fractions to slot counts.
+            let mut user_read = cfg!(any(target_arch = "x86_64", target_arch = "aarch64"))
+                && !counters
+                    .iter()
+                    .any(|counter| crate::topdown::is_perf_metrics_event(counter.name()));
             if user_read {
                 for event in &mut events {
                     let ptr = unsafe {
@@ -599,12 +635,12 @@ mod backend {
         }
 
         fn snapshot_user(&self) -> Snapshot {
-            let mut values = Vec::with_capacity(self.events.len());
+            let mut values = vec![0; self.events.len()];
             let mut time_enabled = 0;
             let mut time_running = 0;
             for (position, event) in self.events.iter().enumerate() {
                 let reading = unsafe { read_metadata(event.metadata) };
-                values.push(reading.value);
+                values[event.position] = reading.value;
                 if position == 0 {
                     time_enabled = reading.time_enabled;
                     time_running = reading.time_running;
@@ -651,17 +687,47 @@ mod backend {
                     ),
                 });
             }
+            let mut values = vec![0; self.events.len()];
+            for (index, event) in self.events.iter().enumerate() {
+                values[event.position] = data[3 + index * 2];
+            }
             Ok(Snapshot {
                 time_enabled: data[1],
                 time_running: data[2],
-                values: (0..self.events.len())
-                    .map(|index| data[3 + index * 2])
-                    .collect(),
+                values,
             })
         }
     }
 
     fn attr_for(counter: &Counter, kernel: bool) -> Result<perf_event_attr, Error> {
+        let topdown = if crate::is_topdown_event(counter.name()) {
+            crate::driver::perf::sysfs::core_event_attr(&crate::sysfs_alias(counter.name()))
+        } else {
+            None
+        };
+        let mut attr = match topdown {
+            Some(attr) => attr,
+            None => raw_attr(&resolve_counter(counter)?)?,
+        };
+        attr.size = std::mem::size_of::<perf_event_attr>() as u32;
+        attr.set_exclude_kernel((!kernel).into());
+        attr.set_exclude_hv(1);
+        attr.set_inherit(0);
+        attr.read_format = (sys::bindings::PERF_FORMAT_GROUP
+            | sys::bindings::PERF_FORMAT_ID
+            | sys::bindings::PERF_FORMAT_TOTAL_TIME_ENABLED
+            | sys::bindings::PERF_FORMAT_TOTAL_TIME_RUNNING) as u64;
+        #[cfg(target_arch = "aarch64")]
+        {
+            // Linux arm_pmuv3's `rdpmc` format flag is config1 bit 1. The
+            // kernel exposes an mmap index only when this is requested and
+            // kernel.perf_user_access permits EL0 PMU reads.
+            attr.config1 |= 1 << 1;
+        }
+        Ok(attr)
+    }
+
+    fn raw_attr(counter: &Counter) -> Result<perf_event_attr, Error> {
         let (type_, config) = match counter {
             Counter::Cycles => (
                 sys::bindings::PERF_TYPE_HARDWARE,
@@ -722,20 +788,6 @@ mod backend {
         attr.size = std::mem::size_of::<perf_event_attr>() as u32;
         attr.type_ = type_;
         attr.config = config;
-        attr.set_exclude_kernel((!kernel).into());
-        attr.set_exclude_hv(1);
-        attr.set_inherit(0);
-        attr.read_format = (sys::bindings::PERF_FORMAT_GROUP
-            | sys::bindings::PERF_FORMAT_ID
-            | sys::bindings::PERF_FORMAT_TOTAL_TIME_ENABLED
-            | sys::bindings::PERF_FORMAT_TOTAL_TIME_RUNNING) as u64;
-        #[cfg(target_arch = "aarch64")]
-        {
-            // Linux arm_pmuv3's `rdpmc` format flag is config1 bit 1. The
-            // kernel exposes an mmap index only when this is requested and
-            // kernel.perf_user_access permits EL0 PMU reads.
-            attr.config1 |= 1 << 1;
-        }
         Ok(attr)
     }
 

@@ -1,0 +1,17 @@
+Criterion 0.8.2, copied from the crates.io release.
+Upstream: https://github.com/criterion-rs/criterion.rs
+Revision: 7f0d745532e3c7b2e11bbf9de9b911f91790d3b1
+License: Apache-2.0 OR MIT, see LICENSE-APACHE and LICENSE-MIT.
+
+Local changes:
+- src/measurement.rs: default batch-start and sample-completion callbacks.
+- src/bencher.rs: report actual iteration counts for every measured region.
+- src/routine.rs: retain measurement values and report only selected samples.
+- Cargo.toml and tests/samples_complete.rs: public API and CLI callback coverage,
+  including batched region counts and partial final batches.
+- Removed .cargo-ok, the registry extraction marker.
+
+Removed four unused gnuplot prelude imports exposed by path dependency builds.
+
+The patched package version is 0.8.2-miniperf.1 to distinguish its added hooks.
+Normalized trailing whitespace in three upstream documentation lines.

@@ -4,7 +4,7 @@
 name = "libprof"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.86"
 description = "Local profiling sources: PMU counting and sampling, precise memory, host telemetry and resource monitoring"
 license = "LGPL-3.0-only"
 repository = "https://github.com/frontiers-labs/miniperf"
@@ -26,7 +26,7 @@ events-x86-64 = []
 events-aarch64 = []
 events-riscv64 = []
 symbolize = ["dep:symbolize"]
-criterion = ["dep:criterion"]
+criterion = ["dep:criterion", "dep:serde", "dep:serde_json"]
 
 [dependencies]
 anyhow = "1.0"
@@ -41,7 +41,9 @@ smallvec = "1.13.2"
 itertools = "0.14.0"
 uuid = { version = "1.16.0", features = ["v7"] }
 hashbrown = "0.15.2"
-criterion = { version = "0.5.1", optional = true, default-features = false }
+criterion = { path = "../third_party/vendor/criterion", version = "=0.8.2-miniperf.1", optional = true, default-features = false, features = ["cargo_bench_support"] }
+serde = { version = "1.0.217", features = ["derive"], optional = true }
+serde_json = { version = "1.0.138", optional = true }
 symbolize = { package = "miniperf-symbolize", path = "../symbolize", version = "0.2.0", optional = true }
 
 [dev-dependencies]
@@ -84,3 +86,7 @@ required-features = ["criterion"]
 [package.metadata.docs.rs]
 features = ["symbolize", "criterion", "events-native"]
 rustdoc-args = ["--cfg", "docsrs"]
+
+[[example]]
+name = "criterion_tma"
+required-features = ["criterion"]

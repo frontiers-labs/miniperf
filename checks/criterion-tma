@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Exercise Criterion's public measurement API with real work and denied PMU access.
+# shellcheck source=checks/lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+root="$(cd "${checks_root}/.." && pwd)"
+cd "${root}" || exit 1
+
+cargo build -p libprof --features criterion --example criterion_tma --message-format=json \
+    >"${CHECK_WORK}/criterion-build.json" || fail "Criterion TMA example did not build"
+example="$(python3 - "${CHECK_WORK}/criterion-build.json" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    artifact = json.loads(line)
+    if artifact.get("target", {}).get("name") == "criterion_tma" and artifact.get("executable"):
+        print(artifact["executable"])
+        break
+else:
+    sys.exit("cargo did not report the example executable")
+PY
+)" || fail "Criterion TMA executable not found"
+
+hardware=0
+if [[ "$(uname -s)" == Linux ]] && pmu_oracle; then
+    hardware=1
+else
+    note "hardware assertion unavailable; timing and denied-PMU checks still run"
+fi
+
+validate() {
+    python3 - "$1" "$2" "$3" <<'PY'
+import json, math, pathlib, sys
+root, denied, hardware = pathlib.Path(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
+for benchmark in ("arithmetic", "batched"):
+    directory = root / "tma" / benchmark / "new"
+    sample = json.loads((directory / "sample.json").read_text())
+    report = json.loads((directory / "tma.json").read_text())
+    assert sample["sampling_mode"] == "Flat", sample
+    assert len(sample["times"]) == len(sample["iters"]) == report["samples"] == 10
+    assert all(math.isfinite(t) and t > 0 for t in sample["times"])
+    assert all(n > 0 for n in sample["iters"])
+    assert report["iterations"] == sum(sample["iters"])
+    assert report["benchmark"] == "tma/" + benchmark
+    assert report["metrics"], "missing TMA metrics"
+    for name, metric in report["metrics"].items():
+        assert isinstance(metric["available"], bool), (name, metric)
+        assert math.isfinite(metric["value"]), (name, metric)
+        if denied or not metric["available"]:
+            assert not metric["available"] and metric["value"] == 0, (name, metric)
+    for name, counter in report["counters"].items():
+        assert "/" in name, name
+        assert isinstance(counter["available"], bool), (name, counter)
+        assert math.isfinite(counter["value"]) and counter["value"] >= 0, (name, counter)
+        assert math.isfinite(counter["max_scaling"]) and counter["max_scaling"] >= 0
+        assert isinstance(counter["raw"], int) and counter["raw"] >= 0
+        if denied or not counter["available"]:
+            assert not counter["available"] and counter["value"] == counter["raw"] == 0
+        else:
+            iterations = counter.get("iterations", report["iterations"])
+            assert iterations > 0
+            scaled = counter["value"] * iterations
+            assert scaled + 1 >= counter["raw"], (name, counter)
+            assert scaled <= counter["raw"] * counter["max_scaling"] + iterations, (name, counter)
+            if counter["max_scaling"] == 1:
+                assert math.isclose(scaled, counter["raw"], rel_tol=1e-12, abs_tol=1), (name, counter)
+    if hardware and not denied:
+        if report["counters"]:
+            for event in ("cycles", "instructions"):
+                counters = [c for n, c in report["counters"].items() if n.endswith("/" + event)]
+                if counters:
+                    assert any(c["available"] and c["raw"] > 0 and c["value"] > 0 for c in counters), (event, report)
+            assert any(m["available"] for m in report["metrics"].values()), "no measured TMA metrics"
+        else:
+            print(f"  {benchmark}: hardware assertion unavailable, no TMA model for this CPU")
+    # These ratios use a single counter group, so multiplexing cannot mix samples.
+    ratios = {
+        "fe_bound": ("fe_bound/ic_fetch_stall.ic_stall_dq_empty", "fe_bound/cycles"),
+        "be_bound": ("be_bound/ic_fetch_stall.ic_stall_back_pressure", "be_bound/cycles"),
+        "be_bound.memory_bound": ("be_bound/l2_fill_pending.l2_fill_busy", "be_bound/cycles"),
+    }
+    for metric_name, (numerator_name, denominator_name) in ratios.items():
+        numerator = report["counters"].get(numerator_name)
+        denominator = report["counters"].get(denominator_name)
+        metric = report["metrics"].get(metric_name)
+        if numerator and denominator and metric and metric["available"] and denominator["value"] > 0:
+            expected = 100 * numerator["value"] / denominator["value"]
+            assert math.isclose(metric["value"], expected, rel_tol=1e-9, abs_tol=1e-9), (metric_name, metric, expected)
+    print(f"  {benchmark}: 10 timed samples and TMA report verified")
+PY
+}
+
+normal="${CHECK_WORK}/criterion-tma-normal"
+CRITERION_HOME="${normal}" "${example}" --bench >"${normal}.log" 2>&1 \
+    || { cat "${normal}.log" >&2; fail "Criterion TMA example failed"; }
+validate "${normal}" 0 "${hardware}" || fail "Criterion TMA output is invalid"
+
+if [[ "$(uname -s)" == Linux ]]; then
+    deny_perf="$(cc_fixture deny_perf)" || fail "could not build seccomp launcher"
+    denied="${CHECK_WORK}/criterion-tma-denied"
+    CRITERION_HOME="${denied}" "${deny_perf}" "${example}" --bench >"${denied}.log" 2>&1 \
+        || { cat "${denied}.log" >&2; fail "Criterion TMA failed with perf_event_open denied"; }
+    validate "${denied}" 1 0 || fail "Criterion TMA denied-PMU fallback is invalid"
+    note "seccomp denied perf_event_open; Criterion retained positive timings and unavailable counters"
+fi
