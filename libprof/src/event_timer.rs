@@ -237,10 +237,8 @@ pub struct EventTimer {
     _thread_bound: PhantomData<Rc<()>>,
 }
 
-/// An owned starting snapshot for [`EventTimer::since`].
-///
-/// It must be consumed on the creating thread by the same timer that produced it.
-/// Unlike [`MeasurementSpan`], it does not borrow the timer.
+/// Opaque starting snapshot used by feature-gated measurement integrations.
+#[cfg(feature = "criterion")]
 pub struct CounterCheckpoint {
     start: backend::Snapshot,
     wall_start: Instant,
@@ -307,23 +305,16 @@ impl EventTimer {
         })
     }
 
-    /// Takes an owned snapshot without stopping or resetting the counters.
-    ///
-    /// Pass it to [`EventTimer::since`] on this thread and this timer to measure
-    /// the subsequent interval. Multiple checkpoints may be outstanding.
-    pub fn checkpoint(&self) -> Result<CounterCheckpoint, Error> {
+    #[cfg(feature = "criterion")]
+    pub(crate) fn checkpoint(&self) -> Result<CounterCheckpoint, Error> {
         Ok(CounterCheckpoint {
             start: self.backend.snapshot()?,
             wall_start: Instant::now(),
         })
     }
 
-    /// Consumes a checkpoint and returns counter deltas since that snapshot.
-    ///
-    /// The checkpoint must come from this timer on this thread. Counters keep
-    /// running after the measurement. Returns an error when the group did not
-    /// run during the measured interval.
-    pub fn since(&self, checkpoint: CounterCheckpoint) -> Result<Measurements, Error> {
+    #[cfg(feature = "criterion")]
+    pub(crate) fn since(&self, checkpoint: CounterCheckpoint) -> Result<Measurements, Error> {
         finish_measurement(
             &self.counters,
             &self.backend,

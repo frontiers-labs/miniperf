@@ -143,10 +143,7 @@ impl ValueFormatter for CounterFormatter {
     ) -> &'static str {
         let amount = match throughput {
             Throughput::Bytes(bytes) | Throughput::BytesDecimal(bytes) => *bytes as f64,
-            Throughput::Bits(bits) => *bits as f64,
-            Throughput::Elements(elements) | Throughput::ElementsAndBytes { elements, .. } => {
-                *elements as f64
-            }
+            Throughput::Elements(elements) => *elements as f64,
         };
         for value in values {
             *value = if *value == 0.0 { 0.0 } else { amount / *value };

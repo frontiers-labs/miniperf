@@ -8,8 +8,6 @@ mod capabilities;
 mod cpu_family;
 #[cfg(feature = "criterion")]
 mod criterion_measurement;
-#[cfg(feature = "criterion")]
-mod criterion_tma;
 mod driver;
 mod event_timer;
 mod features;
@@ -28,17 +26,17 @@ pub use capabilities::{capabilities, Capabilities, PmuDevice};
 pub use cpu_family::{host_cpu_description, host_metrics};
 #[cfg(feature = "criterion")]
 pub use criterion_measurement::CriterionCounter;
-#[cfg(feature = "criterion")]
-pub use criterion_tma::{TMAMetrics, TMASample};
 pub use driver::{inherited_sampling_supported, mem_sampling_driver};
 pub use driver::{
     list_supported_counters, CoScheduled, CoreId, CounterEntry, CounterResult, CounterValue,
     CountingDriver, CountingDriverBuilder, DriverKind, MeasurementQuality, SamplingDriver,
     SamplingDriverBuilder, UnwindMode,
 };
+#[cfg(feature = "criterion")]
+pub use event_timer::CounterCheckpoint;
 pub use event_timer::{
-    CounterCheckpoint, CounterStatistics, EventTimer, Measurement, MeasurementSpan,
-    MeasurementStatistics, Measurements, ReadCost, ReadMethod,
+    CounterStatistics, EventTimer, Measurement, MeasurementSpan, MeasurementStatistics,
+    Measurements, ReadCost, ReadMethod,
 };
 pub use features::{resolve, Feature, Mechanism, Resolution, Satisfied};
 pub use host_telemetry::{
