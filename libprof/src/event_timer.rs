@@ -224,7 +224,7 @@ impl Index<Counter> for MeasurementStatistics {
 /// worker thread with [`EventTimer::new_for_thread`] instead of moving one.
 /// Events are scheduled as one perf group, so they run and multiplex together.
 /// Intel PERF_METRICS events use a grouped syscall read with `slots` as leader.
-/// Hardware counters spanning multiple Arm PMUs are unsupported.
+/// PMU-specific counters spanning multiple Arm PMUs are unsupported.
 ///
 /// ```compile_fail
 /// fn require_send<T: Send>() {}
@@ -497,15 +497,6 @@ mod backend {
 
     impl Backend {
         pub(super) fn new(counters: &[Counter], kernel: bool) -> Result<Self, Error> {
-            #[cfg(target_arch = "aarch64")]
-            if crate::cpu_family::host_core_pmus().len() > 1
-                && counters.iter().any(|counter| !counter.is_software())
-            {
-                return Err(Error::InvalidConfiguration(
-                    "EventTimer does not support hardware counters across multiple Arm PMUs"
-                        .to_owned(),
-                ));
-            }
             let page_size = unsafe { libc::sysconf(libc::_SC_PAGE_SIZE) };
             if page_size <= 0 {
                 return Err(Error::InvalidConfiguration(
@@ -526,6 +517,17 @@ mod backend {
             for (index, &position) in order.iter().enumerate() {
                 let counter = &counters[position];
                 let mut attr = attr_for(counter, kernel)?;
+                #[cfg(target_arch = "aarch64")]
+                if !matches!(
+                    attr.type_,
+                    sys::bindings::PERF_TYPE_HARDWARE | sys::bindings::PERF_TYPE_SOFTWARE
+                ) && crate::cpu_family::host_core_pmus().len() > 1
+                {
+                    return Err(Error::InvalidConfiguration(
+                        "EventTimer does not support PMU-specific counters across multiple Arm PMUs"
+                            .to_owned(),
+                    ));
+                }
                 attr.set_disabled((index == 0).into());
                 let fd = unsafe { sys::perf_event_open(&mut attr, 0, -1, leader_fd, 0) };
                 #[cfg(target_arch = "aarch64")]

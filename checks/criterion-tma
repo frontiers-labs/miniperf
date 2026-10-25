@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Exercise the public adapter through unmodified registry Criterion.
+# shellcheck source=checks/lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+repo="$(cd "${checks_root}/.." && pwd)"
+consumer="${CHECK_WORK}/criterion-consumer"
+mkdir -p "${consumer}/src"
+cat >"${consumer}/Cargo.toml" <<EOF
+[package]
+name = "criterion-tma-check"
+version = "0.0.0"
+edition = "2021"
+[workspace]
+[dependencies]
+criterion = { version = "=0.8.2", default-features = false }
+libprof = { path = "${repo}/libprof", features = ["criterion"] }
+EOF
+cp "${repo}/libprof/examples/criterion_tma.rs" "${consumer}/src/main.rs"
+cargo build --release --manifest-path "${consumer}/Cargo.toml" \
+    --target-dir "${consumer}/target" || fail "external Criterion consumer failed to build"
+binary="${consumer}/target/release/criterion-tma-check"
+oracle=0
+modes=(normal)
+if [[ "$(uname -s)" == Linux ]]; then
+    pmu_oracle && oracle=1
+    denied="$(cc_fixture deny_perf)" || fail "cannot build perf denial launcher"
+    modes+=(denied)
+fi
+for mode in "${modes[@]}"; do
+    output="${CHECK_WORK}/criterion-tma-${mode}"
+    command=("${binary}")
+    [[ "${mode}" != denied ]] || command=("${denied}" "${binary}")
+    CRITERION_HOME="${output}" "${command[@]}" --bench --noplot --color never \
+        --warm-up-time 0.05 --measurement-time 0.1 --sample-size 10 --nresamples 1000 \
+        >"${output}.log" 2>&1 || { cat "${output}.log" >&2; fail "${mode} benchmark failed"; }
+    python3 - "${output}" "${mode}" "${oracle}" <<'PY' || fail "${mode} Criterion output"
+import json, math, pathlib, re, sys
+output, mode, oracle = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3] == "1"
+text = output.with_suffix(".log").read_text()
+names = ["tma/arithmetic", "tma/batched"]
+assert re.findall(r"^TMA (.+):$", text, re.M) == names, text
+reports = re.findall(r"^TMA (.+):\n((?:  [^\n]+\n)+)", text, re.M)
+assert [name for name, _ in reports] == names, text
+for name, body in reports:
+    rows = body.splitlines()
+    events = []
+    values = {}
+    for row in rows:
+        if row == "  unavailable":
+            assert rows == [row], body
+            continue
+        event = re.fullmatch(r"  .+/.+: (\d+)( \(unavailable\))?", row)
+        metric = re.fullmatch(r"  [^:]+: (-?\d+\.\d{2})%( \(unavailable\))?", row)
+        match = event or metric
+        assert match, row
+        assert not match[2] or float(match[1]) == 0, row
+        values[row.strip().split(": ", 1)[0]] = (float(match[1]), bool(match[2]))
+        if event:
+            events.append((row, int(event[1]), bool(event[2])))
+        if mode == "denied":
+            assert match[2], row
+    if oracle and mode == "normal" and any(not unavailable for _, _, unavailable in events):
+        assert any("/cycles:" in row and value > 0 and not unavailable
+                   for row, value, unavailable in events), body
+    elif oracle and mode == "normal":
+        print(f"  {name}: cycles available, TMA configuration or event groups unavailable")
+    for metric, event in [("fe_bound", "ic_fetch_stall.ic_stall_dq_empty"),
+                          ("be_bound", "ic_fetch_stall.ic_stall_back_pressure")]:
+        numerator = values.get(metric + "/" + event)
+        denominator = values.get(metric + "/cycles")
+        if numerator and denominator and not numerator[1] and not denominator[1] and denominator[0]:
+            assert not values[metric][1]
+            assert abs(values[metric][0] - 100 * numerator[0] / denominator[0]) <= 0.011, body
+    directory = next(p.parent for p in output.rglob("benchmark.json")
+                     if p.parent.name == "new" and json.loads(p.read_text())["full_id"] == name)
+    sample = json.loads((directory / "sample.json").read_text())
+    assert len(sample["times"]) == len(sample["iters"]) == 10, sample
+    assert all(math.isfinite(x) and x > 0 for x in sample["times"] + sample["iters"]), sample
+    estimates = json.loads((directory / "estimates.json").read_text())
+    assert math.isfinite(estimates["mean"]["point_estimate"]) and estimates["mean"]["point_estimate"] > 0
+    assert json.loads((directory / "benchmark.json").read_text())["full_id"] == name
+assert not list(output.rglob("tma.json")), "TMA must not write Criterion result files"
+print(f"  {mode}: named TMA reports, drained scopes and real Criterion timing files")
+PY
+done

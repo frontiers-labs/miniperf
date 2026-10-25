@@ -95,15 +95,59 @@ impl StackSample<'_> {
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
 mod dwarf {
-    use std::{collections::BTreeMap, fs, path::Path};
+    use std::{collections::BTreeMap, fs, ops::Range, path::Path};
 
-    use framehop::{CacheNative, MayAllocateDuringUnwind, Module, Unwinder as _, UnwinderNative};
-    use framehop_object::ObjectSectionInfo;
+    use framehop::{
+        CacheNative, MayAllocateDuringUnwind, Module, ModuleSectionInfo, Unwinder as _,
+        UnwinderNative,
+    };
+    use object::{Object, ObjectSection, ObjectSegment};
 
     use super::{ProcAddr, StackSample};
 
     type NativeUnwinder = UnwinderNative<Vec<u8>, MayAllocateDuringUnwind>;
     type NativeCache = CacheNative<MayAllocateDuringUnwind>;
+
+    struct ObjectSectionInfo<'data>(object::File<'data>);
+
+    impl ModuleSectionInfo<Vec<u8>> for ObjectSectionInfo<'_> {
+        fn base_svma(&self) -> u64 {
+            if let Some(text) = self.0.segments().find(|s| s.name() == Ok(Some("__TEXT"))) {
+                return text.address();
+            }
+            self.0.relative_address_base()
+        }
+
+        fn section_svma_range(&mut self, name: &[u8]) -> Option<Range<u64>> {
+            let section = self.0.section_by_name_bytes(name)?;
+            Some(section.address()..section.address() + section.size())
+        }
+
+        fn section_data(&mut self, name: &[u8]) -> Option<Vec<u8>> {
+            self.0
+                .section_by_name_bytes(name)?
+                .data()
+                .ok()
+                .map(Vec::from)
+        }
+
+        fn segment_svma_range(&mut self, name: &[u8]) -> Option<Range<u64>> {
+            let segment = self
+                .0
+                .segments()
+                .find(|s| s.name_bytes() == Ok(Some(name)))?;
+            Some(segment.address()..segment.address() + segment.size())
+        }
+
+        fn segment_data(&mut self, name: &[u8]) -> Option<Vec<u8>> {
+            self.0
+                .segments()
+                .find(|s| s.name_bytes() == Ok(Some(name)))?
+                .data()
+                .ok()
+                .map(Vec::from)
+        }
+    }
 
     pub(super) struct Unwinder {
         unwinders: BTreeMap<u32, NativeUnwinder>,
@@ -143,12 +187,8 @@ mod dwarf {
                 let Ok(object) = object::File::parse(bytes.as_slice()) else {
                     continue;
                 };
-                let module = Module::<Vec<u8>>::new(
-                    filename,
-                    start..end,
-                    base,
-                    ObjectSectionInfo::from_ref(&object),
-                );
+                let module =
+                    Module::<Vec<u8>>::new(filename, start..end, base, ObjectSectionInfo(object));
                 unwinders.entry(pid).or_default().add_module(module);
             }
 

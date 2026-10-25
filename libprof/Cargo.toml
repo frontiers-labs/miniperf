@@ -4,7 +4,7 @@
 name = "libprof"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.86"
 description = "Local profiling sources: PMU counting and sampling, precise memory, host telemetry and resource monitoring"
 license = "LGPL-3.0-only"
 repository = "https://github.com/frontiers-labs/miniperf"
@@ -41,7 +41,7 @@ smallvec = "1.13.2"
 itertools = "0.14.0"
 uuid = { version = "1.16.0", features = ["v7"] }
 hashbrown = "0.15.2"
-criterion = { version = "0.5.1", optional = true, default-features = false }
+criterion = { version = "0.8.2", optional = true, default-features = false, features = ["cargo_bench_support"] }
 symbolize = { package = "miniperf-symbolize", path = "../symbolize", version = "0.2.0", optional = true }
 
 [dev-dependencies]
@@ -61,7 +61,6 @@ perf-event-open-sys2 = "5.0.6"
 # and `PostHocUnwinder` compiles without it.
 [target.'cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
 framehop = { version = "0.16.0", default-features = false, features = ["std"] }
-framehop-object = "0.2.0"
 
 [build-dependencies]
 serde = "1.0.217"
@@ -84,3 +83,7 @@ required-features = ["criterion"]
 [package.metadata.docs.rs]
 features = ["symbolize", "criterion", "events-native"]
 rustdoc-args = ["--cfg", "docsrs"]
+
+[[example]]
+name = "criterion_tma"
+required-features = ["criterion"]

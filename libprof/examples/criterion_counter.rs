@@ -1,5 +1,6 @@
-use criterion::{black_box, Criterion};
+use criterion::Criterion;
 use libprof::{Counter, CriterionCounter};
+use std::hint::black_box;
 
 fn main() -> Result<(), libprof::Error> {
     let measurement = CriterionCounter::new(Counter::Instructions)?;
