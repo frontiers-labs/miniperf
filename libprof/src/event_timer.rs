@@ -584,11 +584,8 @@ mod backend {
                     }
                     event.metadata = ptr.cast();
                     let supported = unsafe {
-                        (*event.metadata)
-                            .__bindgen_anon_1
-                            .__bindgen_anon_1
-                            .cap_user_rdpmc()
-                            != 0
+                        let capabilities = (*event.metadata).__bindgen_anon_1.__bindgen_anon_1;
+                        capabilities.cap_user_rdpmc() != 0 && capabilities.cap_user_time() != 0
                     };
                     if !supported {
                         user_read = false;
@@ -842,7 +839,8 @@ mod backend {
                 let mut time_enabled = base_time_enabled;
                 let mut time_running = base_time_running;
                 let capabilities = (*page).__bindgen_anon_1.__bindgen_anon_1;
-                if capabilities.cap_user_time() != 0 && time_enabled != time_running {
+                // Scoped deltas need advancing time even without multiplexing.
+                if capabilities.cap_user_time() != 0 {
                     let time_shift =
                         std::ptr::read_volatile(std::ptr::addr_of!((*page).time_shift));
                     let time_mult = std::ptr::read_volatile(std::ptr::addr_of!((*page).time_mult));

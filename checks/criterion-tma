@@ -4,7 +4,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 repo="$(cd "${checks_root}/.." && pwd)"
 consumer="${CHECK_WORK}/criterion-consumer"
-mkdir -p "${consumer}/src"
+mkdir -p "${consumer}/src/bin"
 cat >"${consumer}/Cargo.toml" <<EOF
 [package]
 name = "criterion-tma-check"
@@ -16,13 +16,46 @@ criterion = { version = "=0.8.2", default-features = false }
 libprof = { path = "${repo}/libprof", features = ["criterion"] }
 EOF
 cp "${repo}/libprof/examples/criterion_tma.rs" "${consumer}/src/main.rs"
+cat >"${consumer}/src/bin/scope.rs" <<'RS'
+use libprof::{Counter, Error, EventTimer, Measurements};
+fn measure(timer: &EventTimer) -> Result<Measurements, Error> {
+    let span = timer.start()?;
+    let mut value = 1_u64;
+    for input in 0..1000 {
+        value = std::hint::black_box(value).wrapping_mul(3).wrapping_add(input);
+    }
+    std::hint::black_box(value);
+    span.stop()
+}
+fn main() {
+    let timer = EventTimer::new(&[Counter::Cycles]).expect("oracle opened cycles");
+    eprintln!("counter read: {:?}", timer.read_cost().method());
+    for _ in 0..64 {
+        let counts = measure(&timer).expect("scheduled counter interval");
+        assert!(counts[Counter::Cycles] > 0 && counts.wall_ns() > 0);
+    }
+    drop(timer);
+    let available = libprof::tma_scenario().is_some_and(|scenario| {
+        scenario.groups.iter().filter(|g| g.cpus.is_none()).any(|group| {
+            let counters: Vec<_> = group.events.iter().map(|e| libprof::tma_counter(e)).collect();
+            EventTimer::new(&counters).ok().and_then(|timer| measure(&timer).ok())
+                .is_some_and(|counts| counts.iter().any(|count| count.value() > 0))
+        })
+    });
+    println!("{}", u8::from(available));
+}
+RS
 cargo build --release --manifest-path "${consumer}/Cargo.toml" \
     --target-dir "${consumer}/target" || fail "external Criterion consumer failed to build"
 binary="${consumer}/target/release/criterion-tma-check"
 oracle=0
+expected_available=0
 modes=(normal)
 if [[ "$(uname -s)" == Linux ]]; then
-    pmu_oracle && oracle=1
+    if pmu_oracle; then
+        oracle=1
+        expected_available="$("${consumer}/target/release/scope")" || fail "scoped counter measurement failed"
+    fi
     denied="$(cc_fixture deny_perf)" || fail "cannot build perf denial launcher"
     modes+=(denied)
 fi
@@ -33,9 +66,10 @@ for mode in "${modes[@]}"; do
     CRITERION_HOME="${output}" "${command[@]}" --bench --noplot --color never \
         --warm-up-time 0.05 --measurement-time 0.1 --sample-size 10 --nresamples 1000 \
         >"${output}.log" 2>&1 || { cat "${output}.log" >&2; fail "${mode} benchmark failed"; }
-    python3 - "${output}" "${mode}" "${oracle}" <<'PY' || fail "${mode} Criterion output"
+    python3 - "${output}" "${mode}" "${oracle}" "${expected_available}" <<'PY' || fail "${mode} Criterion output"
 import json, math, pathlib, re, sys
 output, mode, oracle = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3] == "1"
+expected_available = sys.argv[4] == "1"
 text = output.with_suffix(".log").read_text()
 names = ["tma/arithmetic", "tma/batched"]
 assert re.findall(r"^TMA (.+):$", text, re.M) == names, text
@@ -59,7 +93,7 @@ for name, body in reports:
             events.append((row, int(event[1]), bool(event[2])))
         if mode == "denied":
             assert match[2], row
-    if oracle and mode == "normal" and any(not unavailable for _, _, unavailable in events):
+    if oracle and mode == "normal" and expected_available:
         assert any("/cycles:" in row and value > 0 and not unavailable
                    for row, value, unavailable in events), body
     elif oracle and mode == "normal":
