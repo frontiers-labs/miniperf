@@ -585,7 +585,13 @@ mod backend {
                     event.metadata = ptr.cast();
                     let supported = unsafe {
                         let capabilities = (*event.metadata).__bindgen_anon_1.__bindgen_anon_1;
-                        capabilities.cap_user_rdpmc() != 0 && capabilities.cap_user_time() != 0
+                        // Arm may advertise direct reads while perf_user_access is disabled.
+                        capabilities.cap_user_rdpmc() != 0
+                            && capabilities.cap_user_time() != 0
+                            && (!cfg!(target_arch = "aarch64")
+                                || std::ptr::read_volatile(std::ptr::addr_of!(
+                                    (*event.metadata).index
+                                )) != 0)
                     };
                     if !supported {
                         user_read = false;
