@@ -99,7 +99,7 @@ mod dwarf {
 
     use framehop::{CacheNative, MayAllocateDuringUnwind, Module, Unwinder as _, UnwinderNative};
     use framehop_object::ObjectSectionInfo;
-    use object::{Object, ObjectSegment};
+    use object::{elf, Object, ObjectSegment, SegmentFlags};
 
     use super::{ProcAddr, StackSample};
 
@@ -124,7 +124,6 @@ mod dwarf {
                     .push(map);
             }
 
-            let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
             let mut unwinders = BTreeMap::<u32, NativeUnwinder>::new();
             for ((pid, filename), maps) in mappings {
                 let Ok(bytes) = fs::read(Path::new(filename)) else {
@@ -141,11 +140,14 @@ mod dwarf {
                     let segment = object
                         .segments()
                         .filter(|segment| {
-                            let (offset, size) = segment.file_range();
-                            map.pgoff >= offset / page_size * page_size
-                                && map.pgoff < offset.saturating_add(size)
+                            matches!(segment.flags(), SegmentFlags::Elf { p_flags } if p_flags & elf::PF_X != 0)
                         })
-                        .min_by_key(|segment| segment.file_range().0.abs_diff(map.pgoff));
+                        .find(|segment| {
+                            let (offset, size) = segment.file_range();
+                            let alignment = segment.align().max(1);
+                            map.pgoff >= offset - offset % alignment
+                                && map.pgoff < offset.saturating_add(size)
+                        });
                     let Some(segment) = segment else {
                         continue;
                     };
