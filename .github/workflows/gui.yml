@@ -21,7 +21,7 @@ jobs:
       matrix:
         include:
           - { label: ubuntu-24.04,  platform: linux-x86_64,   os: linux }
-          - { label: macos-14,      platform: macos-aarch64,  os: macos }
+          - { label: macos-15,      platform: macos-aarch64,  os: macos }
           - { label: windows-2022,  platform: windows-x86_64, os: windows }
     defaults:
       run:

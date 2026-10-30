@@ -52,7 +52,7 @@ jobs:
           - { platform: linux-x86_64,   target: x86_64-unknown-linux-gnu,     runner: ubuntu-24.04 }
           - { platform: linux-aarch64,  target: aarch64-unknown-linux-gnu,    runner: ubuntu-24.04-arm }
           - { platform: linux-riscv64,  target: riscv64gc-unknown-linux-gnu,  runner: ubuntu-24.04 }
-          - { platform: macos-aarch64,  target: aarch64-apple-darwin,         runner: macos-14 }
+          - { platform: macos-aarch64,  target: aarch64-apple-darwin,         runner: macos-15 }
           - { platform: windows-x86_64, target: x86_64-pc-windows-msvc,       runner: windows-2022 }
     defaults:
       run:
@@ -96,7 +96,7 @@ jobs:
           - { label: ubuntu-24.04,                 platform: linux-x86_64,   os: linux }
           - { label: ubuntu-24.04-arm,             platform: linux-aarch64,  os: linux }
           - { label: blacksmith-2vcpu-ubuntu-2404, platform: linux-x86_64,   os: linux }
-          - { label: macos-14,                     platform: macos-aarch64,  os: macos }
+          - { label: macos-15,                     platform: macos-aarch64,  os: macos }
     defaults:
       run:
         shell: bash
