@@ -99,6 +99,7 @@ mod dwarf {
 
     use framehop::{CacheNative, MayAllocateDuringUnwind, Module, Unwinder as _, UnwinderNative};
     use framehop_object::ObjectSectionInfo;
+    use object::{elf, Object, ObjectSegment, SegmentFlags};
 
     use super::{ProcAddr, StackSample};
 
@@ -112,44 +113,70 @@ mod dwarf {
 
     impl Unwinder {
         pub(super) fn new(modules: &[ProcAddr]) -> Self {
-            // Coalesce the individual executable mappings for one loaded
-            // object. framehop needs the object load bias plus a runtime range;
-            // both come from the mapping. A sorted map makes module insertion
-            // reproducible: correct recordings have only one load bias per
-            // mapping, but old result sets may contain conflicting overlapping
-            // entries and must not change meaning randomly between runs.
-            let mut ranges = BTreeMap::<(u32, String, u64), (u64, u64)>::new();
+            let mut mappings = BTreeMap::<(u32, &str), Vec<&ProcAddr>>::new();
             for map in modules {
                 if map.filename.is_empty() || map.filename.starts_with('[') || map.len == 0 {
                     continue;
                 }
-                let start = map.addr;
-                let end = start.saturating_add(map.len);
-                let base = start.saturating_sub(map.pgoff);
-                ranges
-                    .entry((map.pid, map.filename.clone(), base))
-                    .and_modify(|range| {
-                        range.0 = range.0.min(start);
-                        range.1 = range.1.max(end);
-                    })
-                    .or_insert((start, end));
+                mappings
+                    .entry((map.pid, map.filename.as_str()))
+                    .or_default()
+                    .push(map);
             }
 
             let mut unwinders = BTreeMap::<u32, NativeUnwinder>::new();
-            for ((pid, filename, base), (start, end)) in ranges {
-                let Ok(bytes) = fs::read(Path::new(&filename)) else {
+            for ((pid, filename), maps) in mappings {
+                let Ok(bytes) = fs::read(Path::new(filename)) else {
                     continue;
                 };
                 let Ok(object) = object::File::parse(bytes.as_slice()) else {
                     continue;
                 };
-                let module = Module::<Vec<u8>>::new(
-                    filename,
-                    start..end,
-                    base,
-                    ObjectSectionInfo::from_ref(&object),
-                );
-                unwinders.entry(pid).or_default().add_module(module);
+                // Coalesce executable mappings by the object's true load bias.
+                // Keep insertion sorted even for old recordings with conflicting
+                // overlapping mappings.
+                let mut ranges = BTreeMap::<u64, (u64, u64)>::new();
+                for map in maps {
+                    let segment = object
+                        .segments()
+                        .filter(|segment| {
+                            matches!(segment.flags(), SegmentFlags::Elf { p_flags } if p_flags & elf::PF_X != 0)
+                        })
+                        .find(|segment| {
+                            let (offset, size) = segment.file_range();
+                            let alignment = segment.align().max(1);
+                            map.pgoff >= offset - offset % alignment
+                                && map.pgoff < offset.saturating_add(size)
+                        });
+                    let Some(segment) = segment else {
+                        continue;
+                    };
+                    let (offset, _) = segment.file_range();
+                    // Linux maps from a page-aligned file offset. The segment's
+                    // virtual address can differ from its file offset.
+                    let svma = segment
+                        .address()
+                        .saturating_add(map.pgoff)
+                        .saturating_sub(offset);
+                    let base = map.addr.saturating_sub(svma);
+                    let end = map.addr.saturating_add(map.len);
+                    ranges
+                        .entry(base)
+                        .and_modify(|range| {
+                            range.0 = range.0.min(map.addr);
+                            range.1 = range.1.max(end);
+                        })
+                        .or_insert((map.addr, end));
+                }
+                for (base, (start, end)) in ranges {
+                    let module = Module::<Vec<u8>>::new(
+                        filename.to_owned(),
+                        start..end,
+                        base,
+                        ObjectSectionInfo::from_ref(&object),
+                    );
+                    unwinders.entry(pid).or_default().add_module(module);
+                }
             }
 
             Unwinder {
