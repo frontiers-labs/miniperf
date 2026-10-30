@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap},
     fs::File,
     io::Read,
@@ -1672,17 +1671,17 @@ fn resolve_source(
     let Some(loader) = loader else {
         return (None, None, None);
     };
-    let mut function = loader
-        .find_symbol(address)
-        .map(|symbol| addr2line::demangle_auto(Cow::Borrowed(symbol), None).into_owned());
+    let mut function = loader.find_symbol(address).map(symbolize::demangle_full);
     let mut file = None;
     let mut line = None;
     if let Ok(mut frames) = loader.find_frames(address) {
         while let Ok(Some(frame)) = frames.next() {
             if function.is_none() {
-                function = frame
-                    .function
-                    .and_then(|name| name.demangle().ok().map(Cow::into_owned));
+                function = frame.function.and_then(|name| {
+                    name.raw_name()
+                        .ok()
+                        .map(|name| symbolize::demangle_full(&name))
+                });
             }
             if file.is_none() {
                 file = frame

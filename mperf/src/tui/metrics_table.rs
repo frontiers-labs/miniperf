@@ -1034,7 +1034,13 @@ fn build_row(
     for idx in 0..sticky_len.min(layout.columns.len()) {
         let column = &layout.columns[idx];
         let value = row.values.get(idx).unwrap_or(&MetricValue::Null);
-        let formatted = format_value(value, &column.format);
+        let formatted = if layout.function_column_index == Some(idx) {
+            symbolize::FunctionName::new(value.as_text().unwrap_or("N/A"))
+                .friendly()
+                .to_owned()
+        } else {
+            format_value(value, &column.format)
+        };
         let text = Text::from(formatted).alignment(column.alignment);
         cells.push(Cell::from(text));
     }
@@ -1042,7 +1048,13 @@ fn build_row(
     for idx in (sticky_len + column_offset).min(layout.columns.len())..layout.columns.len() {
         let column = &layout.columns[idx];
         let value = row.values.get(idx).unwrap_or(&MetricValue::Null);
-        let formatted = format_value(value, &column.format);
+        let formatted = if layout.function_column_index == Some(idx) {
+            symbolize::FunctionName::new(value.as_text().unwrap_or("N/A"))
+                .friendly()
+                .to_owned()
+        } else {
+            format_value(value, &column.format)
+        };
         let text = Text::from(formatted).alignment(column.alignment);
         cells.push(Cell::from(text));
     }

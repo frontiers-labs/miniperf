@@ -4,6 +4,12 @@
 //! Resolution is deliberately offline by default. Set `MINIPERF_DEBUGINFOD=1`
 //! and `DEBUGINFOD_URLS` to permit use of an installed `debuginfod-find` client.
 
+mod function_name;
+pub use function_name::{
+    decode_folded_name, demangle_full, encode_folded_name, FunctionName,
+    FOLDED_NAME_ENCODING_HEADER,
+};
+
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
@@ -37,6 +43,8 @@ pub struct ProcessMap {
 pub struct Frame {
     /// Demangled function or JIT symbol name.
     pub function: String,
+    /// Original linkage name, when supplied by the object or debug information.
+    pub linkage_name: Option<String>,
     /// Source file, when debug information provides one.
     pub file: Option<String>,
     /// One-based source line, when available.
@@ -237,7 +245,7 @@ impl Resolver {
                     index
                 })
             });
-            let svma_start = mapping_svma_start(&map.path, map.offset);
+            let svma_start = mapping_object_address(&map.path, map.offset);
             modules.entry(map.pid).or_default().push(Module {
                 map,
                 loader,
@@ -278,6 +286,7 @@ impl Resolver {
         {
             return vec![Frame {
                 function: symbol.to_owned(),
+                linkage_name: Some(symbol.to_owned()),
                 file: None,
                 line: None,
                 module: Some(PathBuf::from(format!("/tmp/perf-{pid}.map"))),
@@ -304,8 +313,9 @@ impl Resolver {
                 return frames;
             }
         }
-        let function = match symbols.find(relative) {
-            Some(symbol) => addr2line::demangle_auto(Cow::Borrowed(symbol), None).into_owned(),
+        let linkage_name = symbols.find(relative).map(str::to_owned);
+        let function = match linkage_name.as_deref() {
+            Some(symbol) => demangle_full(symbol),
             None => {
                 let module_name = module
                     .map
@@ -318,6 +328,7 @@ impl Resolver {
         };
         vec![Frame {
             function,
+            linkage_name,
             file: None,
             line: None,
             module: Some(module.map.path.clone()),
@@ -368,7 +379,9 @@ pub fn current_process_maps() -> Result<Vec<ProcessMap>, std::io::Error> {
     Ok(Vec::new())
 }
 
-fn mapping_svma_start(path: &Path, mapping_offset: u64) -> Option<u64> {
+/// Object virtual address corresponding to a page-aligned process mapping offset.
+/// Segment virtual addresses may differ from their file offsets.
+pub fn mapping_object_address(path: &Path, mapping_offset: u64) -> Option<u64> {
     let bytes = fs::read(path).ok()?;
     let object = object::File::parse(bytes.as_slice()).ok()?;
     let segment = object
@@ -394,9 +407,10 @@ fn resolve_loader(loader: &Loader, address: u64, module: &Path) -> Vec<Frame> {
     let mut resolved = Vec::new();
     if let Ok(mut frames) = loader.find_frames(address) {
         while let Ok(Some(frame)) = frames.next() {
-            let function = frame
+            let linkage_name = frame
                 .function
-                .and_then(|function| function.demangle().ok().map(Cow::into_owned));
+                .and_then(|function| function.raw_name().ok().map(Cow::into_owned));
+            let function = linkage_name.as_deref().map(demangle_full);
             let file = frame
                 .location
                 .as_ref()
@@ -405,6 +419,7 @@ fn resolve_loader(loader: &Loader, address: u64, module: &Path) -> Vec<Frame> {
             if function.is_some() || file.is_some() || line.is_some() {
                 resolved.push(Frame {
                     function: function.unwrap_or_else(|| "[unknown]".to_owned()),
+                    linkage_name,
                     file,
                     line,
                     module: Some(module.to_path_buf()),

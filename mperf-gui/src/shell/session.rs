@@ -155,7 +155,7 @@ impl GlobalFilter {
                 .profile
                 .frames
                 .iter()
-                .filter(|frame| frame.name.to_lowercase().contains(&query))
+                .filter(|frame| symbolize::FunctionName::new(&frame.name).matches(&query))
                 .map(|frame| frame.id)
                 .collect()
         });

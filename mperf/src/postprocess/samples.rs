@@ -127,6 +127,7 @@ struct CounterLead {
 pub(crate) struct ResolvedIp {
     functions: Vec<String>,
     function: String,
+    symbol_name: Option<String>,
     file: String,
     line: u32,
     module_path: Option<String>,
@@ -291,6 +292,7 @@ impl CpuObservations {
 struct ProcMap {
     ip: Vec<u64>,
     func_name: Vec<String>,
+    symbol_name: Vec<Option<String>>,
     file_name: Vec<String>,
     line: Vec<i64>,
     module_path: Vec<Option<String>>,
@@ -300,6 +302,7 @@ impl ProcMap {
     fn push(&mut self, ip: u64, resolved: &ResolvedIp) {
         self.ip.push(ip);
         self.func_name.push(resolved.function.clone());
+        self.symbol_name.push(resolved.symbol_name.clone());
         self.file_name.push(resolved.file.clone());
         self.line.push(resolved.line as i64);
         self.module_path.push(resolved.module_path.clone());
@@ -309,6 +312,7 @@ impl ProcMap {
         let mut columns = Columns::default();
         columns.u64("ip", self.ip);
         columns.text("func_name", self.func_name);
+        columns.text_opt("symbol_name", self.symbol_name);
         columns.text("file_name", self.file_name);
         columns.i64("line", self.line);
         columns.text_opt("module_path", self.module_path);
@@ -647,6 +651,7 @@ pub(crate) fn resolve_ip<'a>(
             });
         ResolvedIp {
             functions,
+            symbol_name: primary.and_then(|frame| frame.linkage_name.clone()),
             function: primary
                 .map(|frame| frame.function.clone())
                 .unwrap_or_else(|| "[unknown]".to_owned()),
@@ -668,7 +673,13 @@ pub(crate) fn resolve_folded_stack(
     let mut functions = SmallVec::<[String; 32]>::new();
     for ip in frames.iter().rev() {
         let resolved = resolve_ip(resolver, cache, pid, *ip);
-        functions.extend(resolved.functions.iter().rev().cloned());
+        functions.extend(
+            resolved
+                .functions
+                .iter()
+                .rev()
+                .map(|name| symbolize::encode_folded_name(name)),
+        );
     }
     functions.join(";")
 }
@@ -755,6 +766,10 @@ async fn write_flamegraph(res_dir: &Path, stem: &str, map: HashMap<String, u64>)
         .collect::<Vec<_>>();
 
     let mut folded = File::create(res_dir.join(format!("{stem}.folded"))).await?;
+    folded
+        .write_all(symbolize::FOLDED_NAME_ENCODING_HEADER.as_bytes())
+        .await?;
+    folded.write_all(b"\n").await?;
     for line in &lines {
         folded.write_all(line.as_bytes()).await?;
         folded.write_all(b"\n").await?;

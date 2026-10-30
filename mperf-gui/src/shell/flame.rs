@@ -78,7 +78,8 @@ pub fn flame_canvas(entity: Entity<ShellView>, theme: Theme, view: FlameView) ->
                 let w = ((frame.width as f32) * width - 1.0).max(0.5);
                 let y = top + frame.depth as f32 * ROW_H;
 
-                let matches = query.is_empty() || frame.label.to_lowercase().contains(&query);
+                let matches =
+                    query.is_empty() || symbolize::FunctionName::new(&frame.label).matches(&query);
                 let base = match frame.frame_id {
                     Some(frame_id) => match view.session.module_label(frame_id) {
                         Some((_, kind)) => theme.module_kind_color(kind),
@@ -113,7 +114,10 @@ pub fn flame_canvas(entity: Entity<ShellView>, theme: Theme, view: FlameView) ->
                         theme.viz.muted
                     };
                     let line = shape_label(
-                        &truncate_label(&frame.label, max_chars),
+                        &truncate_label(
+                            symbolize::FunctionName::new(&frame.label).friendly(),
+                            max_chars,
+                        ),
                         11.0,
                         label_color,
                         window,

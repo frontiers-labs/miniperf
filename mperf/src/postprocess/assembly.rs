@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -21,7 +20,10 @@ pub(crate) fn process(tables: &Tables, pb: &mut kdam::Bar) -> Result<()> {
     };
     let mut module_bias = HashMap::<String, i64>::new();
     for entry in modules {
-        let load_bias = entry.address as i64 - entry.offset as i64;
+        let object_address =
+            symbolize::mapping_object_address(Path::new(&entry.filename), entry.offset as u64)
+                .unwrap_or(entry.offset as u64);
+        let load_bias = entry.address as i64 - object_address as i64;
         module_bias
             .entry(entry.filename)
             .and_modify(|bias| {
@@ -270,7 +272,7 @@ fn sampled_disassembly_targets(
             start: start.saturating_sub(address_base),
             end: end.saturating_sub(address_base),
             raw_name: raw_name.clone(),
-            display_name: addr2line::demangle_auto(Cow::Borrowed(raw_name), None).into_owned(),
+            display_name: symbolize::demangle_full(raw_name),
         });
     }
 

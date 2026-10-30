@@ -51,7 +51,10 @@ while IFS= read -r info; do
         grep -qF "tour: rendered ${tab}" "${log}" \
             || { cat "${log}" >&2; fail "${scenario} did not offer the ${tab} tab"; }
     done < <(required_for "${scenario}")
-    if [[ "$(basename "${dir}")" == rec-named-regions ]]; then
+    if [[ "$(basename "${dir}")" == rec-rust-names-* ]]; then
+        python3 "${checks_root}/../utils/verify-rust-names.py" --tour "${log}" \
+            || fail "the viewer lost Rust instance identity, search, or source/assembly lookup"
+    elif [[ "$(basename "${dir}")" == rec-named-regions ]]; then
         python3 "${checks_root}/../utils/verify-named-regions.py" "${prefix}" "${dir}" \
             || fail "the viewer region analysis disagrees with the recording"
     elif [[ "$(basename "${dir}")" == rec-named-regions-dense ]]; then

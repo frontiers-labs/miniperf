@@ -4,6 +4,7 @@ mod derived;
 mod flame;
 mod flamescope;
 mod memory;
+mod names;
 mod regions;
 mod resources;
 mod roofline;
@@ -925,7 +926,9 @@ impl ShellView {
         }
         self.source_tabs.push(SourceTab {
             frame_id,
-            title: frame.name.clone(),
+            title: symbolize::FunctionName::new(&frame.name)
+                .friendly()
+                .to_owned(),
             document,
             scroll,
             asm_scroll: UniformListScrollHandle::new(),
@@ -1614,7 +1617,8 @@ impl ShellView {
                             let entity = entity.clone();
                             let module = session.module_label(frame_id);
                             let dimmed = !symbol_query.is_empty()
-                                && !function.label.to_lowercase().contains(&symbol_query);
+                                && !symbolize::FunctionName::new(&function.label)
+                                    .matches(&symbol_query);
                             let self_pct = function.self_fraction * 100.0;
                             let bar_width = (self_pct / 100.0 * 240.0).min(66.0) as f32;
                             let number = |value: String, muted: bool| {
@@ -1649,7 +1653,11 @@ impl ShellView {
                                                 .when(dimmed, |el| {
                                                     el.text_color(theme.muted_foreground)
                                                 })
-                                                .child(function.label.clone()),
+                                                .child(
+                                                    symbolize::FunctionName::new(&function.label)
+                                                        .friendly()
+                                                        .to_owned(),
+                                                ),
                                         ),
                                 )
                                 .child(
@@ -1943,7 +1951,11 @@ impl ShellView {
                     .truncate()
                     .font_family(theme.font_mono.clone())
                     .text_size(px(11.0))
-                    .child(function.label.clone()),
+                    .child(
+                        symbolize::FunctionName::new(&function.label)
+                            .friendly()
+                            .to_owned(),
+                    ),
             )
             .child(
                 div()
@@ -2115,7 +2127,11 @@ impl ShellView {
                         .font_family(theme.font_mono.clone())
                         .text_size(px(11.5))
                         .font_weight(FontWeight::MEDIUM)
-                        .child(hottest.function_name.clone()),
+                        .child(
+                            symbolize::FunctionName::new(&hottest.function_name)
+                                .friendly()
+                                .to_owned(),
+                        ),
                 )
                 .child(
                     div()
@@ -3076,7 +3092,11 @@ impl ShellView {
                                         .font_family(theme.font_mono.clone())
                                         .text_size(px(11.0))
                                         .font_weight(FontWeight::MEDIUM)
-                                        .child(function.label.clone()),
+                                        .child(
+                                            symbolize::FunctionName::new(&function.label)
+                                                .friendly()
+                                                .to_owned(),
+                                        ),
                                 )
                                 .when(has_source, |el| {
                                     el.child(
@@ -3095,6 +3115,12 @@ impl ShellView {
                                             }),
                                     )
                                 }),
+                        )
+                        .child(
+                            div()
+                                .font_family(theme.font_mono.clone())
+                                .text_size(px(10.0))
+                                .child(function.label.clone()),
                         )
                         .child(tiles),
                 );
@@ -3161,7 +3187,11 @@ impl ShellView {
                                 .min_w(px(0.0))
                                 .truncate()
                                 .font_family(theme.font_mono.clone())
-                                .child(relation.label.clone()),
+                                .child(
+                                    symbolize::FunctionName::new(&relation.label)
+                                        .friendly()
+                                        .to_owned(),
+                                ),
                         )
                         .child(
                             div()

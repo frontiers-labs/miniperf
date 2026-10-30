@@ -152,6 +152,7 @@ impl ProfileData {
 #[derive(Debug, Clone)]
 struct ResolvedFrame {
     name: String,
+    symbol_name: Option<String>,
     module: Option<String>,
     file: Option<String>,
     line: Option<u32>,
@@ -159,7 +160,7 @@ struct ResolvedFrame {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct FrameKey {
-    name: String,
+    symbol_name: String,
     module: Option<String>,
 }
 
@@ -415,6 +416,7 @@ fn load_proc_map(connection: &Connection) -> Result<HashMap<u64, ResolvedFrame>>
     let module_column = find_column(&columns, "module_path");
     let file_column = find_column(&columns, "file_name");
     let line_column = find_column(&columns, "line");
+    let symbol_column = find_column(&columns, "symbol_name");
 
     let selected_columns = [
         quoted(ip_column),
@@ -428,6 +430,9 @@ fn load_proc_map(connection: &Connection) -> Result<HashMap<u64, ResolvedFrame>>
         line_column
             .map(quoted)
             .unwrap_or_else(|| "NULL AS line".to_string()),
+        symbol_column
+            .map(quoted)
+            .unwrap_or_else(|| "NULL AS symbol_name".to_string()),
     ];
     let query = format!("SELECT {} FROM proc_map;", selected_columns.join(", "));
     let mut statement = connection
@@ -442,13 +447,14 @@ fn load_proc_map(connection: &Connection) -> Result<HashMap<u64, ResolvedFrame>>
         .next()
         .context("failed to read a profile symbol from `proc_map`")?
     {
-        let row = row_values(row, 5).context("failed to read a profile symbol from `proc_map`")?;
+        let row = row_values(row, 6).context("failed to read a profile symbol from `proc_map`")?;
         let ip = instruction_pointer(&row[0]).context("invalid `proc_map.ip`")?;
         let name = optional_text(&row[1], "proc_map.func_name")?
             .filter(|name| name != "[unknown]")
             .unwrap_or_else(|| unknown_name(ip));
         let candidate = ResolvedFrame {
             name,
+            symbol_name: optional_text(&row[5], "proc_map.symbol_name")?,
             module: optional_text(&row[2], "proc_map.module_path")?,
             file: optional_text(&row[3], "proc_map.file_name")?.filter(|file| file != "unknown"),
             line: optional_positive_u32(&row[4]),
@@ -471,7 +477,10 @@ fn intern_frame(
     frame_ids: &mut HashMap<FrameKey, usize>,
 ) -> usize {
     let key = FrameKey {
-        name: candidate.name.clone(),
+        symbol_name: candidate
+            .symbol_name
+            .clone()
+            .unwrap_or_else(|| candidate.name.clone()),
         module: candidate.module.clone(),
     };
     if let Some(&id) = frame_ids.get(&key) {
@@ -509,6 +518,7 @@ fn fill_missing_source(current: &mut ResolvedFrame, candidate: &ResolvedFrame) {
 fn unresolved_frame(ip: u64) -> ResolvedFrame {
     ResolvedFrame {
         name: unknown_name(ip),
+        symbol_name: None,
         module: None,
         file: None,
         line: None,
