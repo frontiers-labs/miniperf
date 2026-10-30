@@ -184,6 +184,7 @@ enum ViewId {
     Flame,
     FlameScope,
     Timeline,
+    Events,
     Cores,
     TopDown,
     Resources,
@@ -192,12 +193,13 @@ enum ViewId {
 }
 
 impl ViewId {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::Summary,
         Self::Hotspots,
         Self::Flame,
         Self::FlameScope,
         Self::Timeline,
+        Self::Events,
         Self::Cores,
         Self::TopDown,
         Self::Resources,
@@ -212,6 +214,7 @@ impl ViewId {
             Self::Flame => "Flame Graph",
             Self::FlameScope => "Flame Scope",
             Self::Timeline => "Timeline",
+            Self::Events => "Events",
             Self::Cores => "Cores",
             Self::TopDown => "Top-Down",
             Self::Resources => "Resources",
@@ -227,6 +230,7 @@ impl ViewId {
             Self::Flame => Icon::Flame,
             Self::FlameScope => Icon::Grid3x3,
             Self::Timeline => Icon::LineChart,
+            Self::Events => Icon::Layers,
             Self::Cores => Icon::Cpu,
             Self::TopDown => Icon::Layers,
             Self::Resources => Icon::Gauge,
@@ -245,6 +249,7 @@ impl ViewId {
                     || session.tracks.is_some()
                     || !session.regions.spans.is_empty()
             }
+            Self::Events => !session.regions.nodes.is_empty() || session.regions.error.is_some(),
             Self::Cores => !session.profile.cpu_observations.is_empty(),
             Self::TopDown => session
                 .tma
@@ -1363,7 +1368,7 @@ impl ShellView {
                             .text_size(px(10.5))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.muted_foreground)
-                            .child("MASTER TIMELINE · DRAG ACTIVITY OR COUNTERS TO FILTER TIME · CLICK REGIONS TO FILTER EVENTS"),
+                            .child("MASTER TIMELINE · DRAG ACTIVITY OR COUNTERS TO FILTER TIME"),
                     ),
             )
             .when(!self.timeline_collapsed, |el| {
@@ -1374,20 +1379,6 @@ impl ShellView {
                         theme.clone(),
                         view.clone(),
                     ));
-                }
-                if !session.regions.spans.is_empty() {
-                    column = column.child(
-                        div()
-                            .id("master-regions")
-                            .max_h(px(150.0))
-                            .overflow_y_scroll()
-                            .child(regions::canvas_view(
-                                entity.clone(),
-                                theme.clone(),
-                                view.clone(),
-                                self.filter.region,
-                            )),
-                    );
                 }
                 for track_index in &session.pinned_tracks {
                     column = column.child(
@@ -2416,13 +2407,7 @@ impl ShellView {
             ));
 
         if !session.regions.spans.is_empty() {
-            column = column.child(self.render_regions(session, view.clone(), cx));
-        }
-        if let Some(error) = &session.regions.error {
-            column = column.child(empty_state(
-                Icon::Layers,
-                format!("Could not read named regions: {error}"),
-            ));
+            column = column.child(self.render_region_timeline(session, view.clone(), cx));
         }
         if process_tracks.is_empty() && system_tracks.is_empty() && session.regions.spans.is_empty()
         {
@@ -2988,6 +2973,7 @@ impl ShellView {
             Some(ViewId::Flame) => self.render_flame(session, cx),
             Some(ViewId::FlameScope) => self.render_flame_scope(session, cx),
             Some(ViewId::Timeline) => self.render_timeline_view(session, cx),
+            Some(ViewId::Events) => self.render_events(session, cx),
             Some(ViewId::Cores) => cores::render(self, session, cx),
             Some(ViewId::TopDown) => topdown::render(self, session, cx),
             Some(ViewId::Resources) => resources::render(session, cx),

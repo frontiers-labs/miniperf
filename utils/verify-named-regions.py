@@ -10,6 +10,7 @@ lines = pathlib.Path(prefix + ".tour").read_text().splitlines()
 reports = [json.loads(line.removeprefix("tour: region "))
            for line in lines if line.startswith("tour: region ")]
 assert "tour: rendered Timeline" in lines, "Timeline was not rendered"
+assert "tour: rendered Events" in lines, "Events was not rendered"
 assert "tour: regions nodes=8 completed=13 incomplete=1" in lines, lines
 assert len(reports) == 8, reports
 

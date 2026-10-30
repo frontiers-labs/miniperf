@@ -252,8 +252,8 @@ fn run_tour(handle: gpui::WindowHandle<shell::ShellView>, cx: &mut App) {
                                 std::process::exit(1);
                             }
                         };
-                    if let Some(timeline) = views.iter().position(|name| name == "Timeline") {
-                        let _ = handle.update(cx, |view, _, cx| view.activate_tab(timeline, cx));
+                    if let Some(events) = views.iter().position(|name| name == "Events") {
+                        let _ = handle.update(cx, |view, _, cx| view.activate_tab(events, cx));
                     }
                     for index in 0..region_count {
                         match handle.update(cx, |view, _, cx| view.tour_region(index, cx)) {

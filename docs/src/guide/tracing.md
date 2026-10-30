@@ -73,8 +73,8 @@ Spans report their count and total duration. Counters and instants report their 
 
 ## Explore named regions
 
-Open the recording with `mperf-gui results/traced`. The Tracks timeline displays
-named spans in stacked rows for each thread. The Timeline tab also has a region
+Open the recording with `mperf-gui results/traced`. The Timeline tab displays
+named spans in stacked rows for each thread. The Events tab has the region
 hierarchy with call counts, inclusive time, self time, and mean duration.
 Inclusive time includes nested work. Self time excludes the union of nested work
 on the same thread. These are elapsed times, so totals across threads can exceed

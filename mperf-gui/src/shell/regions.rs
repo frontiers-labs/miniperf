@@ -15,7 +15,7 @@ use crate::{
     charts::{PlotFrame, shape_label, truncate_label},
     profile::TimeRange,
     regions::{RegionNodeId, RegionSelection, RegionSpanId, SpanBoundary},
-    ui::{self, ActiveTheme, Column, Icon, Theme, icon, table_cell, table_row},
+    ui::{self, ActiveTheme, Column, Icon, Theme, empty_state, icon, table_cell, table_row},
 };
 
 const ROW_H: f32 = 20.0;
@@ -225,13 +225,72 @@ impl ShellView {
         cx.notify();
     }
 
-    pub(super) fn render_regions(
+    pub(super) fn render_region_timeline(
         &self,
         session: &Arc<ShellSession>,
         view: TimelineView,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = cx.theme().clone();
+        let hover = if let Some(id) = self.region_hover {
+            let span = &session.regions.spans[id.0];
+            let node = &session.regions.nodes[span.node.0];
+            let status = match span.boundary {
+                SpanBoundary::Complete => "complete",
+                SpanBoundary::MissingBegin => "missing begin, no sample attribution",
+                SpanBoundary::MissingEnd => "missing end, no sample attribution",
+                SpanBoundary::CrossThread => "cross-thread end, no sample attribution",
+            };
+            format!(
+                "{} · {} · pid {} tid {} · {:.3} ms · {status}",
+                node.name,
+                node.context,
+                span.process_id,
+                span.thread_id,
+                (span.range.end_ns - span.range.start_ns) as f64 / 1e6
+            )
+        } else {
+            "Click a span to scope one invocation. Select a region in Events to scope all its invocations.".to_string()
+        };
+        div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .child(
+                div()
+                    .px(px(8.0))
+                    .py(px(6.0))
+                    .child(ui::section_caption("named regions · nested by thread", cx)),
+            )
+            .child(canvas_view(
+                cx.entity(),
+                theme.clone(),
+                view,
+                self.filter.region,
+            ))
+            .child(
+                div()
+                    .px(px(8.0))
+                    .py(px(5.0))
+                    .text_size(px(10.5))
+                    .text_color(theme.muted_foreground)
+                    .child(hover),
+            )
+            .into_any_element()
+    }
+
+    pub(super) fn render_events(
+        &self,
+        session: &Arc<ShellSession>,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        if let Some(error) = &session.regions.error {
+            return empty_state(
+                Icon::Layers,
+                format!("Could not read named regions: {error}"),
+            )
+            .into_any_element();
+        }
         let columns = [
             Column::new("Region"),
             Column::new("Count").width(70.0).right(),
@@ -260,26 +319,6 @@ impl ShellView {
                 );
             }
         }
-        let hover = if let Some(id) = self.region_hover {
-            let span = &session.regions.spans[id.0];
-            let node = &session.regions.nodes[span.node.0];
-            let status = match span.boundary {
-                SpanBoundary::Complete => "complete",
-                SpanBoundary::MissingBegin => "missing begin, no sample attribution",
-                SpanBoundary::MissingEnd => "missing end, no sample attribution",
-                SpanBoundary::CrossThread => "cross-thread end, no sample attribution",
-            };
-            format!(
-                "{} · {} · pid {} tid {} · {:.3} ms · {status}",
-                node.name,
-                node.context,
-                span.process_id,
-                span.thread_id,
-                (span.range.end_ns - span.range.start_ns) as f64 / 1e6
-            )
-        } else {
-            "Click a span to scope one invocation. Select a region below to scope all its invocations.".to_string()
-        };
         let mut row_elements = Vec::new();
         for (id, depth) in rows {
             let node = &session.regions.nodes[id.0];
@@ -378,28 +417,20 @@ impl ShellView {
             row_elements.push(row);
         }
         div()
+            .id("events-view")
+            .size_full()
             .flex()
             .flex_col()
-            .flex_none()
+            .overflow_y_scroll()
             .child(
                 div()
+                    .flex_none()
                     .px(px(8.0))
                     .py(px(6.0))
-                    .child(ui::section_caption("named regions · nested by thread", cx)),
-            )
-            .child(canvas_view(
-                cx.entity(),
-                theme.clone(),
-                view,
-                self.filter.region,
-            ))
-            .child(
-                div()
-                    .px(px(8.0))
-                    .py(px(5.0))
-                    .text_size(px(10.5))
-                    .text_color(theme.muted_foreground)
-                    .child(hover),
+                    .child(ui::section_caption(
+                        "named regions · select a call path to scope all invocations",
+                        cx,
+                    )),
             )
             .child(ui::table_header(&columns, None, cx))
             .children(row_elements)
