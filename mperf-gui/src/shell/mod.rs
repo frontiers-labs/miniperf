@@ -4,6 +4,7 @@ mod derived;
 mod flame;
 mod flamescope;
 mod memory;
+mod regions;
 mod resources;
 mod roofline;
 mod session;
@@ -11,7 +12,7 @@ mod timeline;
 mod tma;
 mod topdown;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
 use gpui::{
     App, Axis, Context, Entity, FocusHandle, Focusable, FontWeight, IntoElement, KeyBinding,
@@ -26,6 +27,7 @@ use crate::profile_analysis::{
     FunctionStat, IcicleLayout, StackWeight, ThreadBalance,
 };
 use crate::recent;
+use crate::regions::{RegionNodeId, RegionSpanId};
 use crate::source::{SourceDocument, SourceLocation};
 use crate::ui::{
     self, ActiveTheme, ButtonSize, ButtonVariant, Column, DropdownItem, Icon, TabItem, Theme,
@@ -238,7 +240,11 @@ impl ViewId {
             Self::Summary => true,
             Self::Hotspots | Self::Flame => session.has_stacks,
             Self::FlameScope => session.full_range.is_some() && session.total_samples > 0,
-            Self::Timeline => session.lanes.is_some() || session.tracks.is_some(),
+            Self::Timeline => {
+                session.lanes.is_some()
+                    || session.tracks.is_some()
+                    || !session.regions.spans.is_empty()
+            }
             Self::Cores => !session.profile.cpu_observations.is_empty(),
             Self::TopDown => session
                 .tma
@@ -327,6 +333,8 @@ pub struct ShellView {
     modules_menu_open: bool,
     new_profile_open: bool,
     timeline_collapsed: bool,
+    collapsed_regions: BTreeSet<RegionNodeId>,
+    region_hover: Option<RegionSpanId>,
     active_tab: usize,
     source_tabs: Vec<SourceTab>,
     side_panel_open: bool,
@@ -422,6 +430,8 @@ impl ShellView {
             modules_menu_open: false,
             new_profile_open: false,
             timeline_collapsed: false,
+            collapsed_regions: BTreeSet::new(),
+            region_hover: None,
             active_tab: 0,
             source_tabs: Vec::new(),
             side_panel_open: true,
@@ -472,6 +482,8 @@ impl ShellView {
         let _ = recent::remember(&mut self.recent_results, &session.result_directory);
         self.session = Some(session);
         self.filter.clear();
+        self.collapsed_regions.clear();
+        self.region_hover = None;
         self.symbol_input.update(cx, |input, cx| input.clear(cx));
         self.selected_frame = None;
         self.roofline_loop = None;
@@ -1252,6 +1264,23 @@ impl ShellView {
                     cx.notify();
                 })),
             )
+            .when_some(self.filter.region, |el, region| {
+                el.child(
+                    chip("region-chip", session.regions.label(region))
+                        .icon(Icon::Layers)
+                        .active(true)
+                        .on_close({
+                            let entity = cx.entity();
+                            move |_, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.filter.region = None;
+                                    this.refresh_analysis(cx);
+                                    cx.notify();
+                                });
+                            }
+                        }),
+                )
+            })
             .child(self.symbol_input.clone())
             .when_some(selected_label, |el, label| {
                 el.child(chip("frame-chip", label).mono(true).active(true).on_close({
@@ -1334,7 +1363,7 @@ impl ShellView {
                             .text_size(px(10.5))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.muted_foreground)
-                            .child("MASTER TIMELINE — DRAG ANYWHERE TO SCOPE EVERY VIEW BELOW"),
+                            .child("MASTER TIMELINE · DRAG ACTIVITY OR COUNTERS TO FILTER TIME · CLICK REGIONS TO FILTER EVENTS"),
                     ),
             )
             .when(!self.timeline_collapsed, |el| {
@@ -1345,6 +1374,20 @@ impl ShellView {
                         theme.clone(),
                         view.clone(),
                     ));
+                }
+                if !session.regions.spans.is_empty() {
+                    column = column.child(
+                        div()
+                            .id("master-regions")
+                            .max_h(px(150.0))
+                            .overflow_y_scroll()
+                            .child(regions::canvas_view(
+                                entity.clone(),
+                                theme.clone(),
+                                view.clone(),
+                                self.filter.region,
+                            )),
+                    );
                 }
                 for track_index in &session.pinned_tracks {
                     column = column.child(
@@ -2372,7 +2415,17 @@ impl ShellView {
                 view.clone(),
             ));
 
-        if process_tracks.is_empty() && system_tracks.is_empty() {
+        if !session.regions.spans.is_empty() {
+            column = column.child(self.render_regions(session, view.clone(), cx));
+        }
+        if let Some(error) = &session.regions.error {
+            column = column.child(empty_state(
+                Icon::Layers,
+                format!("Could not read named regions: {error}"),
+            ));
+        }
+        if process_tracks.is_empty() && system_tracks.is_empty() && session.regions.spans.is_empty()
+        {
             return column
                 .child(empty_state(
                     Icon::LineChart,

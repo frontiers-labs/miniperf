@@ -5,6 +5,7 @@ mod model;
 mod profile;
 mod profile_analysis;
 mod recent;
+mod regions;
 mod roofline;
 mod shell;
 mod snapshot;
@@ -243,6 +244,28 @@ fn run_tour(handle: gpui::WindowHandle<shell::ShellView>, cx: &mut App) {
                         }
                         println!("tour: rendered {name}");
                     }
+                    let region_count =
+                        match handle.update(cx, |view, _, _| view.region_tour_summary()) {
+                            Ok(Ok(count)) => count,
+                            result => {
+                                eprintln!("tour: region loading failed: {result:?}");
+                                std::process::exit(1);
+                            }
+                        };
+                    if let Some(timeline) = views.iter().position(|name| name == "Timeline") {
+                        let _ = handle.update(cx, |view, _, cx| view.activate_tab(timeline, cx));
+                    }
+                    for index in 0..region_count {
+                        match handle.update(cx, |view, _, cx| view.tour_region(index, cx)) {
+                            Ok(Ok(())) => {}
+                            result => {
+                                eprintln!("tour: region selection failed: {result:?}");
+                                std::process::exit(1);
+                            }
+                        }
+                        cx.background_executor().timer(TOUR_TAB_DWELL).await;
+                    }
+                    let _ = handle.update(cx, |view, _, cx| view.finish_region_tour(cx));
                     println!("tour: ok");
                     std::process::exit(0);
                 }

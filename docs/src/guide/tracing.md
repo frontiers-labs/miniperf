@@ -71,6 +71,30 @@ mperf query results/traced 'SELECT name, kind, count, total_ns, total_value FROM
 
 Spans report their count and total duration. Counters and instants report their count and summed value. The raw events with timestamps, thread ids, and parent links are in the `events` table, joined to names through `payloads` and `strings`.
 
+## Explore named regions
+
+Open the recording with `mperf-gui results/traced`. The Tracks timeline displays
+named spans in stacked rows for each thread. The Timeline tab also has a region
+hierarchy with call counts, inclusive time, self time, and mean duration.
+Inclusive time includes nested work. Self time excludes the union of nested work
+on the same thread. These are elapsed times, so totals across threads can exceed
+the recording duration.
+
+The hierarchy groups repeated invocations by their call path. A region called
+from two parents has a separate row under each parent, and recursive calls appear
+at successive depths. When an annotation has no explicit parent, the viewer
+infers nesting from enclosing spans on the same thread.
+
+Select a hierarchy row to scope the sampled profile to all invocations of that
+region. Select a timeline span to scope it to one invocation. Region scope
+intersects the time, thread, module, and symbol filters. Gaps between invocations
+and samples on unrelated threads stay outside the selection. Clear the region
+filter to return to the previous scope.
+
+Incomplete annotations are marked separately so missing boundaries do not look
+like completed measurements. Cross-thread spans cannot establish which thread
+performed the work between their endpoints; the viewer reports that limitation.
+
 The stub finds the collector library `libmperf_collector.so` through the dynamic loader. Release packages place it where `mperf` sets it up. With a source build, point at it explicitly:
 
 ```sh
@@ -110,4 +134,7 @@ Trace buffers are bounded at 64 buffers of 256 KiB per process. When a producer 
 - `MPERF_COLLECTOR_LIBRARY` overrides the collector library path.
 - `MPERF_CONTROL_SHMEM` enables a shared-memory control channel for live statistics and pause, resume, and flush commands. It is a library interface for embedding miniperf; the `mperf` command does not use it.
 
-A `manifest.yaml` schema for assigning trace points to timeline tracks exists in the `mperf-data` crate, but the current GUI does not read it. Custom events appear as the `custom_events` table.
+A `manifest.yaml` schema for assigning trace points to timeline tracks exists in
+the `mperf-data` crate, but the GUI does not read it. The viewer groups named
+regions by their recorded threads and nesting. Instants and counters remain
+available through the `custom_events` table.
