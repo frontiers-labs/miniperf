@@ -91,11 +91,11 @@ jobs:
           # ubuntu-24.04 x86 has no PMU, so its hardware checks skip themselves
           # and it covers the CLI and package surface. ubuntu-24.04-arm is free
           # and has 7 counters, so it is the reference PMU runner. The single
-          # Blacksmith job is the only paid one, and exists because x86 event
+          # Boat job is the only paid one, and exists because x86 event
           # tables are compiled per architecture.
           - { label: ubuntu-24.04,                 platform: linux-x86_64,   os: linux }
           - { label: ubuntu-24.04-arm,             platform: linux-aarch64,  os: linux }
-          - { label: blacksmith-2vcpu-ubuntu-2404, platform: linux-x86_64,   os: linux }
+          - { label: boat-small,                   platform: linux-x86_64,   os: linux }
           - { label: macos-15,                     platform: macos-aarch64,  os: macos }
     defaults:
       run:
