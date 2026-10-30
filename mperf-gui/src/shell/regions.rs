@@ -577,6 +577,21 @@ impl ShellView {
             "tour: regions nodes={} completed={completed} incomplete={incomplete}",
             session.regions.nodes.len()
         );
+        let balance = crate::profile_analysis::ThreadBalance::build(
+            &session.profile,
+            &crate::profile_analysis::SampleFilter::default(),
+        )
+        .map(|balance| {
+            balance
+                .rows
+                .into_iter()
+                .map(|row| {
+                    serde_json::json!({ "thread_id": row.thread_id, "busy_fraction": row.busy_fraction })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+        println!("tour: unfiltered_balance {}", serde_json::json!(balance));
         if !session.regions.spans.is_empty() {
             let timeline = self
                 .region_timeline
@@ -677,7 +692,6 @@ impl ShellView {
                 "inclusive_ns": node.inclusive_ns, "self_ns": node.self_ns,
                 "samples": base["samples"], "intervals": intervals.by_thread.values().map(Vec::len).sum::<usize>(),
                 "balance": base["balance"],
-                "recording_range": session.full_range.map(|range| serde_json::json!({ "start_ns": range.start_ns, "end_ns": range.end_ns })),
                 "threads": intervals.by_thread.keys().collect::<Vec<_>>(), "scopes": scopes
             })
         );

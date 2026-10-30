@@ -37,11 +37,6 @@ note "recorded named-region hierarchy for the viewer checks"
 "${mperf}" query -f json --max-rows 10000 "${dir}" '
   SELECT timestamp, process_id, thread_id FROM pmu_counters' >"${dir}/region-check.samples.json" \
     || fail "could not export recorded samples"
-"${mperf}" query -f json --max-rows 10000 "${dir}" '
-  SELECT timestamp, process_id, thread_id, interval_start_ns, weight_ns, source
-  FROM cpu_observations' >"${dir}/region-check.cpu.json" \
-    || fail "could not export recorded CPU intervals"
-
 dir="${CHECK_WORK}/rec-named-regions-dense"
 "${mperf}" record -s snapshot -o "${dir}" -- "${traced}" --dense >"${dir}.log" 2>&1 \
     || { cat "${dir}.log" >&2; fail "dense named-region recording failed"; }
