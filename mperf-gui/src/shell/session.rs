@@ -17,6 +17,7 @@ use crate::{
     model::SummaryStats,
     profile::{ProfileData, TimeRange},
     profile_analysis::{CounterTracks, SampleFilter, instructions_metric},
+    regions::{RegionData, RegionSelection},
     roofline::RooflineData,
     snapshot::SnapshotData,
     ui::ModuleKind,
@@ -68,6 +69,7 @@ pub struct ShellSession {
     /// Calibrated roofline with per-loop throughput, when available.
     pub roofline: Option<RooflineData>,
     pub profile: ProfileData,
+    pub regions: RegionData,
     pub full_range: Option<TimeRange>,
     pub total_samples: u64,
     /// Whether any sample carries a call stack — gates every stack view.
@@ -90,6 +92,7 @@ pub struct ShellSession {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GlobalFilter {
     pub time: Option<TimeRange>,
+    pub region: Option<RegionSelection>,
     pub disabled_threads: BTreeSet<u32>,
     pub disabled_modules: BTreeSet<usize>,
     pub symbol: String,
@@ -97,7 +100,8 @@ pub struct GlobalFilter {
 
 impl GlobalFilter {
     pub fn is_active(&self) -> bool {
-        self.time.is_some()
+        self.region.is_some()
+            || self.time.is_some()
             || !self.disabled_threads.is_empty()
             || !self.disabled_modules.is_empty()
             || !self.symbol.is_empty()
@@ -123,6 +127,7 @@ impl GlobalFilter {
         self.disabled_threads.hash(&mut hasher);
         self.disabled_modules.hash(&mut hasher);
         self.symbol.hash(&mut hasher);
+        self.region.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -156,6 +161,9 @@ impl GlobalFilter {
         });
         SampleFilter {
             range: self.time,
+            regions: self
+                .region
+                .map(|selection| session.regions.intervals(selection)),
             threads,
             frame_ids,
             leaf_frames,
@@ -182,6 +190,10 @@ impl ShellSession {
         let tma = TmaData::load(&record_info.scenario_info, connection);
         let mut profile = ProfileData::load(connection);
         profile.logical_cpu_count = record_info.logical_cpu_count;
+        let regions = RegionData::load(connection, profile.full_range());
+        if regions.range.is_some() {
+            profile.recording_range = regions.range;
+        }
         let has_assembly = super::asm::has_assembly(connection);
         let snapshot = SnapshotData::load(connection, record_info.logical_cpu_count);
         let memory = load_memory(connection, &record_info);
@@ -209,7 +221,19 @@ impl ShellSession {
             .iter()
             .any(|sample| !sample.stack.is_empty());
         let instructions_metric = instructions_metric(&profile.counter_metrics);
-        let threads = thread_inventory(&profile, command_name.as_deref());
+        let mut threads = thread_inventory(&profile, command_name.as_deref());
+        for span in &regions.spans {
+            if !threads
+                .iter()
+                .any(|thread| thread.thread_id == span.thread_id)
+            {
+                threads.push(ThreadInfo {
+                    thread_id: span.thread_id,
+                    label: format!("tid {}", span.thread_id),
+                    samples: 0,
+                });
+            }
+        }
         let modules = module_inventory(&profile);
         let lanes = full_range.and_then(|range| thread_lanes(&profile, &threads, range));
         let tracks = CounterTracks::build(&profile, &SampleFilter::default(), TRACK_BINS);
@@ -227,6 +251,7 @@ impl ShellSession {
             memory,
             roofline,
             profile,
+            regions,
             full_range,
             total_samples,
             has_stacks,

@@ -15,6 +15,7 @@ pub(crate) struct ProfileData {
     pub(crate) logical_cpu_count: Option<u32>,
     pub(crate) counter_metrics: Vec<CounterMetric>,
     pub(crate) error: Option<String>,
+    pub(crate) recording_range: Option<TimeRange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +113,9 @@ impl ProfileData {
     }
 
     pub(crate) fn full_range(&self) -> Option<TimeRange> {
+        if self.recording_range.is_some() {
+            return self.recording_range;
+        }
         let start_ns = self
             .samples
             .iter()
@@ -267,6 +271,7 @@ fn load_profile(connection: &Connection) -> Result<ProfileData> {
         logical_cpu_count: None,
         counter_metrics,
         error: None,
+        recording_range: None,
     })
 }
 

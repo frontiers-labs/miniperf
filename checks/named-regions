@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Record nested, repeated, recursive and unfinished regions through the shipped API.
+# shellcheck source=checks/lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+[[ "$(uname -s)" == Linux ]] || skip "not a Linux host"
+require_pmu
+
+traced="${CHECK_WORK}/bin/named_regions"
+cc -O2 -g -fno-omit-frame-pointer -pthread -I "${MPERF_PACKAGE}/include" \
+    -o "${traced}" "${checks_root}/fixtures/named_regions.c" \
+    "${MPERF_PACKAGE}/share/miniperf/mperf_trace_stub.c" -ldl \
+    || fail "the named-region workload did not compile"
+dir="${CHECK_WORK}/rec-named-regions"
+"${mperf}" record -s snapshot -o "${dir}" -- "${traced}" >"${dir}.log" 2>&1 \
+    || { cat "${dir}.log" >&2; fail "named-region recording failed"; }
+assert_sql "${dir}" "
+  SELECT SUM(count) FILTER (WHERE kind = 'span') = 15 AS every_completed_span,
+         SUM(count) FILTER (WHERE name = 'iteration') = 5 AS repeated_calls,
+         SUM(count) FILTER (WHERE name = 'compute') = 6 AS shared_child,
+         SUM(count) FILTER (WHERE name = 'recursive') = 2 AS recursive_calls
+  FROM custom_events"
+assert_sql "${dir}" '
+  SELECT COUNT(*) FILTER (WHERE "type" = 0) = 16 AS every_begin,
+         COUNT(*) FILTER (WHERE "type" = 1) = 15 AS every_end,
+         COUNT(DISTINCT tid) = 2 AS both_threads
+  FROM events'
+note "recorded named-region hierarchy for the viewer checks"
+"${mperf}" query -f json --max-rows 10000 "${dir}" '
+  SELECT b.instance, b.pid, b.tid, b.timestamp AS start_ns,
+         e.timestamp AS end_ns, s.string AS name
+  FROM events b
+  LEFT JOIN events e ON e."type" = 1 AND e.flow_id = b.instance AND e.pid = b.pid
+  JOIN payloads p ON p.event_id = b.event_id
+  JOIN strings s ON s.id = p.name_id
+  WHERE b."type" = 0 ORDER BY b.timestamp' >"${dir}/region-check.spans.json" \
+    || fail "could not export recorded regions"
+"${mperf}" query -f json --max-rows 10000 "${dir}" '
+  SELECT timestamp, process_id, thread_id FROM pmu_counters' >"${dir}/region-check.samples.json" \
+    || fail "could not export recorded samples"
+dir="${CHECK_WORK}/rec-named-regions-dense"
+"${mperf}" record -s snapshot -o "${dir}" -- "${traced}" --dense >"${dir}.log" 2>&1 \
+    || { cat "${dir}.log" >&2; fail "dense named-region recording failed"; }
+assert_sql "${dir}" "
+  SELECT SUM(count) FILTER (WHERE name = 'dense' AND kind = 'span') = 100000
+         AS every_dense_span FROM custom_events"
+note "recorded 100000 spans for the dense timeline check"

@@ -3,6 +3,8 @@ use std::{
     collections::{BTreeMap, BTreeSet},
 };
 
+use crate::regions::RegionIntervals;
+
 use crate::profile::{
     CounterMetric, CpuObservation, CpuObservationSource, ProfileData, ProfileFrame, ProfileSample,
     TimeRange,
@@ -20,6 +22,7 @@ const MIN_FOLD_BINS: u64 = 12;
 #[derive(Debug, Default)]
 pub(crate) struct SampleFilter {
     pub range: Option<TimeRange>,
+    pub regions: Option<RegionIntervals>,
     pub process_id: Option<u32>,
     pub thread_id: Option<u32>,
     /// Accept only samples from these threads; `None` accepts every thread.
@@ -43,6 +46,11 @@ impl SampleFilter {
     }
 
     fn matches_without_time(&self, sample: &ProfileSample) -> bool {
+        if self.regions.as_ref().is_some_and(|regions| {
+            !regions.contains(sample.process_id, sample.thread_id, sample.timestamp_ns)
+        }) {
+            return false;
+        }
         if self
             .process_id
             .is_some_and(|process_id| sample.process_id != process_id)
@@ -92,6 +100,28 @@ impl SampleFilter {
     }
 
     fn matches_cpu_observation_without_time(&self, observation: &CpuObservation) -> bool {
+        if self.regions.as_ref().is_some_and(|regions| {
+            if let Some(start_ns) = observation.wall_interval_start_ns() {
+                regions
+                    .intersections(
+                        observation.process_id,
+                        observation.thread_id,
+                        TimeRange {
+                            start_ns,
+                            end_ns: observation.timestamp_ns,
+                        },
+                    )
+                    .is_empty()
+            } else {
+                !regions.contains(
+                    observation.process_id,
+                    observation.thread_id,
+                    observation.timestamp_ns,
+                )
+            }
+        }) {
+            return false;
+        }
         if self
             .process_id
             .is_some_and(|process_id| observation.process_id != process_id)
@@ -131,6 +161,18 @@ impl SampleFilter {
             return false;
         }
         true
+    }
+
+    fn observation_ranges(&self, observation: &CpuObservation, range: TimeRange) -> Vec<TimeRange> {
+        if range.start_ns >= range.end_ns {
+            return Vec::new();
+        }
+        match &self.regions {
+            Some(regions) => {
+                regions.intersections(observation.process_id, observation.thread_id, range)
+            }
+            None => vec![range],
+        }
     }
 }
 
@@ -881,37 +923,44 @@ impl CpuUtilizationHeatmap {
             if interval_duration == 0 {
                 continue;
             }
-            let clipped_start = interval_start.max(range.start_ns);
-            let clipped_end = interval_end.min(range.end_ns);
-            if clipped_start >= clipped_end {
-                continue;
-            }
-            let first_bucket =
-                usize::try_from((clipped_start - range.start_ns) / bucket_duration_ns)
-                    .unwrap_or(usize::MAX)
-                    .min(buckets - 1);
-            let last_bucket =
-                usize::try_from((clipped_end - 1 - range.start_ns) / bucket_duration_ns)
-                    .unwrap_or(usize::MAX)
-                    .min(buckets - 1);
-            for (bucket, value) in attributed
-                .iter_mut()
-                .enumerate()
-                .take(last_bucket + 1)
-                .skip(first_bucket)
-            {
-                let bucket_start = range
-                    .start_ns
-                    .saturating_add((bucket as u64).saturating_mul(bucket_duration_ns));
-                let bucket_end = bucket_start
-                    .saturating_add(bucket_duration_ns)
-                    .min(range.end_ns);
-                let overlap_start = clipped_start.max(bucket_start);
-                let overlap_end = clipped_end.min(bucket_end);
-                if overlap_start < overlap_end {
-                    let overlap_ns = overlap_end - overlap_start;
-                    *value +=
-                        observation.weight_ns as f64 * overlap_ns as f64 / interval_duration as f64;
+            let clipped = TimeRange {
+                start_ns: interval_start.max(range.start_ns),
+                end_ns: interval_end.min(range.end_ns),
+            };
+            let intervals = filter.observation_ranges(observation, clipped);
+            for clipped in intervals {
+                let clipped_start = clipped.start_ns;
+                let clipped_end = clipped.end_ns;
+                if clipped_start >= clipped_end {
+                    continue;
+                }
+                let first_bucket =
+                    usize::try_from((clipped_start - range.start_ns) / bucket_duration_ns)
+                        .unwrap_or(usize::MAX)
+                        .min(buckets - 1);
+                let last_bucket =
+                    usize::try_from((clipped_end - 1 - range.start_ns) / bucket_duration_ns)
+                        .unwrap_or(usize::MAX)
+                        .min(buckets - 1);
+                for (bucket, value) in attributed
+                    .iter_mut()
+                    .enumerate()
+                    .take(last_bucket + 1)
+                    .skip(first_bucket)
+                {
+                    let bucket_start = range
+                        .start_ns
+                        .saturating_add((bucket as u64).saturating_mul(bucket_duration_ns));
+                    let bucket_end = bucket_start
+                        .saturating_add(bucket_duration_ns)
+                        .min(range.end_ns);
+                    let overlap_start = clipped_start.max(bucket_start);
+                    let overlap_end = clipped_end.min(bucket_end);
+                    if overlap_start < overlap_end {
+                        let overlap_ns = overlap_end - overlap_start;
+                        *value += observation.weight_ns as f64 * overlap_ns as f64
+                            / interval_duration as f64;
+                    }
                 }
             }
         }
@@ -1058,6 +1107,24 @@ impl ThreadBalance {
         if wall <= 0.0 {
             return None;
         }
+        let region_wall = filter.regions.as_ref().map(|regions| {
+            let mut by_thread = BTreeMap::<u32, u64>::new();
+            for (&(process_id, thread_id), ranges) in &regions.by_thread {
+                if filter.process_id.is_some_and(|pid| pid != process_id) {
+                    continue;
+                }
+                let duration = ranges
+                    .iter()
+                    .map(|item| {
+                        item.end_ns
+                            .min(range.end_ns)
+                            .saturating_sub(item.start_ns.max(range.start_ns))
+                    })
+                    .sum::<u64>();
+                *by_thread.entry(thread_id).or_default() += duration;
+            }
+            by_thread
+        });
         let sync_frames: BTreeSet<usize> = profile
             .frames
             .iter()
@@ -1099,11 +1166,34 @@ impl ThreadBalance {
             .iter()
             .filter(|observation| filter.matches_cpu_observation_without_time(observation))
             .filter(|observation| {
-                observation.timestamp_ns >= range.start_ns
-                    && observation.timestamp_ns < range.end_ns
+                if let Some(start_ns) = observation.wall_interval_start_ns() {
+                    start_ns < range.end_ns && observation.timestamp_ns > range.start_ns
+                } else {
+                    observation.timestamp_ns >= range.start_ns
+                        && observation.timestamp_ns < range.end_ns
+                }
             })
         {
-            *cpu_time.entry(observation.thread_id).or_default() += observation.weight_ns as f64;
+            let weight = if let Some(start_ns) = observation.wall_interval_start_ns() {
+                let full = observation.timestamp_ns.saturating_sub(start_ns);
+                let clipped = TimeRange {
+                    start_ns: start_ns.max(range.start_ns),
+                    end_ns: observation.timestamp_ns.min(range.end_ns),
+                };
+                let overlap: u64 = filter
+                    .observation_ranges(observation, clipped)
+                    .iter()
+                    .map(|range| range.end_ns - range.start_ns)
+                    .sum();
+                if full == 0 {
+                    0.0
+                } else {
+                    observation.weight_ns as f64 * overlap as f64 / full as f64
+                }
+            } else {
+                observation.weight_ns as f64
+            };
+            *cpu_time.entry(observation.thread_id).or_default() += weight;
             if let Some(cpu) = observation.cpu {
                 has_cpu_ids = true;
                 trails
@@ -1118,10 +1208,17 @@ impl ThreadBalance {
             .into_iter()
             .map(|thread_id| {
                 let (total, sync) = samples.get(&thread_id).copied().unwrap_or_default();
+                let wall = region_wall.as_ref().map_or(wall, |by_thread| {
+                    by_thread.get(&thread_id).copied().unwrap_or(0) as f64
+                });
+                let busy_fraction = if wall > 0.0 {
+                    (cpu_time.get(&thread_id).copied().unwrap_or(0.0) / wall).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
                 ThreadBalanceRow {
                     thread_id,
-                    busy_fraction: (cpu_time.get(&thread_id).copied().unwrap_or(0.0) / wall)
-                        .clamp(0.0, 1.0),
+                    busy_fraction,
                     sync_fraction: fraction(sync, total),
                     migrations: migrations(trails.get_mut(&thread_id)),
                     samples: total,

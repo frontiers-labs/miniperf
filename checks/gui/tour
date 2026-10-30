@@ -19,20 +19,21 @@ required_for() {
 }
 
 # The viewer needs a real window. A developer machine already has one; CI
-# supplies Xvfb. Neither is a reason to pretend the check passed.
+# supplies Xvfb and a window manager. Neither is a reason to pretend the check
+# passed.
 launch() {
     if [[ "$(uname -s)" != Linux ]]; then
         "$@"
     elif [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
         "$@"
     else
-        xvfb-run -a "$@"
+        xvfb-run -a "${checks_root}/../utils/run-headless-gui.sh" "$@"
     fi
 }
 
-if [[ "$(uname -s)" == Linux && -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] \
-   && ! command -v xvfb-run >/dev/null; then
-    skip "no display and no xvfb-run"
+if [[ "$(uname -s)" == Linux && -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+    command -v xvfb-run >/dev/null || skip "no display and no xvfb-run"
+    command -v openbox >/dev/null || skip "no display and no openbox window manager"
 fi
 
 visited=0
@@ -40,7 +41,8 @@ while IFS= read -r info; do
     dir="$(dirname "${info}")"
     scenario="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["scenario"].lower())' "${info}")"
     note "touring ${scenario} (${dir})"
-    log="${CHECK_WORK}/tour-${scenario}.log"
+    prefix="${CHECK_WORK}/tour-${visited}"
+    log="${prefix}.tour"
     launch "${mperf_gui}" --tour "${dir}" >"${log}" 2>&1 \
         || { cat "${log}" >&2; fail "the viewer could not display the ${scenario} recording"; }
     grep -qi panic "${log}" && { cat "${log}" >&2; fail "the viewer panicked on ${scenario}"; }
@@ -49,6 +51,13 @@ while IFS= read -r info; do
         grep -qF "tour: rendered ${tab}" "${log}" \
             || { cat "${log}" >&2; fail "${scenario} did not offer the ${tab} tab"; }
     done < <(required_for "${scenario}")
+    if [[ "$(basename "${dir}")" == rec-named-regions ]]; then
+        python3 "${checks_root}/../utils/verify-named-regions.py" "${prefix}" "${dir}" \
+            || fail "the viewer region analysis disagrees with the recording"
+    elif [[ "$(basename "${dir}")" == rec-named-regions-dense ]]; then
+        python3 "${checks_root}/../utils/verify-named-regions.py" --dense "${log}" \
+            || fail "dense region rendering did not stay within its pixel budget"
+    fi
     visited=$((visited + 1))
 done < <(find "${MPERF_RECORDINGS}" -name info.json)
 

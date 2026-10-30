@@ -4,6 +4,7 @@ mod derived;
 mod flame;
 mod flamescope;
 mod memory;
+mod regions;
 mod resources;
 mod roofline;
 mod session;
@@ -11,7 +12,7 @@ mod timeline;
 mod tma;
 mod topdown;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
 use gpui::{
     App, Axis, Context, Entity, FocusHandle, Focusable, FontWeight, IntoElement, KeyBinding,
@@ -26,6 +27,7 @@ use crate::profile_analysis::{
     FunctionStat, IcicleLayout, StackWeight, ThreadBalance,
 };
 use crate::recent;
+use crate::regions::RegionNodeId;
 use crate::source::{SourceDocument, SourceLocation};
 use crate::ui::{
     self, ActiveTheme, ButtonSize, ButtonVariant, Column, DropdownItem, Icon, TabItem, Theme,
@@ -182,6 +184,7 @@ enum ViewId {
     Flame,
     FlameScope,
     Timeline,
+    Events,
     Cores,
     TopDown,
     Resources,
@@ -190,12 +193,13 @@ enum ViewId {
 }
 
 impl ViewId {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::Summary,
         Self::Hotspots,
         Self::Flame,
         Self::FlameScope,
         Self::Timeline,
+        Self::Events,
         Self::Cores,
         Self::TopDown,
         Self::Resources,
@@ -210,6 +214,7 @@ impl ViewId {
             Self::Flame => "Flame Graph",
             Self::FlameScope => "Flame Scope",
             Self::Timeline => "Timeline",
+            Self::Events => "Events",
             Self::Cores => "Cores",
             Self::TopDown => "Top-Down",
             Self::Resources => "Resources",
@@ -225,6 +230,7 @@ impl ViewId {
             Self::Flame => Icon::Flame,
             Self::FlameScope => Icon::Grid3x3,
             Self::Timeline => Icon::LineChart,
+            Self::Events => Icon::Layers,
             Self::Cores => Icon::Cpu,
             Self::TopDown => Icon::Layers,
             Self::Resources => Icon::Gauge,
@@ -238,7 +244,12 @@ impl ViewId {
             Self::Summary => true,
             Self::Hotspots | Self::Flame => session.has_stacks,
             Self::FlameScope => session.full_range.is_some() && session.total_samples > 0,
-            Self::Timeline => session.lanes.is_some() || session.tracks.is_some(),
+            Self::Timeline => {
+                session.lanes.is_some()
+                    || session.tracks.is_some()
+                    || !session.regions.spans.is_empty()
+            }
+            Self::Events => !session.regions.nodes.is_empty() || session.regions.error.is_some(),
             Self::Cores => !session.profile.cpu_observations.is_empty(),
             Self::TopDown => session
                 .tma
@@ -327,6 +338,9 @@ pub struct ShellView {
     modules_menu_open: bool,
     new_profile_open: bool,
     timeline_collapsed: bool,
+    collapsed_regions: BTreeSet<RegionNodeId>,
+    region_hover: Option<regions::RegionHover>,
+    region_timeline: Option<std::rc::Rc<regions::RegionTimeline>>,
     active_tab: usize,
     source_tabs: Vec<SourceTab>,
     side_panel_open: bool,
@@ -422,6 +436,9 @@ impl ShellView {
             modules_menu_open: false,
             new_profile_open: false,
             timeline_collapsed: false,
+            collapsed_regions: BTreeSet::new(),
+            region_hover: None,
+            region_timeline: None,
             active_tab: 0,
             source_tabs: Vec::new(),
             side_panel_open: true,
@@ -470,8 +487,11 @@ impl ShellView {
 
     fn install_session(&mut self, session: Arc<ShellSession>, cx: &mut Context<Self>) {
         let _ = recent::remember(&mut self.recent_results, &session.result_directory);
+        self.region_timeline = Some(std::rc::Rc::new(regions::RegionTimeline::new(&session)));
         self.session = Some(session);
         self.filter.clear();
+        self.collapsed_regions.clear();
+        self.region_hover = None;
         self.symbol_input.update(cx, |input, cx| input.clear(cx));
         self.selected_frame = None;
         self.roofline_loop = None;
@@ -1252,6 +1272,23 @@ impl ShellView {
                     cx.notify();
                 })),
             )
+            .when_some(self.filter.region, |el, region| {
+                el.child(
+                    chip("region-chip", session.regions.label(region))
+                        .icon(Icon::Layers)
+                        .active(true)
+                        .on_close({
+                            let entity = cx.entity();
+                            move |_, cx| {
+                                entity.update(cx, |this, cx| {
+                                    this.filter.region = None;
+                                    this.refresh_analysis(cx);
+                                    cx.notify();
+                                });
+                            }
+                        }),
+                )
+            })
             .child(self.symbol_input.clone())
             .when_some(selected_label, |el, label| {
                 el.child(chip("frame-chip", label).mono(true).active(true).on_close({
@@ -1334,7 +1371,7 @@ impl ShellView {
                             .text_size(px(10.5))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme.muted_foreground)
-                            .child("MASTER TIMELINE — DRAG ANYWHERE TO SCOPE EVERY VIEW BELOW"),
+                            .child("MASTER TIMELINE · DRAG ACTIVITY OR COUNTERS TO FILTER TIME"),
                     ),
             )
             .when(!self.timeline_collapsed, |el| {
@@ -2372,7 +2409,11 @@ impl ShellView {
                 view.clone(),
             ));
 
-        if process_tracks.is_empty() && system_tracks.is_empty() {
+        if !session.regions.spans.is_empty() {
+            column = column.child(self.render_region_timeline(session, view.clone(), cx));
+        }
+        if process_tracks.is_empty() && system_tracks.is_empty() && session.regions.spans.is_empty()
+        {
             return column
                 .child(empty_state(
                     Icon::LineChart,
@@ -2935,6 +2976,7 @@ impl ShellView {
             Some(ViewId::Flame) => self.render_flame(session, cx),
             Some(ViewId::FlameScope) => self.render_flame_scope(session, cx),
             Some(ViewId::Timeline) => self.render_timeline_view(session, cx),
+            Some(ViewId::Events) => self.render_events(session, cx),
             Some(ViewId::Cores) => cores::render(self, session, cx),
             Some(ViewId::TopDown) => topdown::render(self, session, cx),
             Some(ViewId::Resources) => resources::render(session, cx),
