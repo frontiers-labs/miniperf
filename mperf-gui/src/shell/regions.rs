@@ -557,6 +557,19 @@ impl ShellView {
 }
 
 impl ShellView {
+    /// Whether loaded regions have been drawn, or there are no spans to draw.
+    pub fn region_timeline_rendered(&self) -> bool {
+        let session = self
+            .session
+            .as_ref()
+            .expect("tour requires a loaded session");
+        session.regions.spans.is_empty()
+            || self
+                .region_timeline
+                .as_ref()
+                .is_some_and(|timeline| timeline.raster.borrow().is_some())
+    }
+
     /// Reports and selects real loaded region nodes for the viewer's command-line tour.
     pub fn region_tour_summary(&self) -> anyhow::Result<usize> {
         let session = self

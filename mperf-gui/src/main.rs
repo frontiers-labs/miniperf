@@ -195,7 +195,7 @@ impl AssetSource for MperfAssets {
     }
 }
 
-/// How long the tour waits for the asynchronous load before giving up.
+/// How long the tour waits for the asynchronous load or region rendering.
 const TOUR_LOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 /// How long each tab is left on screen so its derived data is built and drawn.
 const TOUR_TAB_DWELL: std::time::Duration = std::time::Duration::from_millis(250);
@@ -226,6 +226,13 @@ fn run_tour(handle: gpui::WindowHandle<shell::ShellView>, cx: &mut App) {
                     std::process::exit(1);
                 }
                 Some((None, true, views)) if !views.is_empty() => {
+                    if handle
+                        .update(cx, |view, _, cx| view.prepare_tour(cx))
+                        .is_err()
+                    {
+                        eprintln!("tour: the window closed before visiting tabs");
+                        std::process::exit(1);
+                    }
                     println!("tour: {} views: {}", views.len(), views.join(", "));
                     for (ix, name) in views.iter().enumerate() {
                         if handle
@@ -236,6 +243,26 @@ fn run_tour(handle: gpui::WindowHandle<shell::ShellView>, cx: &mut App) {
                             std::process::exit(1);
                         }
                         cx.background_executor().timer(TOUR_TAB_DWELL).await;
+                        if name == "Timeline" {
+                            let render_deadline = std::time::Instant::now() + TOUR_LOAD_TIMEOUT;
+                            loop {
+                                match handle
+                                    .update(cx, |view, _, _| view.region_timeline_rendered())
+                                {
+                                    Ok(true) => break,
+                                    Ok(false) => {}
+                                    Err(_) => {
+                                        eprintln!("tour: the window closed while visiting {name}");
+                                        std::process::exit(1);
+                                    }
+                                }
+                                if std::time::Instant::now() > render_deadline {
+                                    eprintln!("tour: region timeline did not render within 60s");
+                                    std::process::exit(1);
+                                }
+                                cx.background_executor().timer(TOUR_TAB_DWELL).await;
+                            }
+                        }
                         if let Ok(Some(error)) =
                             handle.update(cx, |view, _, _| view.load_error().map(str::to_owned))
                         {
