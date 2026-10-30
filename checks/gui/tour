@@ -27,12 +27,7 @@ launch() {
     elif [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
         "$@"
     else
-        xvfb-run -a sh -c '
-            openbox --sm-disable &
-            wm=$!
-            trap '\''kill "$wm" 2>/dev/null || true'\'' EXIT
-            "$@"
-        ' sh "$@"
+        xvfb-run -a "${checks_root}/../utils/run-headless-gui.sh" "$@"
     fi
 }
 
