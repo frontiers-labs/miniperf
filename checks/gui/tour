@@ -19,20 +19,26 @@ required_for() {
 }
 
 # The viewer needs a real window. A developer machine already has one; CI
-# supplies Xvfb. Neither is a reason to pretend the check passed.
+# supplies Xvfb and a window manager. Neither is a reason to pretend the check
+# passed.
 launch() {
     if [[ "$(uname -s)" != Linux ]]; then
         "$@"
     elif [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
         "$@"
     else
-        xvfb-run -a "$@"
+        xvfb-run -a sh -c '
+            openbox --sm-disable &
+            wm=$!
+            trap '\''kill "$wm" 2>/dev/null || true'\'' EXIT
+            "$@"
+        ' sh "$@"
     fi
 }
 
-if [[ "$(uname -s)" == Linux && -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] \
-   && ! command -v xvfb-run >/dev/null; then
-    skip "no display and no xvfb-run"
+if [[ "$(uname -s)" == Linux && -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+    command -v xvfb-run >/dev/null || skip "no display and no xvfb-run"
+    command -v openbox >/dev/null || skip "no display and no openbox window manager"
 fi
 
 visited=0

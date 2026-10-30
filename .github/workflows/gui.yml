@@ -44,11 +44,11 @@ jobs:
         run: |
           root="$(utils/unpack-package.sh dist pkg)"
           echo "root=${root}" >> "$GITHUB_OUTPUT"
-      - name: Install a display and a software renderer
+      - name: Install a display, window manager, and software renderer
         if: matrix.os == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb mesa-vulkan-drivers \
+          sudo apt-get install -y xvfb openbox mesa-vulkan-drivers \
                                   libxkbcommon-x11-0 libxkbcommon0 libxcb1
       - name: Tour every recording
         env:

@@ -882,12 +882,6 @@ impl ShellView {
             .collect()
     }
 
-    /// Collapses the master timeline so each toured tab has room to render.
-    pub fn prepare_tour(&mut self, cx: &mut Context<Self>) {
-        self.timeline_collapsed = true;
-        cx.notify();
-    }
-
     /// Switches to the tab at `ix`, exactly as clicking it does.
     pub fn activate_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.set_active_tab(ix, cx);
