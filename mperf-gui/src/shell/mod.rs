@@ -27,7 +27,7 @@ use crate::profile_analysis::{
     FunctionStat, IcicleLayout, StackWeight, ThreadBalance,
 };
 use crate::recent;
-use crate::regions::{RegionNodeId, RegionSpanId};
+use crate::regions::RegionNodeId;
 use crate::source::{SourceDocument, SourceLocation};
 use crate::ui::{
     self, ActiveTheme, ButtonSize, ButtonVariant, Column, DropdownItem, Icon, TabItem, Theme,
@@ -339,7 +339,8 @@ pub struct ShellView {
     new_profile_open: bool,
     timeline_collapsed: bool,
     collapsed_regions: BTreeSet<RegionNodeId>,
-    region_hover: Option<RegionSpanId>,
+    region_hover: Option<regions::RegionHover>,
+    region_timeline: Option<std::rc::Rc<regions::RegionTimeline>>,
     active_tab: usize,
     source_tabs: Vec<SourceTab>,
     side_panel_open: bool,
@@ -437,6 +438,7 @@ impl ShellView {
             timeline_collapsed: false,
             collapsed_regions: BTreeSet::new(),
             region_hover: None,
+            region_timeline: None,
             active_tab: 0,
             source_tabs: Vec::new(),
             side_panel_open: true,
@@ -485,6 +487,7 @@ impl ShellView {
 
     fn install_session(&mut self, session: Arc<ShellSession>, cx: &mut Context<Self>) {
         let _ = recent::remember(&mut self.recent_results, &session.result_directory);
+        self.region_timeline = Some(std::rc::Rc::new(regions::RegionTimeline::new(&session)));
         self.session = Some(session);
         self.filter.clear();
         self.collapsed_regions.clear();

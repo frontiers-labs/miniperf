@@ -1,24 +1,48 @@
 """Verify the known workload through the viewer's production tour and SQL API."""
 import json
+import math
 import pathlib
+import re
 import sys
 
+if sys.argv[1] == "--dense":
+    lines = pathlib.Path(sys.argv[2]).read_text().splitlines()
+    assert "tour: rendered Timeline" in lines, "dense Timeline was not rendered"
+    assert "tour: regions nodes=1 completed=100000 incomplete=0" in lines, lines
+    raster = next(re.fullmatch(
+        r"tour: region_render spans=100000 rows=(\d+) columns=(\d+) items=(\d+)", line
+    ) for line in lines if line.startswith("tour: region_render "))
+    rows, columns, items = map(int, raster.groups())
+    assert 0 < items <= rows * columns, (rows, columns, items)
+    print("  dense region rendering respects the per-row pixel budget")
+    sys.exit(0)
+
 prefix = sys.argv[1]
-spans = json.loads(pathlib.Path(prefix + ".spans").read_text())["rows"]
-samples = json.loads(pathlib.Path(prefix + ".samples").read_text())["rows"]
+reference = pathlib.Path(sys.argv[2])
+
+
+def read_rows(kind):
+    document = json.loads((reference / f"region-check.{kind}.json").read_text())
+    assert not document["truncated"], f"{kind} reference query was truncated"
+    return document["rows"]
+
+
+spans = read_rows("spans")
+samples = read_rows("samples")
+observations = read_rows("cpu")
 lines = pathlib.Path(prefix + ".tour").read_text().splitlines()
 reports = [json.loads(line.removeprefix("tour: region "))
            for line in lines if line.startswith("tour: region ")]
 assert "tour: rendered Timeline" in lines, "Timeline was not rendered"
 assert "tour: rendered Events" in lines, "Events was not rendered"
-assert "tour: regions nodes=8 completed=13 incomplete=1" in lines, lines
+assert "tour: regions nodes=8 completed=15 incomplete=1" in lines, lines
 assert len(reports) == 8, reports
 
 # These paths come from the workload's source, independently of the viewer's
 # inferred parents. Each recursive call encloses exactly one deeper call.
 expected_counts = {
-    ("iteration",): 4,
-    ("iteration", "compute"): 4,
+    ("iteration",): 5,
+    ("iteration", "compute"): 5,
     ("other_parent",): 1,
     ("other_parent", "compute"): 1,
     ("worker",): 1,
@@ -57,6 +81,60 @@ def sample_count(invocations, time=None, disabled_threads=()):
     )
 
 
+def check_balance(actual, invocations, time, disabled_threads):
+    ranges = {}
+    for span in invocations:
+        if span["tid"] in disabled_threads:
+            continue
+        start = max(time["start_ns"], span["start_ns"])
+        end = min(time["end_ns"], span["end_ns"])
+        if start < end:
+            ranges.setdefault((span["pid"], span["tid"]), []).append((start, end))
+    for key, intervals in ranges.items():
+        merged = []
+        for start, end in sorted(intervals):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+            else:
+                merged.append((start, end))
+        ranges[key] = merged
+    coverage = {}
+    for (_, tid), intervals in ranges.items():
+        coverage[tid] = coverage.get(tid, 0) + sum(end - start for start, end in intervals)
+    cpu_time = {}
+    for observation in observations:
+        tid = observation["thread_id"]
+        intervals = ranges.get((observation["process_id"], tid), [])
+        end = observation["timestamp"]
+        weight = observation["weight_ns"]
+        if observation["source"] == "sampled_occupancy":
+            if not any(start <= end < stop for start, stop in intervals):
+                continue
+            attributed = weight
+        else:
+            start = observation["interval_start_ns"]
+            if start is None:
+                start = max(0, end - weight)
+            overlap = sum(max(0, min(end, stop) - max(start, begin))
+                          for begin, stop in intervals)
+            if overlap == 0 or end <= start:
+                continue
+            attributed = weight * overlap / (end - start)
+        cpu_time[tid] = cpu_time.get(tid, 0) + attributed
+    expected_threads = set(cpu_time)
+    expected_threads.update(sample["thread_id"] for sample in samples
+                            if sample["thread_id"] not in disabled_threads
+                            and any(start <= sample["timestamp"] < end
+                                    for start, end in ranges.get(
+                                        (sample["process_id"], sample["thread_id"]), [])))
+    assert {row["thread_id"] for row in actual} == expected_threads, actual
+    for row in actual:
+        tid = row["thread_id"]
+        expected = min(1.0, max(0.0, cpu_time.get(tid, 0) / coverage[tid]))
+        assert math.isclose(row["busy_fraction"], expected, rel_tol=1e-8, abs_tol=1e-9), (
+            tid, row, expected)
+
+
 for report in reports:
     path = tuple(report["path"])
     assert path in expected_counts, path
@@ -67,7 +145,8 @@ for report in reports:
     # Look up children from the raw rows, since report order is not a contract.
     if path == ("iteration",) or path == ("other_parent",):
         children = [s for s in spans if s["name"] == "compute" and any(
-            p["start_ns"] <= s["start_ns"] < p["end_ns"] for p in complete)]
+            p["pid"] == s["pid"] and p["tid"] == s["tid"]
+            and p["start_ns"] <= s["start_ns"] < p["end_ns"] for p in complete)]
     elif path == ("worker",):
         children = sorted([s for s in spans if s["name"] == "recursive"],
                           key=lambda s: s["start_ns"])[:1]
@@ -83,7 +162,9 @@ for report in reports:
     assert report["samples"] == selected, (path, report, selected)
     if path == ("iteration",):
         assert 0 < selected < len(samples), "recording did not exercise sample exclusion"
+        assert len({(s["pid"], s["tid"]) for s in complete}) == 2, complete
     assert report["intervals"] == len(complete), report
+    check_balance(report["balance"], complete, report["recording_range"], ())
     scopes = report["scopes"]
     assert {s["kind"] for s in scopes} == (
         {"time", "thread", "invocation"} if complete else {"time", "thread"}
@@ -101,5 +182,9 @@ for report in reports:
             assert len(invocations) == 1, scope
         expected = sample_count(invocations, scope["range"], scope["disabled_threads"])
         assert scope["samples"] == expected, (path, scope, expected)
+        if path == ("iteration",) and scope["kind"] == "thread":
+            assert 0 < expected < selected, "thread filtering did not retain the other thread"
+        check_balance(scope["balance"], invocations,
+                      scope["range"] or report["recording_range"], scope["disabled_threads"])
 assert not groups, groups
-print("  region hierarchy, timings, time/thread composition and invocation scopes agree")
+print("  region hierarchy, timings, multi-thread scopes and CPU busy fractions agree")

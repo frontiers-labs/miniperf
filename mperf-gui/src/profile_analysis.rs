@@ -1107,6 +1107,24 @@ impl ThreadBalance {
         if wall <= 0.0 {
             return None;
         }
+        let region_wall = filter.regions.as_ref().map(|regions| {
+            let mut by_thread = BTreeMap::<u32, u64>::new();
+            for (&(process_id, thread_id), ranges) in &regions.by_thread {
+                if filter.process_id.is_some_and(|pid| pid != process_id) {
+                    continue;
+                }
+                let duration = ranges
+                    .iter()
+                    .map(|item| {
+                        item.end_ns
+                            .min(range.end_ns)
+                            .saturating_sub(item.start_ns.max(range.start_ns))
+                    })
+                    .sum::<u64>();
+                *by_thread.entry(thread_id).or_default() += duration;
+            }
+            by_thread
+        });
         let sync_frames: BTreeSet<usize> = profile
             .frames
             .iter()
@@ -1190,10 +1208,17 @@ impl ThreadBalance {
             .into_iter()
             .map(|thread_id| {
                 let (total, sync) = samples.get(&thread_id).copied().unwrap_or_default();
+                let wall = region_wall.as_ref().map_or(wall, |by_thread| {
+                    by_thread.get(&thread_id).copied().unwrap_or(0) as f64
+                });
+                let busy_fraction = if wall > 0.0 {
+                    (cpu_time.get(&thread_id).copied().unwrap_or(0.0) / wall).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
                 ThreadBalanceRow {
                     thread_id,
-                    busy_fraction: (cpu_time.get(&thread_id).copied().unwrap_or(0.0) / wall)
-                        .clamp(0.0, 1.0),
+                    busy_fraction,
                     sync_fraction: fraction(sync, total),
                     migrations: migrations(trails.get_mut(&thread_id)),
                     samples: total,

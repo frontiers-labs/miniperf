@@ -1,5 +1,5 @@
 //! Region tracks and the call-path table share one selection with profile views.
-use std::{collections::BTreeMap, sync::Arc};
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
 
 use gpui::{
     Bounds, Context, CursorStyle, DispatchPhase, Entity, HitboxBehavior, IntoElement, MouseButton,
@@ -20,50 +20,171 @@ use crate::{
 
 const ROW_H: f32 = 20.0;
 
-#[derive(Clone)]
 struct RegionLane {
-    process_id: u32,
-    thread_id: u32,
+    label: String,
     row: usize,
-    rows: usize,
 }
 
-fn lanes(session: &ShellSession) -> Vec<RegionLane> {
-    let mut depths = BTreeMap::<(u32, u32), usize>::new();
-    for span in &session.regions.spans {
-        depths
-            .entry((span.process_id, span.thread_id))
-            .and_modify(|depth| *depth = (*depth).max(span.depth + 1))
-            .or_insert(span.depth + 1);
-    }
-    let mut row = 0;
-    depths
-        .into_iter()
-        .map(|((process_id, thread_id), rows)| {
-            let lane = RegionLane {
-                process_id,
-                thread_id,
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RegionHover {
+    Invocation(RegionSpanId),
+    Density(usize),
+}
+
+struct RegionItem {
+    left: f32,
+    right: f32,
+    hover: RegionHover,
+    label: Option<String>,
+}
+
+type RegionRaster = Vec<Vec<RegionItem>>;
+
+pub(super) struct RegionTimeline {
+    lanes: Vec<RegionLane>,
+    rows: Vec<Vec<RegionSpanId>>,
+    raster: RefCell<Option<(f32, Arc<RegionRaster>)>>,
+}
+
+impl RegionTimeline {
+    pub(super) fn new(session: &ShellSession) -> Self {
+        let mut depths = BTreeMap::<(u32, u32), usize>::new();
+        for span in &session.regions.spans {
+            depths
+                .entry((span.process_id, span.thread_id))
+                .and_modify(|depth| *depth = (*depth).max(span.depth + 1))
+                .or_insert(span.depth + 1);
+        }
+        let mut lanes = Vec::new();
+        let mut lane_rows = BTreeMap::new();
+        let mut rows = Vec::new();
+        for ((pid, tid), depth) in depths {
+            let row = rows.len();
+            lanes.push(RegionLane {
+                label: format!("{pid}:{tid}"),
                 row,
-                rows,
-            };
-            row += rows;
-            lane
-        })
-        .collect()
+            });
+            lane_rows.insert((pid, tid), row);
+            rows.resize_with(row + depth, Vec::new);
+        }
+        for (index, span) in session.regions.spans.iter().enumerate() {
+            let row = lane_rows[&(span.process_id, span.thread_id)] + span.depth;
+            rows[row].push(RegionSpanId(index));
+        }
+        Self {
+            lanes,
+            rows,
+            raster: RefCell::new(None),
+        }
+    }
+
+    fn raster(&self, session: &ShellSession, width: f32) -> Arc<RegionRaster> {
+        let mut cached = self.raster.borrow_mut();
+        if let Some((cached_width, raster)) = &*cached
+            && *cached_width == width
+        {
+            return raster.clone();
+        }
+        let range = session
+            .full_range
+            .expect("region timeline has a recording range");
+        let duration = (range.end_ns - range.start_ns).max(1) as f64;
+        let columns = width.ceil() as usize;
+        let rows: RegionRaster = self
+            .rows
+            .iter()
+            .map(|spans| {
+                let mut bins = BTreeMap::<usize, RegionItem>::new();
+                for &id in spans {
+                    let span = &session.regions.spans[id.0];
+                    let left = ((span.range.start_ns.saturating_sub(range.start_ns) as f64
+                        / duration) as f32
+                        * width)
+                        .min(width);
+                    let right = ((span.range.end_ns.saturating_sub(range.start_ns) as f64
+                        / duration) as f32
+                        * width)
+                        .min(width);
+                    let column = (left as usize).min(columns - 1);
+                    let visible = right - left >= 1.0;
+                    if let Some(item) = bins.get_mut(&column) {
+                        if matches!(item.hover, RegionHover::Invocation(_)) {
+                            continue;
+                        }
+                        if !visible {
+                            if let RegionHover::Density(count) = &mut item.hover {
+                                *count += 1;
+                            }
+                            continue;
+                        }
+                    }
+                    let label = (right - left > 28.0).then(|| {
+                        let node = &session.regions.nodes[span.node.0];
+                        let name = if span.boundary == SpanBoundary::Complete {
+                            node.name.clone()
+                        } else {
+                            format!("{} · incomplete", node.name)
+                        };
+                        truncate_label(&name, ((right - left - 6.0) / 6.0) as usize)
+                    });
+                    bins.insert(
+                        column,
+                        RegionItem {
+                            left: if visible { left } else { column as f32 },
+                            right: if visible {
+                                right
+                            } else {
+                                (column as f32 + 1.0).min(width)
+                            },
+                            hover: if visible {
+                                RegionHover::Invocation(id)
+                            } else {
+                                RegionHover::Density(1)
+                            },
+                            label,
+                        },
+                    );
+                }
+                bins.into_values().collect()
+            })
+            .collect();
+        let raster = Arc::new(rows);
+        *cached = Some((width, raster.clone()));
+        raster
+    }
 }
 
-pub fn canvas_view(
+fn hit_test(raster: &RegionRaster, x: f32, y: f32) -> Option<RegionHover> {
+    if x < 0.0 || y < 0.0 || y % ROW_H < 1.0 || y % ROW_H >= ROW_H - 1.0 {
+        return None;
+    }
+    let row = raster.get((y / ROW_H) as usize)?;
+    // Exact span bounds win where a density pixel overlaps its neighbor.
+    row.iter()
+        .find(|item| {
+            matches!(item.hover, RegionHover::Invocation(_)) && x >= item.left && x < item.right
+        })
+        .or_else(|| row.iter().find(|item| x >= item.left && x < item.right))
+        .map(|item| item.hover)
+}
+
+fn canvas_view(
     entity: Entity<ShellView>,
     theme: Theme,
     view: TimelineView,
     selection: Option<RegionSelection>,
+    timeline: Rc<RegionTimeline>,
 ) -> impl IntoElement {
-    let lanes = lanes(&view.session);
-    let height =
-        lanes.iter().map(|lane| lane.rows).sum::<usize>() as f32 * ROW_H + timeline::AXIS_H;
+    let height = timeline.rows.len() as f32 * ROW_H + timeline::AXIS_H;
+    let prepaint_timeline = timeline.clone();
+    let prepaint_session = view.session.clone();
     canvas(
-        |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
-        move |bounds, hitbox, window, cx| {
+        move |bounds, window, _| {
+            let frame = PlotFrame::new(bounds, timeline::GUTTER);
+            let raster = prepaint_timeline.raster(&prepaint_session, frame.width());
+            (window.insert_hitbox(bounds, HitboxBehavior::Normal), raster)
+        },
+        move |bounds, (hitbox, raster), window, cx| {
             window.paint_quad(fill(bounds, theme.viz.surface));
             window.set_cursor_style(CursorStyle::PointingHand, &hitbox);
             let frame = PlotFrame::new(bounds, timeline::GUTTER);
@@ -71,9 +192,13 @@ pub fn canvas_view(
                 return;
             };
             let duration = (range.end_ns - range.start_ns).max(1) as f64;
-            for lane in &lanes {
-                let label = format!("{}:{}", lane.process_id, lane.thread_id);
-                let line = shape_label(&truncate_label(&label, 14), 10.0, theme.viz.ink_2, window);
+            for lane in &timeline.lanes {
+                let line = shape_label(
+                    &truncate_label(&lane.label, 14),
+                    10.0,
+                    theme.viz.ink_2,
+                    window,
+                );
                 let _ = line.paint(
                     point(
                         bounds.left() + px(6.0),
@@ -84,56 +209,41 @@ pub fn canvas_view(
                     cx,
                 );
             }
-            let mut rectangles = Vec::new();
-            for (index, span) in view.session.regions.spans.iter().enumerate() {
-                let lane = lanes
-                    .iter()
-                    .find(|lane| {
-                        lane.process_id == span.process_id && lane.thread_id == span.thread_id
-                    })
-                    .unwrap();
-                let x = frame.left()
-                    + (span.range.start_ns.saturating_sub(range.start_ns) as f64 / duration) as f32
-                        * frame.width();
-                let right = frame.left()
-                    + (span.range.end_ns.saturating_sub(range.start_ns) as f64 / duration) as f32
-                        * frame.width();
-                let width = (right - x)
-                    .max(1.0)
-                    .min((frame.left() + frame.width() - x).max(1.0));
-                let y = frame.top() + (lane.row + span.depth) as f32 * ROW_H;
-                let rect = Bounds::new(point(px(x), px(y + 1.0)), size(px(width), px(ROW_H - 2.0)));
-                let selected = selection == Some(RegionSelection::Node(span.node))
-                    || selection == Some(RegionSelection::Invocation(RegionSpanId(index)));
-                let alpha = if view.disabled_threads.contains(&span.thread_id) {
-                    0.18
-                } else if selected {
-                    1.0
-                } else {
-                    0.65
-                };
-                let color = if span.boundary == SpanBoundary::Complete {
-                    theme.viz.series[span.node.0 % theme.viz.series.len()]
-                } else {
-                    theme.viz.muted
-                };
-                window.paint_quad(fill(rect, color.opacity(alpha)));
-                if width > 28.0 {
-                    let node = &view.session.regions.nodes[span.node.0];
-                    let name = if span.boundary == SpanBoundary::Complete {
-                        node.name.clone()
-                    } else {
-                        format!("{} · incomplete", node.name)
-                    };
-                    let line = shape_label(
-                        &truncate_label(&name, ((width - 6.0) / 6.0) as usize),
-                        10.0,
-                        theme.viz.ink,
-                        window,
+            for (row, items) in raster.iter().enumerate() {
+                let y = frame.top() + row as f32 * ROW_H;
+                for item in items {
+                    let x = frame.left() + item.left;
+                    let rect = Bounds::new(
+                        point(px(x), px(y + 1.0)),
+                        size(px(item.right - item.left), px(ROW_H - 2.0)),
                     );
-                    let _ = line.paint(point(px(x + 3.0), px(y + 3.0)), px(ROW_H), window, cx);
+                    let (color, alpha) = match item.hover {
+                        RegionHover::Invocation(id) => {
+                            let span = &view.session.regions.spans[id.0];
+                            let selected = selection == Some(RegionSelection::Node(span.node))
+                                || selection == Some(RegionSelection::Invocation(id));
+                            let alpha = if view.disabled_threads.contains(&span.thread_id) {
+                                0.18
+                            } else if selected {
+                                1.0
+                            } else {
+                                0.65
+                            };
+                            let color = if span.boundary == SpanBoundary::Complete {
+                                theme.viz.series[span.node.0 % theme.viz.series.len()]
+                            } else {
+                                theme.viz.muted
+                            };
+                            (color, alpha)
+                        }
+                        RegionHover::Density(_) => (theme.viz.muted, 0.65),
+                    };
+                    window.paint_quad(fill(rect, color.opacity(alpha)));
+                    if let Some(label) = &item.label {
+                        let line = shape_label(label, 10.0, theme.viz.ink, window);
+                        let _ = line.paint(point(px(x + 3.0), px(y + 3.0)), px(ROW_H), window, cx);
+                    }
                 }
-                rectangles.push((rect, RegionSpanId(index)));
             }
             frame.paint_time_axis(
                 frame.top() + height - timeline::AXIS_H,
@@ -154,7 +264,7 @@ pub fn canvas_view(
             }
             let down_entity = entity.clone();
             let down_hitbox = hitbox.clone();
-            let down_rectangles = rectangles.clone();
+            let down_raster = raster.clone();
             window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble
                     || event.button != MouseButton::Left
@@ -162,30 +272,29 @@ pub fn canvas_view(
                 {
                     return;
                 }
-                if let Some((_, id)) = down_rectangles
-                    .iter()
-                    .rev()
-                    .find(|(rect, _)| rect.contains(&event.position))
-                {
+                if let Some(RegionHover::Invocation(id)) = hit_test(
+                    &down_raster,
+                    f32::from(event.position.x) - frame.left(),
+                    f32::from(event.position.y) - frame.top(),
+                ) {
                     down_entity.update(cx, |this, cx| {
-                        this.select_region(Some(RegionSelection::Invocation(*id)), cx)
+                        this.select_region(Some(RegionSelection::Invocation(id)), cx)
                     });
                 }
             });
             let hover_entity = entity.clone();
-            let hover_hitbox = hitbox.clone();
             window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble {
                     return;
                 }
-                let hovered = hover_hitbox
+                let hovered = hitbox
                     .is_hovered(window)
                     .then(|| {
-                        rectangles
-                            .iter()
-                            .rev()
-                            .find(|(rect, _)| rect.contains(&event.position))
-                            .map(|(_, id)| *id)
+                        hit_test(
+                            &raster,
+                            f32::from(event.position.x) - frame.left(),
+                            f32::from(event.position.y) - frame.top(),
+                        )
                     })
                     .flatten();
                 hover_entity.update(cx, |this, cx| {
@@ -232,7 +341,7 @@ impl ShellView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = cx.theme().clone();
-        let hover = if let Some(id) = self.region_hover {
+        let hover = if let Some(RegionHover::Invocation(id)) = self.region_hover {
             let span = &session.regions.spans[id.0];
             let node = &session.regions.nodes[span.node.0];
             let status = match span.boundary {
@@ -248,6 +357,10 @@ impl ShellView {
                 span.process_id,
                 span.thread_id,
                 (span.range.end_ns - span.range.start_ns) as f64 / 1e6
+            )
+        } else if let Some(RegionHover::Density(count)) = self.region_hover {
+            format!(
+                "{count} subpixel invocations share this pixel. Select their region in Events to scope them."
             )
         } else {
             "Click a span to scope one invocation. Select a region in Events to scope all its invocations.".to_string()
@@ -267,6 +380,9 @@ impl ShellView {
                 theme.clone(),
                 view,
                 self.filter.region,
+                self.region_timeline
+                    .clone()
+                    .expect("loaded session has a region timeline"),
             ))
             .child(
                 div()
@@ -326,6 +442,7 @@ impl ShellView {
             let mut incomplete = 0u64;
             let mut inclusive = 0u64;
             let mut own = 0u64;
+            let mut full_duration = 0u64;
             for span_id in &node.spans {
                 let span = &session.regions.spans[span_id.0];
                 let visible = self.filter.time.is_none_or(|time| {
@@ -340,6 +457,7 @@ impl ShellView {
                 }
                 if span.boundary == SpanBoundary::Complete {
                     count += 1;
+                    full_duration += span.range.end_ns - span.range.start_ns;
                     inclusive += overlap(span.range, self.filter.time);
                     own += span
                         .self_ranges
@@ -354,7 +472,7 @@ impl ShellView {
             let collapse_entity = cx.entity();
             let select_entity = cx.entity();
             let title = format!(
-                "{}\n{}\nTimings include completed spans in the selected time and threads. Incomplete spans are excluded.",
+                "{}\n{}\nInclusive and Self are clipped to the selected time. Mean uses the full duration of completed invocations that overlap the selected time and threads. Incomplete spans are excluded.",
                 node.name, node.context
             );
             let row = table_row(self.filter.region == Some(RegionSelection::Node(id)), cx)
@@ -410,7 +528,7 @@ impl ShellView {
                 .child(table_cell(&columns[3]).child(format!("{:.3} ms", inclusive as f64 / 1e6)))
                 .child(table_cell(&columns[4]).child(format!("{:.3} ms", own as f64 / 1e6)))
                 .child(table_cell(&columns[5]).child(if count > 0 {
-                    format!("{:.3} ms", inclusive as f64 / count as f64 / 1e6)
+                    format!("{:.3} ms", full_duration as f64 / count as f64 / 1e6)
                 } else {
                     "—".to_string()
                 }));
@@ -459,6 +577,23 @@ impl ShellView {
             "tour: regions nodes={} completed={completed} incomplete={incomplete}",
             session.regions.nodes.len()
         );
+        if !session.regions.spans.is_empty() {
+            let timeline = self
+                .region_timeline
+                .as_ref()
+                .expect("loaded session has a region timeline");
+            let cached = timeline.raster.borrow();
+            let (width, raster) = cached
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("region timeline was not rendered"))?;
+            println!(
+                "tour: region_render spans={} rows={} columns={} items={}",
+                session.regions.spans.len(),
+                raster.len(),
+                width.ceil() as usize,
+                raster.iter().map(Vec::len).sum::<usize>()
+            );
+        }
         Ok(session.regions.nodes.len())
     }
 
@@ -475,18 +610,15 @@ impl ShellView {
                             invocation: Option<RegionSpanId>|
          -> anyhow::Result<serde_json::Value> {
             let resolved = filter.resolve(&session);
-            let samples = session
-                .profile
-                .samples
-                .iter()
-                .filter(|sample| resolved.matches(sample))
-                .count() as u64;
             let analysis =
                 crate::profile_analysis::FunctionAnalysis::build(&session.profile, &resolved);
-            anyhow::ensure!(
-                analysis.total_samples == samples,
-                "region scope disagrees with hotspot sample count"
-            );
+            let samples = analysis.total_samples;
+            let balance = crate::profile_analysis::ThreadBalance::build(&session.profile, &resolved)
+                .map(|balance| {
+                    balance.rows.into_iter().map(|row| {
+                        serde_json::json!({ "thread_id": row.thread_id, "busy_fraction": row.busy_fraction })
+                    }).collect::<Vec<_>>()
+                }).unwrap_or_default();
             let range = filter.time.map(
                 |range| serde_json::json!({ "start_ns": range.start_ns, "end_ns": range.end_ns }),
             );
@@ -495,7 +627,7 @@ impl ShellView {
                 serde_json::json!({ "instance": span.instance, "pid": span.process_id, "tid": span.thread_id })
             });
             Ok(
-                serde_json::json!({ "kind": kind, "range": range, "disabled_threads": filter.disabled_threads, "invocation": invocation, "samples": samples }),
+                serde_json::json!({ "kind": kind, "range": range, "disabled_threads": filter.disabled_threads, "invocation": invocation, "samples": samples, "balance": balance }),
             )
         };
         let base = report_scope(&self.filter, "node", None)?;
@@ -544,6 +676,8 @@ impl ShellView {
                 "path": path, "context": node.context, "count": node.count, "incomplete": node.incomplete,
                 "inclusive_ns": node.inclusive_ns, "self_ns": node.self_ns,
                 "samples": base["samples"], "intervals": intervals.by_thread.values().map(Vec::len).sum::<usize>(),
+                "balance": base["balance"],
+                "recording_range": session.full_range.map(|range| serde_json::json!({ "start_ns": range.start_ns, "end_ns": range.end_ns })),
                 "threads": intervals.by_thread.keys().collect::<Vec<_>>(), "scopes": scopes
             })
         );

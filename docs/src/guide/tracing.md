@@ -80,6 +80,9 @@ Inclusive time includes nested work. Self time excludes the union of nested work
 on the same thread. These are elapsed times, so totals across threads can exceed
 the recording duration.
 
+The time filter clips inclusive and self time to the selected window. Mean uses
+the full duration of each completed invocation that overlaps the window.
+
 The hierarchy groups repeated invocations by their call path. A region called
 from two parents has a separate row under each parent, and recursive calls appear
 at successive depths. When an annotation has no explicit parent, the viewer

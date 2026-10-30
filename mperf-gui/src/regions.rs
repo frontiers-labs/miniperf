@@ -306,10 +306,7 @@ fn load_regions(connection: &Connection, profile_range: Option<TimeRange>) -> Re
         stack.retain(|&parent| raw[parent].range.end_ns > span.range.start_ns);
         let container = stack.iter().rev().copied().find(|&parent| {
             raw[parent].range.end_ns >= span.range.end_ns
-                && matches!(
-                    raw[parent].boundary,
-                    SpanBoundary::Complete | SpanBoundary::MissingEnd
-                )
+                && raw[parent].boundary == SpanBoundary::Complete
         });
         let mut depth = container.map_or(0, |parent| depths[parent] + 1);
         while stack.iter().any(|&other| depths[other] == depth) {
