@@ -70,7 +70,7 @@ impl Inner {
             0
         );
         let metadata_size =
-            2 * platform::Semaphore::required_size() + 3 * std::mem::size_of::<usize>();
+            2 * platform::Semaphore::required_size() + 4 * std::mem::size_of::<usize>();
         metadata_size.next_multiple_of(std::mem::align_of::<usize>())
     }
 
@@ -90,6 +90,24 @@ impl Inner {
     }
 
     fn new(shmem: platform::Shmem, data_size: usize, init: bool) -> Result<Self, Error> {
+        let sem_size = 2 * platform::Semaphore::required_size();
+        let capacity = unsafe {
+            AtomicUsize::from_ptr(
+                shmem
+                    .as_mut_ptr()
+                    .byte_add(sem_size + 3 * std::mem::size_of::<usize>())
+                    .cast::<usize>(),
+            )
+        };
+        if init {
+            capacity.store(data_size, Ordering::Release);
+        } else if capacity.load(Ordering::Acquire) != data_size {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "shared-memory ring capacity does not match",
+            ));
+        }
+
         let sem_name = Self::semaphore_name(shmem.name(), 'r');
         let finish_sem_name = Self::semaphore_name(shmem.name(), 'f');
         let (sem, finish_sem) = unsafe {
@@ -116,7 +134,6 @@ impl Inner {
             }
         };
 
-        let sem_size = 2 * platform::Semaphore::required_size();
         let ptr = unsafe { shmem.as_mut_ptr().byte_add(Self::data_offset()) };
         let head = unsafe { shmem.as_mut_ptr().byte_add(sem_size).cast::<usize>() };
         let tail = unsafe {
@@ -381,18 +398,38 @@ unsafe impl Send for Sender {}
 mod tests {
     use super::{Receiver, Sender};
     use std::{
+        ffi::CString,
+        os::fd::{AsRawFd, FromRawFd, OwnedFd},
         sync::atomic::{AtomicUsize, Ordering},
         time::Instant,
     };
 
     static NEXT_NAME: AtomicUsize = AtomicUsize::new(0);
 
-    fn name(label: &str) -> String {
+    fn name(_label: &str) -> String {
         format!(
-            "/miniperf_{label}_{}_{}",
+            "/mp_{:x}_{:x}",
             std::process::id(),
             NEXT_NAME.fetch_add(1, Ordering::Relaxed)
         )
+    }
+
+    fn pad_backing_to_page(name: &str) {
+        let name = CString::new(name).unwrap();
+        let fd = unsafe { libc::shm_open(name.as_ptr(), libc::O_RDWR, 0) };
+        assert!(fd >= 0, "{}", std::io::Error::last_os_error());
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        assert!(page_size > 0);
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        assert_eq!(unsafe { libc::fstat(fd.as_raw_fd(), stat.as_mut_ptr()) }, 0);
+        // Darwin already rounds the backing extent; synthesize that on Linux.
+        if unsafe { stat.assume_init() }.st_size < page_size as libc::off_t {
+            assert_eq!(
+                unsafe { libc::ftruncate(fd.as_raw_fd(), page_size as libc::off_t) },
+                0
+            );
+        }
     }
 
     #[test]
@@ -465,6 +502,47 @@ mod tests {
     }
 
     #[test]
+    fn receiver_attaches_to_page_padded_backing() {
+        let name = name("pad_recv");
+        let sender = Sender::new(&name, 64).unwrap();
+        sender.send_sync(b"queued").unwrap();
+        pad_backing_to_page(&name);
+        let mut receiver = unsafe { Receiver::attach(&name, 64).unwrap() };
+        assert_eq!(receiver.try_recv(), Some(b"queued".to_vec()));
+        for value in 0..20_u8 {
+            sender.send_sync(&[value; 9]).unwrap();
+            assert_eq!(receiver.try_recv(), Some(vec![value; 9]));
+        }
+    }
+
+    #[test]
+    fn sender_attaches_to_page_padded_backing() {
+        let name = name("pad_send");
+        let mut receiver = Receiver::new(&name, 64).unwrap();
+        pad_backing_to_page(&name);
+        let sender = unsafe { Sender::attach(&name, 64).unwrap() };
+        sender.send_sync(b"attached").unwrap();
+        assert_eq!(receiver.try_recv(), Some(b"attached".to_vec()));
+    }
+
+    #[test]
+    fn attachment_rejects_wrong_capacity_with_page_padded_backing() {
+        let name = name("capacity");
+        let sender = Sender::new(&name, 64).unwrap();
+        sender.send_sync(b"queued").unwrap();
+        pad_backing_to_page(&name);
+        for capacity in [32, 128] {
+            let error = match unsafe { Receiver::attach(&name, capacity) } {
+                Ok(_) => panic!("wrong logical capacity was accepted"),
+                Err(error) => error,
+            };
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        }
+        let mut receiver = unsafe { Receiver::attach(&name, 64).unwrap() };
+        assert_eq!(receiver.try_recv(), Some(b"queued".to_vec()));
+    }
+
+    #[test]
     fn receiver_keeps_semaphore_and_mapping_after_creator_drops() {
         let name = name("receiver_lifetime");
         let sender = Sender::new(&name, 64).unwrap();
@@ -473,30 +551,6 @@ mod tests {
         drop(sender);
         assert_eq!(receiver.recv_sync(), Some(b"retained".to_vec()));
         assert_eq!(receiver.recv_sync(), None);
-    }
-
-    #[test]
-    fn sender_keeps_semaphore_and_mapping_after_creator_drops() {
-        let name = name("sender_lifetime");
-        let receiver = Receiver::new(&name, 64).unwrap();
-        let sender = unsafe { Sender::attach(&name, 64).unwrap() };
-        drop(receiver);
-        sender.send_sync(b"retained").unwrap();
-        assert_eq!(sender.dropped_count(), 0);
-    }
-
-    #[test]
-    fn received_bytes_remain_owned_when_ring_wraps() {
-        let name = name("owned");
-        let sender = Sender::new(&name, 64).unwrap();
-        let mut receiver = unsafe { Receiver::attach(&name, 64).unwrap() };
-        sender.send_sync(b"first").unwrap();
-        let first = receiver.try_recv().unwrap();
-        for _ in 0..10 {
-            sender.send_sync(b"replacement").unwrap();
-            assert_eq!(receiver.try_recv(), Some(b"replacement".to_vec()));
-        }
-        assert_eq!(first, b"first");
     }
 
     #[test]

@@ -76,11 +76,11 @@ impl Shmem {
             let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
             if libc::fstat(fd, stat.as_mut_ptr()) != 0 {
                 false
-            } else if stat.assume_init().st_size != size as i64 {
+            } else if stat.assume_init().st_size < size as i64 {
                 close(fd);
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
-                    "shared-memory channel size does not match",
+                    "shared-memory backing is too small",
                 ));
             } else {
                 true
@@ -244,6 +244,20 @@ unsafe impl Send for Semaphore {}
 #[cfg(test)]
 mod tests {
     use super::{Semaphore, Shmem};
+
+    #[test]
+    fn opening_rejects_undersized_backing_without_removing_it() {
+        let name = format!("/small_backing_{}", std::process::id());
+        let _owner = Shmem::create(&name, 32).unwrap();
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        assert!(page_size > 0);
+        let error = match Shmem::open(&name, page_size as usize * 2) {
+            Ok(_) => panic!("undersized backing was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(Shmem::open(&name, 32).is_ok());
+    }
 
     #[test]
     fn shmem_updates() {

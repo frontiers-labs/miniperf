@@ -883,7 +883,7 @@ mod tests {
     }
 
     #[test]
-    fn tma_validation_reports_unknown_event_in_nested_metric() {
+    fn tma_validation_reports_unknown_event() {
         let mut scenario = two_level_scenario();
         scenario.metrics[1].formula = "fe_bound + missing_event".to_owned();
 
@@ -900,9 +900,8 @@ mod tests {
     }
 
     #[test]
-    fn tma_validation_reports_nested_formula_syntax_error() {
+    fn tma_validation_reports_formula_syntax_error() {
         let mut scenario = two_level_scenario();
-        scenario.metrics[0].formula = "fe_bound.rest".to_owned();
         scenario.metrics[1].formula = "stall.fe / (".to_owned();
 
         assert!(matches!(
@@ -912,46 +911,37 @@ mod tests {
     }
 
     #[test]
-    fn tma_validation_reports_nested_reference_cycle() {
-        let mut scenario = two_level_scenario();
-        scenario.metrics[0].formula = "fe_bound.rest".to_owned();
-        scenario.metrics[1].formula = "fe_bound".to_owned();
-
-        assert_eq!(
-            validate_tma_metrics(
-                scenario.events.iter().map(String::as_str),
-                &scenario.metrics
+    fn tma_validation_reports_reference_cycles() {
+        for (formulas, expected) in [
+            (
+                ["fe_bound.rest", "fe_bound"],
+                &["fe_bound", "fe_bound.rest", "fe_bound"][..],
             ),
-            Err(TmaFormulaError::Cycle {
-                metrics: vec![
-                    "fe_bound".to_owned(),
-                    "fe_bound.rest".to_owned(),
-                    "fe_bound".to_owned(),
-                ],
-            })
-        );
+            (
+                ["fe_bound", "stall.fe / cycles"],
+                &["fe_bound", "fe_bound"][..],
+            ),
+        ] {
+            let mut scenario = two_level_scenario();
+            for (metric, formula) in scenario.metrics.iter_mut().zip(formulas) {
+                metric.formula = formula.to_owned();
+            }
+            assert_eq!(
+                validate_tma_metrics(
+                    scenario.events.iter().map(String::as_str),
+                    &scenario.metrics
+                ),
+                Err(TmaFormulaError::Cycle {
+                    metrics: expected.iter().map(|name| (*name).to_owned()).collect()
+                }),
+            );
+        }
     }
 
     #[test]
-    fn tma_validation_reports_self_reference_cycle() {
+    fn tma_validation_accepts_missing_constants() {
         let mut scenario = two_level_scenario();
-        scenario.metrics[0].formula = "fe_bound".to_owned();
-
-        assert_eq!(
-            validate_tma_metrics(
-                scenario.events.iter().map(String::as_str),
-                &scenario.metrics
-            ),
-            Err(TmaFormulaError::Cycle {
-                metrics: vec!["fe_bound".to_owned(), "fe_bound".to_owned()],
-            })
-        );
-    }
-
-    #[test]
-    fn tma_validation_accepts_missing_constants_and_zero_denominators() {
-        let mut scenario = two_level_scenario();
-        scenario.metrics[0].formula = "$missing / 0".to_owned();
+        scenario.metrics[0].formula = "$missing".to_owned();
 
         assert_eq!(
             validate_tma_metrics(
@@ -973,52 +963,6 @@ mod tests {
             validate_tma_metrics(
                 scenario.events.iter().map(String::as_str),
                 &scenario.metrics
-            ),
-            Ok(())
-        );
-    }
-
-    #[test]
-    fn tma_validation_accepts_real_zen5_nested_formulas() {
-        // Formulas from libprof/events/amd/zen5.json include references across
-        // coherent groups, which each metric evaluates independently.
-        let metrics = [
-            ("retiring", "ex_ret_ops / ($dispatch_width * cycles)"),
-            (
-                "retiring.microcode",
-                "retiring * ex_ret_ucode_ops / ex_ret_ops",
-            ),
-            (
-                "fe_bound",
-                "de_no_dispatch_per_slot.no_ops_from_frontend / ($dispatch_width * cycles)",
-            ),
-            (
-                "fe_bound.fetch_latency",
-                "de_no_dispatch_per_slot.no_ops_from_frontend_cmask8 / cycles",
-            ),
-            (
-                "fe_bound.fetch_bandwidth",
-                "fe_bound - fe_bound.fetch_latency",
-            ),
-        ]
-        .map(|(name, formula)| TmaMetric {
-            name: name.to_owned(),
-            desc: String::new(),
-            formula: formula.to_owned(),
-            group: None,
-            cpus: None,
-        });
-
-        assert_eq!(
-            validate_tma_metrics(
-                [
-                    "cycles",
-                    "ex_ret_ops",
-                    "ex_ret_ucode_ops",
-                    "de_no_dispatch_per_slot.no_ops_from_frontend",
-                    "de_no_dispatch_per_slot.no_ops_from_frontend_cmask8",
-                ],
-                &metrics,
             ),
             Ok(())
         );

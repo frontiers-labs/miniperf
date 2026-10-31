@@ -85,8 +85,7 @@ impl ResolvedPass {
                     self.name
                 ));
                 for source in self.sources[..=index].iter_mut().rev() {
-                    self.statuses
-                        .extend(source.stop(context).into_iter().map(collector_status));
+                    source.stop(context);
                 }
                 return Err(error);
             }
