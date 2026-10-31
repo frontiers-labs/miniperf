@@ -8,6 +8,7 @@ license = "GPL-3.0-or-later"
 
 [dependencies]
 anyhow = "1.0.95"
+symbolize = { package = "miniperf-symbolize", path = "../symbolize" }
 clap = { version = "4.5.23", features = ["derive"] }
 # Compile Metal shaders through the framework at startup on macOS. This keeps
 # local builds working without the optional Xcode Metal Toolchain component.

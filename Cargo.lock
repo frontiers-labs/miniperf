@@ -4307,6 +4307,7 @@ dependencies = [
  "crc32fast",
  "libc",
  "object 0.36.7",
+ "rustc-demangle",
  "thiserror 2.0.18",
 ]
 
@@ -4422,6 +4423,7 @@ dependencies = [
  "gpui",
  "miniperf-pmu-data",
  "miniperf-store",
+ "miniperf-symbolize",
  "mperf-data",
  "serde_json",
 ]

@@ -131,6 +131,9 @@ jobs:
           MPERF_PACKAGE: ${{ steps.unpack.outputs.root }}
           CHECK_WORK: ${{ github.workspace }}/check-work
         run: checks/run
+      - name: Export GUI references from the recordings
+        if: always() && steps.unpack.outcome == 'success'
+        run: python3 utils/export-gui-reference.py "${{ steps.unpack.outputs.root }}/bin/mperf" check-work
       - name: Publish the recordings these checks made
         if: always()
         uses: actions/upload-artifact@v4

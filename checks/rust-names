@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Resolve compiled legacy/v0 Rust symbols, then profile each through the shipped recorder.
+# shellcheck source=checks/lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+command -v rustc >/dev/null || fail "rustc is required for the Rust-name fixture"
+for mangling in legacy v0; do
+    binary="${CHECK_WORK}/bin/rust-names-${mangling}"
+    # New stable compilers gate legacy emission; this affects only the fixture compiler.
+    RUSTC_BOOTSTRAP=1 rustc -Z unstable-options --crate-name rust_names -C "symbol-mangling-version=${mangling}" \
+        -C opt-level=1 -C debuginfo=2 -C force-frame-pointers=yes \
+        "${checks_root}/fixtures/rust_names.rs" -o "${binary}" || fail "Rust fixture did not compile"
+    cargo run --quiet --manifest-path "${checks_root}/../Cargo.toml" -p miniperf-symbolize \
+        --example function-names -- "${binary}" >"${binary}.names.tsv" || fail "fixture resolution failed"
+    python3 "${checks_root}/../utils/verify-rust-names.py" "${binary}.names.tsv" \
+        || fail "${mangling} names did not retain identity/source information"
+done
+require_pmu
+recording_root="$(mktemp -d "${CHECK_WORK}/rust-name-recordings.XXXXXX")"
+note "Rust recordings: ${recording_root}"
+for mangling in legacy v0; do
+    dir="${recording_root}/rec-rust-names-${mangling}"
+    "${mperf}" record -s snapshot -o "${dir}" -- "${CHECK_WORK}/bin/rust-names-${mangling}" 2000000 \
+        >"${dir}.log" 2>&1 || { cat "${dir}.log" >&2; fail "Rust recording failed"; }
+    python3 "${checks_root}/../utils/verify-rust-names.py" --folded "${dir}/flamegraph_cycles.folded" "${CHECK_WORK}/bin/rust-names-${mangling}.names.tsv" \
+        || fail "folded stacks split Rust type arguments into frames"
+    assert_sql "${dir}" "SELECT COUNT(DISTINCT symbol_name) FILTER (WHERE func_name LIKE '%rust_names%generic%') = 3 AS monomorphizations_retained, COUNT(*) FILTER (WHERE file_name LIKE '%rust_names.rs') > 0 AS source_retained FROM proc_map"
+    assert_sql "${dir}" "SELECT COUNT(DISTINCT l.symbol) FILTER (WHERE l.symbol LIKE '%rust_names%generic%') = 3 AS every_generic_disassembled, COUNT(*) FILTER (WHERE l.symbol LIKE '%rust_names%main%') > 0 OR NOT EXISTS (SELECT 1 FROM assembly_samples WHERE func_name LIKE '%rust_names%main%') AS sampled_main_disassembled FROM assembly_lines l"
+    assert_sql "${dir}" "SELECT COUNT(DISTINCT s.func_name) = 3 AS every_generic_lookup FROM assembly_samples s JOIN assembly_lines l ON l.module_path = s.module_path AND l.runtime_address = s.address WHERE s.func_name LIKE '%rust_names%generic%'"
+done

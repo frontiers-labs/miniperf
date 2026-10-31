@@ -34,6 +34,7 @@ pub struct FlamegraphTab {
     load_started: Arc<AtomicBool>,
     load_error: Arc<RwLock<Option<String>>>,
     show_instructions: bool,
+    names_escaped: Arc<AtomicBool>,
 }
 
 impl FlamegraphTab {
@@ -47,6 +48,7 @@ impl FlamegraphTab {
             load_started: Arc::new(AtomicBool::new(false)),
             load_error: Arc::new(RwLock::new(None)),
             show_instructions: false,
+            names_escaped: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -86,12 +88,16 @@ impl FlamegraphTab {
             let cycles = read_flamegraph(&self.res_dir.join("flamegraph_cycles.folded")).await?;
             let instructions =
                 read_flamegraph(&self.res_dir.join("flamegraph_instructions.folded")).await?;
+            if cycles.1 != instructions.1 {
+                return Err("flamegraphs use different name encodings".to_owned());
+            }
             Ok::<_, String>((cycles, instructions))
         }
         .await;
 
         match result {
-            Ok((cycles, instructions)) => {
+            Ok(((cycles, names_escaped), (instructions, _))) => {
+                self.names_escaped.store(names_escaped, Ordering::Release);
                 *self.cycles.write() = Some(cycles.clone());
                 *self.instructions.write() = Some(instructions);
                 *self.app.lock() = Some(flamelens::app::App::with_flamegraph("Cycles", cycles));
@@ -124,16 +130,22 @@ impl Widget for FlamegraphTab {
 
         let mut state = self.state.lock();
 
-        let flamelens_widget = FlamelensWidget::new(app);
+        let flamelens_widget =
+            FlamelensWidget::new(app, self.names_escaped.load(Ordering::Acquire));
         StatefulWidget::render(flamelens_widget, area, buf, &mut *state);
     }
 }
 
-async fn read_flamegraph(path: &Path) -> Result<FlameGraph, String> {
+async fn read_flamegraph(path: &Path) -> Result<(FlameGraph, bool), String> {
     let data = tokio::fs::read_to_string(path)
         .await
         .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-    parse_flamegraph(data).map_err(|error| format!("invalid {}: {error}", path.display()))
+    let names_escaped = data
+        .lines()
+        .any(|line| line == symbolize::FOLDED_NAME_ENCODING_HEADER);
+    parse_flamegraph(data)
+        .map(|graph| (graph, names_escaped))
+        .map_err(|error| format!("invalid {}: {error}", path.display()))
 }
 
 fn parse_flamegraph(data: String) -> Result<FlameGraph, String> {
@@ -196,11 +208,12 @@ pub struct FlamelensWidgetState {
 
 pub struct FlamelensWidget<'a> {
     pub app: &'a flamelens::app::App,
+    names_escaped: bool,
 }
 
 impl<'a> FlamelensWidget<'a> {
-    pub fn new(app: &'a flamelens::app::App) -> Self {
-        Self { app }
+    pub fn new(app: &'a flamelens::app::App, names_escaped: bool) -> Self {
+        Self { app, names_escaped }
     }
 }
 
@@ -449,22 +462,25 @@ impl<'a> FlamelensWidget<'a> {
         }
 
         for entry in counts.iter().filter(|entry| entry.visible) {
+            let full_name = self.decode_name(&entry.name);
+            let name = symbolize::FunctionName::new(&full_name);
             let total_formatted = Line::from(format_count(entry.count.total, total_count));
             let own_formatted = Line::from(format_count(entry.count.own, total_count));
             total_max_width = total_max_width.max(total_formatted.width() as u16);
             own_max_width = own_max_width.max(own_formatted.width() as u16);
             let name_formatted = if let Some(p) = &self.app.flamegraph_state().search_pattern {
                 if p.is_manual {
-                    Line::from(self.get_highlighted_spans(
-                        entry.name.as_str(),
-                        &p.re,
-                        Style::default(),
-                    ))
+                    Line::from(
+                        self.get_highlighted_spans(name.friendly(), &p.re, Style::default())
+                            .into_iter()
+                            .map(|span| Span::styled(span.content.into_owned(), span.style))
+                            .collect::<Vec<_>>(),
+                    )
                 } else {
-                    Line::from(entry.name.as_str())
+                    Line::from(name.friendly().to_owned())
                 }
             } else {
-                Line::from(entry.name.as_str())
+                Line::from(name.friendly().to_owned())
             };
             rows.push(Row::new(vec![
                 total_formatted,
@@ -480,6 +496,14 @@ impl<'a> FlamelensWidget<'a> {
         Table::new(rows, widths)
             .header(header)
             .row_highlight_style(Style::default().bg(COLOR_TABLE_SELECTED_ROW))
+    }
+
+    fn decode_name(&self, name: &str) -> String {
+        if self.names_escaped {
+            symbolize::decode_folded_name(name)
+        } else {
+            name.to_owned()
+        }
     }
 
     fn get_highlighted_spans<'b>(
@@ -513,7 +537,10 @@ impl<'a> FlamelensWidget<'a> {
         style: Style,
         re: &Option<&regex::Regex>,
     ) -> Line<'_> {
-        let short_name = self.app.flamegraph().get_stack_short_name_from_info(stack);
+        let full_name = self.app.flamegraph().get_stack_short_name_from_info(stack);
+        let full_name = self.decode_name(full_name);
+        let name = symbolize::FunctionName::new(&full_name);
+        let short_name = name.friendly();
 
         // Empty space separator at the beginning
         let mut spans = vec![Span::styled(if width > 1 { " " } else { "." }, style)];
@@ -521,8 +548,11 @@ impl<'a> FlamelensWidget<'a> {
         // Stack name with highlighted search terms if needed
         let short_name_spans = if let (true, &Some(re)) = (stack.hit, re) {
             self.get_highlighted_spans(short_name, re, style)
+                .into_iter()
+                .map(|span| Span::styled(span.content.into_owned(), span.style))
+                .collect()
         } else {
-            vec![Span::styled(short_name, style)]
+            vec![Span::styled(short_name.to_owned(), style)]
         };
         spans.extend(short_name_spans);
 
@@ -704,18 +734,20 @@ impl<'a> FlamelensWidget<'a> {
                     let match_text = format!("{:width$}", match_text, width = width as usize,);
                     lines.push(("Match", Line::from(match_text)));
                 }
-                let selected_text = format!(
-                    "{} {}",
-                    self.app.flamegraph().get_stack_short_name_from_info(stack),
-                    FlamelensWidget::get_count_stats_str(
-                        None,
-                        stack.total_count,
-                        root_total_count,
-                        zoom_total_count
-                    ),
-                );
-                let status_text = format!("{:width$}", selected_text, width = width as usize,);
                 if self.is_flamegraph_view() {
+                    let selected_text = format!(
+                        "{} {}",
+                        self.decode_name(
+                            self.app.flamegraph().get_stack_short_name_from_info(stack)
+                        ),
+                        FlamelensWidget::get_count_stats_str(
+                            None,
+                            stack.total_count,
+                            root_total_count,
+                            zoom_total_count
+                        ),
+                    );
+                    let status_text = format!("{:width$}", selected_text, width = width as usize,);
                     lines.push(("Selected", Line::from(status_text)));
                 }
                 if self.app.debug {

@@ -35,9 +35,6 @@ assert "tour: rendered Timeline" in lines, "Timeline was not rendered"
 assert "tour: rendered Events" in lines, "Events was not rendered"
 assert "tour: regions nodes=8 completed=15 incomplete=1" in lines, lines
 assert len(reports) == 8, reports
-baseline = next(line.removeprefix("tour: unfiltered_balance ") for line in lines
-                if line.startswith("tour: unfiltered_balance "))
-unfiltered_balance = {row["thread_id"]: row["busy_fraction"] for row in json.loads(baseline)}
 
 # These paths come from the workload's source, independently of the viewer's
 # inferred parents. Each recursive call encloses exactly one deeper call.
@@ -114,6 +111,18 @@ for report in reports:
     if path == ("iteration",):
         assert 0 < selected < len(samples), "recording did not exercise sample exclusion"
         assert len({(s["pid"], s["tid"]) for s in complete}) == 2, complete
+        region_threads = {s["tid"] for s in complete}
+        sampled_threads = {s["tid"] for s in complete if sample_count([s])}
+        if sampled_threads != region_threads:
+            info = json.loads((reference / "info.json").read_text())
+            assert any(
+                collector["name"] == "pmu_sampling"
+                and collector["status"] == "degraded"
+                and "threads created after exec are not sampled" in collector.get("message", "")
+                for collector in info.get("collectors", [])
+            ), "recording lacks samples for a region thread without declared sampling degradation"
+            print("  thread sampling coverage is degraded: post-exec threads are not sampled; "
+                  f"checking recorded samples for {len(sampled_threads)}/{len(region_threads)} region threads")
     assert report["intervals"] == len(complete), report
     check_balance(report["balance"])
     scopes = report["scopes"]
@@ -134,11 +143,13 @@ for report in reports:
         expected = sample_count(invocations, scope["range"], scope["disabled_threads"])
         assert scope["samples"] == expected, (path, scope, expected)
         if path == ("iteration",) and scope["kind"] == "thread":
-            assert 0 < expected < selected, "thread filtering did not retain the other thread"
-            surviving = {s["tid"] for s in complete} - set(scope["disabled_threads"])
+            if sampled_threads == region_threads:
+                assert 0 < expected < selected, "thread filtering did not retain the other thread"
+            surviving = sampled_threads - set(scope["disabled_threads"])
             assert {row["thread_id"] for row in scope["balance"]} == surviving, scope
+            region_balance = {row["thread_id"]: row["busy_fraction"] for row in report["balance"]}
             for row in scope["balance"]:
-                assert row["busy_fraction"] > unfiltered_balance[row["thread_id"]], scope
+                assert row["busy_fraction"] == region_balance[row["thread_id"]], scope
         check_balance(scope["balance"])
 assert not groups, groups
 print("  region hierarchy, timings, multi-thread scopes and CPU busy fractions agree")

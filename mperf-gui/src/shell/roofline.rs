@@ -299,7 +299,7 @@ impl Plot {
             .filter_map(|(index, entry)| {
                 Some(Dot {
                     index,
-                    label: entry.function_name.clone(),
+                    label: entry.friendly_name.clone(),
                     intensity: entry.fp64_arithmetic_intensity()?,
                     gflops: entry.fp64_gflops()?,
                     time_share: entry.timing_samples.unwrap_or(0) as f64
@@ -960,7 +960,7 @@ fn detail_panel(
                         .truncate()
                         .font_family(theme.font_mono.clone())
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(entry.function_name.clone()),
+                        .child(entry.friendly_name.clone()),
                 )
                 .children(quality_badge(entry, theme)),
         )
@@ -1117,7 +1117,7 @@ fn loops_table(
                 .child(
                     cell(None, false)
                         .font_family(theme.font_mono.clone())
-                        .child(entry.function_name.clone()),
+                        .child(entry.friendly_name.clone()),
                 )
                 .child(
                     cell(Some(220.0), false)

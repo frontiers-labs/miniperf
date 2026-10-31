@@ -73,7 +73,11 @@ impl Widget for LoopsTab {
 
         let rows = hotspots.iter().map(|loop_| {
             [
-                Cell::from(loop_.function_name.as_str()),
+                Cell::from(
+                    symbolize::FunctionName::new(&loop_.function_name)
+                        .friendly()
+                        .to_owned(),
+                ),
                 Cell::from(format!("{}:{}", loop_.file_name, loop_.line)),
                 Cell::from(format!("{:.2}", loop_.sfp_ops)),
                 Cell::from(format!("{:.2}", loop_.sfp_ai)),

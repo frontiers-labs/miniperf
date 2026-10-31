@@ -244,6 +244,38 @@ fn run_tour(handle: gpui::WindowHandle<shell::ShellView>, cx: &mut App) {
                         }
                         println!("tour: rendered {name}");
                     }
+                    let name_frames =
+                        match handle.update(cx, |view, _, _| view.function_name_tour_frames()) {
+                            Ok(Ok(frames)) => frames,
+                            result => {
+                                eprintln!("tour: function inventory failed: {result:?}");
+                                std::process::exit(1);
+                            }
+                        };
+                    for frame_id in name_frames {
+                        match handle.update(cx, |view, _, cx| view.tour_function_name(frame_id, cx))
+                        {
+                            Ok(Ok(())) => {}
+                            result => {
+                                eprintln!("tour: function selection failed: {result:?}");
+                                std::process::exit(1);
+                            }
+                        }
+                        let deadline = std::time::Instant::now() + TOUR_LOAD_TIMEOUT;
+                        loop {
+                            cx.background_executor().timer(TOUR_TAB_DWELL).await;
+                            match handle
+                                .update(cx, |view, _, _| view.function_name_tour_ready(frame_id))
+                            {
+                                Ok(Ok(true)) => break,
+                                Ok(Ok(false)) if std::time::Instant::now() < deadline => {}
+                                result => {
+                                    eprintln!("tour: function inspection failed: {result:?}");
+                                    std::process::exit(1);
+                                }
+                            }
+                        }
+                    }
                     let region_count =
                         match handle.update(cx, |view, _, _| view.region_tour_summary()) {
                             Ok(Ok(count)) => count,
