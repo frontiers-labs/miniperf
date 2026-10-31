@@ -24,6 +24,7 @@
 - [View results in the GUI](guide/gui.md)
 - [Query results with SQL](guide/query.md)
 - [Trace your code and runtimes](guide/tracing.md)
+- [Allocation lifetimes](guide/allocations.md)
 
 # Concepts
 

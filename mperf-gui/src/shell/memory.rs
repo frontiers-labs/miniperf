@@ -302,7 +302,7 @@ fn timeline_card(memory: &MemoryData, theme: &Theme) -> gpui::AnyElement {
     card.into_any_element()
 }
 
-fn track_canvas(
+pub(super) fn track_canvas(
     label: &'static str,
     unit: &'static str,
     color: Hsla,

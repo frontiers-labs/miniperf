@@ -15,12 +15,14 @@ use std::sync::Arc;
 
 use crate::{Process, ResourceSample, Sink, SourceStatus};
 
+mod allocations;
 mod bpf;
 mod internal_events;
 mod pmu;
 mod procfs;
 mod telemetry;
 
+pub use allocations::AllocationSource;
 pub use bpf::BpfSource;
 pub use internal_events::InternalEventsSource;
 pub use pmu::{PmuSamplingSource, PreciseMemorySource};

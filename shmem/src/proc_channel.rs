@@ -1,5 +1,6 @@
 use libc::EAGAIN;
 use std::{
+    borrow::Cow,
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
     io::{Error, ErrorKind},
@@ -10,9 +11,14 @@ use std::{
 
 use crate::{platform, utils::blocker};
 
+/// A message represented by bytes in the shared-memory channel.
 pub trait Sendable {
-    fn as_raw_bytes(&self) -> Vec<u8>;
-    fn from_raw_bytes(bytes: &[u8]) -> Self;
+    /// Returns bytes valid for the lifetime of the returned value.
+    /// Borrowed bytes remain tied to this message; owned bytes hold their own storage.
+    fn as_raw_bytes(&self) -> Cow<'_, [u8]>;
+
+    /// Builds a message from an owned buffer read from the channel.
+    fn from_raw_bytes(bytes: Vec<u8>) -> Self;
 }
 
 pub struct Sender<T: Sendable> {
@@ -205,8 +211,9 @@ impl<T: Sendable> Sender<T> {
         self.inner.shmem.name()
     }
 
-    /// Sends a message, or drops it and increments the backpressure counter if full.
-    pub fn send_sync(&self, object: T) -> Result<(), Error> {
+    /// Copies a message into the ring, or drops it and increments the counter if full.
+    /// The copy and publication finish before return; the channel retains no borrow.
+    pub fn send_sync(&self, object: &T) -> Result<(), Error> {
         let data = object.as_raw_bytes();
         let word = std::mem::size_of::<usize>();
         let padded_len = data
@@ -277,6 +284,15 @@ impl<T: Sendable> Receiver<T> {
         })
     }
 
+    /// Read a queued packet without waiting. The receiver remains the sole consumer.
+    pub fn try_recv(&self) -> Option<T> {
+        if self.empty() {
+            return None;
+        }
+        let _ = self.inner.sem.try_wait();
+        self.read_one()
+    }
+
     pub fn recv_sync(&self) -> Option<T> {
         self.inner.sem.wait().ok()?;
         self.read_one()
@@ -331,12 +347,12 @@ impl<T: Sendable> Receiver<T> {
         self.inner
             .head()
             .store(head.wrapping_add(record_len), Ordering::Release);
-        Some(T::from_raw_bytes(&data))
+        Some(T::from_raw_bytes(data))
     }
 }
 
 impl<T: Copy> Sendable for T {
-    fn as_raw_bytes(&self) -> Vec<u8> {
+    fn as_raw_bytes(&self) -> Cow<'_, [u8]> {
         let mut vec = vec![0; std::mem::size_of::<Self>()];
         unsafe {
             std::ptr::copy_nonoverlapping(
@@ -345,10 +361,10 @@ impl<T: Copy> Sendable for T {
                 std::mem::size_of::<Self>(),
             );
         }
-        vec
+        Cow::Owned(vec)
     }
 
-    fn from_raw_bytes(bytes: &[u8]) -> Self {
+    fn from_raw_bytes(bytes: Vec<u8>) -> Self {
         assert!(bytes.len() >= std::mem::size_of::<T>());
         let mut to = MaybeUninit::<T>::uninit();
         unsafe {
@@ -400,7 +416,7 @@ mod tests {
     fn attach_preserves_queued_data() {
         let name = name("attach");
         let sender = Sender::<u64>::new(&name, 64).unwrap();
-        sender.send_sync(42).unwrap();
+        sender.send_sync(&42).unwrap();
         let receiver = Receiver::<u64>::attach(&name, 64).unwrap();
         assert_eq!(receiver.recv_sync(), Some(42));
     }
@@ -411,7 +427,7 @@ mod tests {
         let sender = Sender::<[u8; 9]>::new(&name, 64).unwrap();
         let receiver = Receiver::<[u8; 9]>::attach(&name, 64).unwrap();
         for value in 0..20_u8 {
-            sender.send_sync([value; 9]).unwrap();
+            sender.send_sync(&[value; 9]).unwrap();
             assert_eq!(receiver.recv_sync(), Some([value; 9]));
         }
         assert_eq!(sender.dropped_count(), 0);
@@ -422,9 +438,9 @@ mod tests {
         let name = name("drops");
         let sender = Sender::<u64>::new(&name, 32).unwrap();
         let receiver = Receiver::<u64>::attach(&name, 32).unwrap();
-        sender.send_sync(1).unwrap();
-        sender.send_sync(2).unwrap();
-        sender.send_sync(3).unwrap();
+        sender.send_sync(&1).unwrap();
+        sender.send_sync(&2).unwrap();
+        sender.send_sync(&3).unwrap();
         assert_eq!(sender.drop_event().total, 1);
         assert_eq!(receiver.dropped_count(), 1);
         assert_eq!(receiver.recv_sync(), Some(1));
@@ -442,7 +458,7 @@ mod tests {
             let mut sent = 0;
             while sent < COUNT {
                 let before = sender.dropped_count();
-                sender.send_sync(sent).unwrap();
+                sender.send_sync(&sent).unwrap();
                 if sender.dropped_count() == before {
                     sent += 1;
                 } else {
@@ -469,7 +485,7 @@ mod tests {
             let mut sent = 0;
             while sent < COUNT {
                 let before = sender.dropped_count();
-                sender.send_sync(sent).unwrap();
+                sender.send_sync(&sent).unwrap();
                 sent += usize::from(sender.dropped_count() == before);
             }
         });

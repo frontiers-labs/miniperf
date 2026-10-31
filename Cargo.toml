@@ -16,6 +16,7 @@ members = [
     "shims/cupti",
     "shmem",
     "store",
+    "store/writer",
     "symbolize",
     "utils/event-import",
     "utils/qemu-roofline",

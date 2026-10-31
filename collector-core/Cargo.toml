@@ -14,9 +14,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 anyhow = "1.0"
 libc = "0.2"
-miniperf-store = { path = "../store", default-features = false }
+store = { package = "miniperf-store-writer", path = "../store/writer" }
 shmem = { path = "../shmem" }
 
 [dev-dependencies]
-miniperf-store = { path = "../store" }
 tempfile = "3"

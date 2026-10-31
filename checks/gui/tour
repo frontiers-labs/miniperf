@@ -12,7 +12,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 # from the profiler.
 required_for() {
     case "$1" in
-        snapshot) printf 'Summary\nHotspots\nFlame Graph\nResources\n' ;;
+        snapshot)
+            printf 'Summary\nResources\n'
+            if [[ "$2" == yes ]]; then
+                printf 'Hotspots\nFlame Graph\n'
+            fi
+            ;;
         tma)      printf 'Summary\nHotspots\nTop-Down\n' ;;
         *)        printf 'Summary\n' ;;
     esac
@@ -45,12 +50,15 @@ while IFS= read -r info; do
     log="${prefix}.tour"
     launch "${mperf_gui}" --tour "${dir}" >"${log}" 2>&1 \
         || { cat "${log}" >&2; fail "the viewer could not display the ${scenario} recording"; }
-    grep -qi panic "${log}" && { cat "${log}" >&2; fail "the viewer panicked on ${scenario}"; }
+    grep -qiE '^thread .* panicked at ' "${log}" && { cat "${log}" >&2; fail "the viewer panicked on ${scenario}"; }
+    has_samples="$("${mperf}" query -f json "${dir}" 'SELECT COUNT(*) > 0 AS has_samples FROM pmu_counters' \
+        | python3 -c 'import json,sys; print("yes" if json.load(sys.stdin)["rows"][0]["has_samples"] else "no")')" \
+        || fail "could not inspect samples in the ${scenario} recording"
     while IFS= read -r tab; do
         [[ -z "${tab}" ]] && continue
         grep -qF "tour: rendered ${tab}" "${log}" \
             || { cat "${log}" >&2; fail "${scenario} did not offer the ${tab} tab"; }
-    done < <(required_for "${scenario}")
+    done < <(required_for "${scenario}" "${has_samples}")
     if [[ "$(basename "${dir}")" == rec-rust-names-* ]]; then
         python3 "${checks_root}/../utils/verify-rust-names.py" --tour "${log}" \
             || fail "the viewer lost Rust instance identity, search, or source/assembly lookup"
@@ -61,6 +69,8 @@ while IFS= read -r info; do
         python3 "${checks_root}/../utils/verify-named-regions.py" --dense "${log}" \
             || fail "dense region rendering did not stay within its pixel budget"
     fi
+    python3 "${checks_root}/../utils/verify-allocation-peaks.py" "${mperf}" "${dir}" "${log}" \
+        || fail "the viewer allocation sites disagree with operation-ordered recording SQL"
     visited=$((visited + 1))
 done < <(find "${MPERF_RECORDINGS}" -name info.json)
 

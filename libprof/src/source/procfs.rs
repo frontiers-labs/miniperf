@@ -79,6 +79,7 @@ impl Source for ProcfsSource {
             .worker
             .take()
             .map(|worker| {
+                worker.thread().unpark();
                 worker.join().unwrap_or_else(|_| {
                     vec![SourceStatus::new(
                         "resource_monitor",

@@ -91,6 +91,7 @@ mperf record -s snapshot -o DIR -p PID [--duration D]
 | `-s`, `--scenario` | `snapshot`, `tma`, `mem`, `roofline` | required | What to collect. See [Scenarios](../guide/scenarios.md). |
 | `-o`, `--output-directory` | path | required | Directory to create. Must not exist. |
 | `-p`, `--pid` | process id | none | Attach to a running process tree. Only `snapshot` supports it. `mem` rejects it. |
+| `--allocations` | `off`, `metadata`, `sampled`, `full` | `metadata` for `mem`, `off` otherwise | Root-process libc lifetimes, with optional stack attribution. See [Allocation lifetimes](../guide/allocations.md). |
 | `--duration` | `250ms`, `10s`, `2m`, `1h`, or bare seconds | run to exit | Stop a snapshot after this long. Other scenarios ignore it. |
 | `--roofline-backend` | `auto`, `compiler`, `qemu`, `dynamorio` | `auto` | Accounting method for `roofline` and `mem`. |
 | `--qemu` | path | auto | QEMU user-mode binary. Otherwise `MPERF_QEMU`, then the bundle next to `mperf`, then `PATH`. |

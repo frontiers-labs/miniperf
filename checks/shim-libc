@@ -11,9 +11,9 @@ shim="${MPERF_PACKAGE}/lib/miniperf/libmperf_libc.so"
 churn="$(cc_fixture alloc_churn)" || fail "could not compile alloc_churn.c"
 
 dir="${CHECK_WORK}/rec-shim-libc"
-LD_PRELOAD="${shim}" MPERF_LIBC_SAMPLE_EVERY=1 \
-    "${mperf}" record -s snapshot -o "${dir}" -- "${churn}" \
+LD_PRELOAD="${shim}" \
+    "${mperf}" record -s snapshot --allocations full -o "${dir}" -- "${churn}" \
     >"${dir}.log" 2>&1 || { cat "${dir}.log" >&2; fail "record with the libc shim failed"; }
 
-assert_sql "${dir}" "SELECT COUNT(*) > 0 AS shim_recorded_events FROM custom_events"
-note "libc shim recorded allocation events"
+assert_sql "${dir}" "SELECT observed_count = 200000 AND complete = 1 AS shim_recorded_lifetimes FROM allocation_summary"
+note "libc shim recorded all allocation lifetimes"

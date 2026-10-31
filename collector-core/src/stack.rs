@@ -1,47 +1,49 @@
 pub const MAX_FRAMES: usize = 64;
 
-/// Best-effort frame-pointer walk of the calling thread's stack. Requires
-/// frame pointers; stops at the first implausible frame. Returns the number
-/// of return addresses stored in `frames`, most recent call first.
+#[repr(C)]
+struct UnwindContext {
+    _private: [u8; 0],
+}
+unsafe extern "C" {
+    fn _Unwind_Backtrace(
+        callback: extern "C" fn(*mut UnwindContext, *mut std::ffi::c_void) -> i32,
+        argument: *mut std::ffi::c_void,
+    ) -> i32;
+    fn _Unwind_GetIP(context: *mut UnwindContext) -> usize;
+}
+struct Capture<'a> {
+    frames: &'a mut [u64; MAX_FRAMES],
+    count: usize,
+}
+extern "C" fn frame(context: *mut UnwindContext, argument: *mut std::ffi::c_void) -> i32 {
+    let capture = unsafe { &mut *argument.cast::<Capture<'_>>() };
+    let pc = unsafe { _Unwind_GetIP(context) } as u64;
+    if pc == 0 {
+        return 0;
+    }
+    if capture.count == MAX_FRAMES {
+        return 5;
+    }
+    capture.frames[capture.count] = pc.saturating_sub(1);
+    capture.count += 1;
+    0
+}
+
+/// Capture raw PCs into caller-owned storage. Symbolization runs offline.
 #[inline(never)]
 pub fn capture(frames: &mut [u64; MAX_FRAMES]) -> usize {
-    let mut fp = current_frame_pointer();
-    let mut sp = fp;
-    let mut count = 0;
-    while count < MAX_FRAMES {
-        if fp == 0 || fp & 0x7 != 0 || fp < sp || fp - sp > 8 * 1024 * 1024 {
-            break;
-        }
-        let (next_fp, return_address) = unsafe {
-            let fp = fp as *const u64;
-            (fp.read_volatile(), fp.add(1).read_volatile())
-        };
-        if return_address < 0x1000 {
-            break;
-        }
-        frames[count] = return_address;
-        count += 1;
-        sp = fp;
-        fp = next_fp;
+    capture_status(frames).frames
+}
+
+pub struct CaptureStatus {
+    pub frames: usize,
+    pub exhausted: bool,
+}
+pub fn capture_status(frames: &mut [u64; MAX_FRAMES]) -> CaptureStatus {
+    let mut capture = Capture { frames, count: 0 };
+    let reason = unsafe { _Unwind_Backtrace(frame, (&mut capture as *mut Capture<'_>).cast()) };
+    CaptureStatus {
+        frames: capture.count,
+        exhausted: reason == 5,
     }
-    count
-}
-
-#[cfg(target_arch = "x86_64")]
-fn current_frame_pointer() -> u64 {
-    let fp: u64;
-    unsafe { core::arch::asm!("mov {}, rbp", out(reg) fp) };
-    fp
-}
-
-#[cfg(target_arch = "aarch64")]
-fn current_frame_pointer() -> u64 {
-    let fp: u64;
-    unsafe { core::arch::asm!("mov {}, x29", out(reg) fp) };
-    fp
-}
-
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-fn current_frame_pointer() -> u64 {
-    0
 }

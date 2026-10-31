@@ -3958,6 +3958,7 @@ dependencies = [
  "quote",
  "serde",
  "serde_json",
+ "shmem",
  "smallvec",
  "syn 2.0.118",
  "thiserror 2.0.18",
@@ -4208,7 +4209,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "libc",
- "miniperf-store",
+ "miniperf-store-writer",
  "shmem",
  "tempfile",
 ]
@@ -4289,13 +4290,21 @@ name = "miniperf-store"
 version = "0.2.0"
 dependencies = [
  "anyhow",
- "arrow",
  "duckdb",
+ "miniperf-store-writer",
+ "tempfile",
+]
+
+[[package]]
+name = "miniperf-store-writer"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "arrow",
  "libc",
  "parquet",
  "serde",
  "serde_json",
- "tempfile",
  "xxhash-rust",
 ]
 

@@ -19,7 +19,7 @@ ALLOWED = {
     "miniperf-symbolize",
     "event-import",
 }
-FORBIDDEN_FOR_ALLOWED = {"miniperf-store", "libduckdb-sys", "duckdb"}
+FORBIDDEN_FOR_ALLOWED = {"miniperf-store", "miniperf-store-writer", "libduckdb-sys", "duckdb"}
 
 root = pathlib.Path(__file__).resolve().parent.parent
 metadata = json.loads(

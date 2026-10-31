@@ -66,6 +66,7 @@ pub struct ShellSession {
     pub snapshot: Option<SnapshotData>,
     /// Address-trace memory analysis, when the recording carries one.
     pub memory: Option<MemoryData>,
+    pub allocations: Option<crate::allocations::AllocationData>,
     /// Calibrated roofline with per-loop throughput, when available.
     pub roofline: Option<RooflineData>,
     pub profile: ProfileData,
@@ -197,6 +198,18 @@ impl ShellSession {
         let has_assembly = super::asm::has_assembly(connection);
         let snapshot = SnapshotData::load(connection, record_info.logical_cpu_count);
         let memory = load_memory(connection, &record_info);
+        let allocations = crate::allocations::AllocationData::load(connection, &mut profile);
+        if let Some(data) = &allocations
+            && let (Some(first), Some(last)) = (data.timeline.first(), data.timeline.last())
+        {
+            let existing = profile.full_range();
+            profile.recording_range = Some(TimeRange {
+                start_ns: existing.map_or(first.0, |range| range.start_ns.min(first.0)),
+                end_ns: existing.map_or(last.0.saturating_add(1), |range| {
+                    range.end_ns.max(last.0.saturating_add(1))
+                }),
+            });
+        }
         let roofline = load_roofline(connection, &record_info);
         drop(session);
 
@@ -234,6 +247,20 @@ impl ShellSession {
                 });
             }
         }
+        if let Some(data) = &allocations {
+            for lifetime in &data.lifetimes {
+                if !threads
+                    .iter()
+                    .any(|thread| thread.thread_id == lifetime.tid)
+                {
+                    threads.push(ThreadInfo {
+                        thread_id: lifetime.tid,
+                        label: format!("tid {}", lifetime.tid),
+                        samples: 0,
+                    });
+                }
+            }
+        }
         let modules = module_inventory(&profile);
         let lanes = full_range.and_then(|range| thread_lanes(&profile, &threads, range));
         let tracks = CounterTracks::build(&profile, &SampleFilter::default(), TRACK_BINS);
@@ -249,6 +276,7 @@ impl ShellSession {
             tma,
             snapshot,
             memory,
+            allocations,
             roofline,
             profile,
             regions,

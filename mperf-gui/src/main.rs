@@ -1,3 +1,4 @@
+mod allocations;
 mod charts;
 mod gallery;
 mod memory;
@@ -274,6 +275,13 @@ fn run_tour(handle: gpui::WindowHandle<shell::ShellView>, cx: &mut App) {
                                     std::process::exit(1);
                                 }
                             }
+                        }
+                    }
+                    match handle.update(cx, |view, _, cx| view.tour_allocations(cx)) {
+                        Ok(Ok(())) => {}
+                        result => {
+                            eprintln!("tour: allocations failed: {result:?}");
+                            std::process::exit(1);
                         }
                     }
                     let region_count =

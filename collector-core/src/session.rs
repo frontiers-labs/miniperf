@@ -14,6 +14,10 @@ use store::{
 use crate::buffer::{Buffer, BufferQueue};
 use crate::control::{CollectorStats, ControlCommand, ControlPlane};
 use crate::stack::MAX_FRAMES;
+use shmem::allocation::{
+    Allocation, Batch, CHANNEL_BYTES, Packet, RECORD_BYTES as ALLOCATION_BYTES,
+};
+use shmem::proc_channel::Sender;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -62,9 +66,16 @@ struct ThreadSlot {
 
 pub struct Collector {
     pid: u32,
+    epoch: u64,
+    accepting: AtomicBool,
+    producers: AtomicU64,
+    allocation_sequence: AtomicU64,
+    allocation_dropped: AtomicU64,
+    allocation_paused: AtomicU64,
     queue: Arc<BufferQueue>,
     registry: Mutex<Registry>,
     slots: Mutex<Vec<Arc<ThreadSlot>>>,
+    late_slot: Arc<ThreadSlot>,
     writer: Mutex<Option<std::thread::JoinHandle<()>>>,
     stack_key_id: u64,
     total_dropped: AtomicU64,
@@ -75,12 +86,16 @@ pub struct Collector {
 }
 
 static COLLECTOR: RwLock<Option<Arc<Collector>>> = RwLock::new(None);
+static CLOSED: AtomicBool = AtomicBool::new(false);
+static ALLOCATION_SESSION: AtomicBool = AtomicBool::new(false);
 static FORKED: AtomicBool = AtomicBool::new(false);
 static INIT_HOOKS: OnceLock<()> = OnceLock::new();
 
 thread_local! {
     static SLOT: RefCell<Option<Arc<ThreadSlot>>> = const { RefCell::new(None) };
     static INSTANCE_COUNTER: RefCell<u64> = const { RefCell::new(0) };
+    static CACHED_COLLECTOR: RefCell<Option<Arc<Collector>>> = const { RefCell::new(None) };
+    static CACHED_TID: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     static INTERNAL_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -115,6 +130,30 @@ fn current_thread_id() -> u32 {
 /// The process-wide collector, initialized from `MPERF_SESSION_DIR` on first
 /// touch and reinitialized transparently in fork children.
 pub fn collector() -> Option<Arc<Collector>> {
+    if CLOSED.load(Ordering::Acquire)
+        || (FORKED.load(Ordering::Acquire) && ALLOCATION_SESSION.load(Ordering::Relaxed))
+    {
+        return None;
+    }
+    if FORKED.load(Ordering::Acquire) {
+        let _ = CACHED_COLLECTOR.try_with(|slot| slot.borrow_mut().take());
+        let _ = CACHED_TID.try_with(|tid| tid.set(0));
+    }
+    if let Some(cached) = CACHED_COLLECTOR
+        .try_with(|slot| slot.borrow().clone())
+        .ok()
+        .flatten()
+    {
+        return cached.accepting.load(Ordering::Relaxed).then_some(cached);
+    }
+    let value = initialize_collector();
+    if let Some(value) = &value {
+        let _ = CACHED_COLLECTOR.try_with(|slot| *slot.borrow_mut() = Some(value.clone()));
+    }
+    value
+}
+
+fn initialize_collector() -> Option<Arc<Collector>> {
     if FORKED.swap(false, Ordering::AcqRel) {
         *COLLECTOR.write().unwrap() = None;
         let _ = SLOT.try_with(|slot| slot.borrow_mut().take());
@@ -124,6 +163,9 @@ pub fn collector() -> Option<Arc<Collector>> {
     }
     let dir = std::env::var_os(crate::SESSION_DIR_ENV)?;
     let mut guard = COLLECTOR.write().unwrap();
+    if CLOSED.load(Ordering::Acquire) {
+        return None;
+    }
     if guard.is_none() {
         *guard = Some(Collector::start(PathBuf::from(dir)));
         INIT_HOOKS.get_or_init(|| unsafe {
@@ -145,6 +187,11 @@ extern "C" fn atfork_child() {
 /// Flush every thread's buffer, drain the writer, and close all segments.
 /// Records arriving afterwards are dropped.
 pub fn shutdown() {
+    // A fork child owns neither the parent's locks nor its writer thread.
+    if FORKED.load(Ordering::Acquire) {
+        return;
+    }
+    CLOSED.store(true, Ordering::Release);
     let collector = COLLECTOR.write().unwrap().take();
     if let Some(collector) = collector {
         collector.finish();
@@ -154,18 +201,33 @@ pub fn shutdown() {
 impl Collector {
     fn start(dir: PathBuf) -> Arc<Collector> {
         let pid = std::process::id();
+        ALLOCATION_SESSION.store(
+            std::env::var_os("MPERF_ALLOCATION_CHANNEL").is_some(),
+            Ordering::Relaxed,
+        );
         let queue = Arc::new(BufferQueue::new());
         let mut interner = StringInterner::new(&dir, Some(pid));
         let stack_key_id = interner.intern("stack_id");
+        let late_slot = Arc::new(ThreadSlot {
+            buffer: Mutex::new(None),
+            dropped: AtomicU64::new(0),
+        });
         let collector = Arc::new(Collector {
             pid,
+            epoch: timestamp_ns(),
+            accepting: AtomicBool::new(true),
+            producers: AtomicU64::new(0),
+            allocation_sequence: AtomicU64::new(0),
+            allocation_dropped: AtomicU64::new(0),
+            allocation_paused: AtomicU64::new(0),
             queue: queue.clone(),
             registry: Mutex::new(Registry {
                 interner,
                 payloads: PayloadRows::default(),
                 seen: HashSet::new(),
             }),
-            slots: Mutex::new(Vec::new()),
+            slots: Mutex::new(vec![late_slot.clone()]),
+            late_slot,
             writer: Mutex::new(None),
             stack_key_id,
             total_dropped: AtomicU64::new(0),
@@ -247,20 +309,68 @@ impl Collector {
         };
         let mut bytes = [0u8; 16];
         bytes[..4].copy_from_slice(&self.pid.to_le_bytes());
-        bytes[4..8].copy_from_slice(&current_thread_id().to_le_bytes());
+        bytes[4..8].copy_from_slice(&current_tid().to_le_bytes());
         bytes[8..].copy_from_slice(&counter.to_le_bytes());
         xxh3(&bytes)
     }
 
+    pub fn record_allocation(&self, mut record: Allocation) -> u64 {
+        let _producer = ProducerGuard::enter(&self.producers);
+        if !self.accepting.load(Ordering::Acquire) {
+            return 0;
+        }
+        record.pid = self.pid as u64;
+        record.process_epoch = self.epoch;
+        record.sequence = self.allocation_sequence.fetch_add(1, Ordering::Relaxed) + 1;
+        record.timestamp_ns = timestamp_ns();
+        record.tid = current_tid() as u64;
+        let sequence = record.sequence;
+        if self.paused.load(Ordering::Relaxed) {
+            self.allocation_paused.fetch_add(1, Ordering::Relaxed);
+            return sequence;
+        }
+        let Some(slot) = self.thread_slot() else {
+            self.allocation_dropped.fetch_add(1, Ordering::Relaxed);
+            return sequence;
+        };
+        let mut guard = slot.buffer.lock().unwrap();
+        if guard
+            .as_ref()
+            .is_none_or(|buffer| !buffer.has_room(1 + ALLOCATION_BYTES))
+        {
+            if let Some(buffer) = guard.take() {
+                self.queue.submit(buffer);
+            }
+            *guard = self.queue.acquire();
+        }
+        if let Some(buffer) = guard.as_mut() {
+            buffer.data.push(1);
+            record.encode(&mut buffer.data);
+        } else {
+            self.allocation_dropped.fetch_add(1, Ordering::Relaxed);
+        }
+        sequence
+    }
+
+    fn flush_slots(&self) {
+        for slot in self.slots.lock().unwrap().iter() {
+            let mut guard = slot.buffer.lock().unwrap();
+            if guard.as_ref().is_some_and(|buffer| !buffer.data.is_empty()) {
+                self.queue.submit(guard.take().unwrap());
+            }
+        }
+    }
+
     /// Append one record (plus optional stack frames) to this thread's
-    /// buffer. Never blocks: on pool exhaustion the record is dropped and
-    /// counted, surfacing later as a Loss row.
+    /// mutex-protected buffer. Pool exhaustion drops and counts the record
+    /// instead of waiting for capacity, surfacing later as a Loss row.
     pub fn record(&self, mut record: EventRecord, frames: &[u64]) {
-        if thread_is_internal() || self.paused.load(Ordering::Relaxed) {
+        let _producer = ProducerGuard::enter(&self.producers);
+        if !self.accepting.load(Ordering::Acquire) || self.paused.load(Ordering::Relaxed) {
             return;
         }
         record.nframes = frames.len().min(MAX_FRAMES) as u8;
-        let needed = RECORD_BYTES + record.nframes as usize * 8;
+        let needed = 2 * (1 + RECORD_BYTES) + record.nframes as usize * 8;
         let Some(slot) = self.thread_slot() else {
             self.total_dropped.fetch_add(1, Ordering::Relaxed);
             return;
@@ -340,6 +450,8 @@ impl Collector {
         rows.uncertainty_ns.push(uncertainty_ns);
     }
 
+    // TLS destructors may allocate after the per-thread cache was destroyed.
+    // A collector-owned fallback retains those boundaries until final drain.
     fn thread_slot(&self) -> Option<Arc<ThreadSlot>> {
         SLOT.try_with(|slot| {
             let mut slot = slot.borrow_mut();
@@ -355,9 +467,14 @@ impl Collector {
             new
         })
         .ok()
+        .or_else(|| Some(self.late_slot.clone()))
     }
 
     fn finish(&self) {
+        self.accepting.store(false, Ordering::Release);
+        while self.producers.load(Ordering::Acquire) != 0 {
+            std::thread::yield_now();
+        }
         for slot in self.slots.lock().unwrap().iter() {
             if let Some(buffer) = slot.buffer.lock().unwrap().take() {
                 self.queue.submit(buffer);
@@ -374,6 +491,7 @@ fn append(buffer: &mut Buffer, record: &EventRecord, frames: &[u64]) {
     let header = unsafe {
         std::slice::from_raw_parts(record as *const EventRecord as *const u8, RECORD_BYTES)
     };
+    buffer.data.push(0);
     buffer.data.extend_from_slice(header);
     for frame in frames {
         buffer.data.extend_from_slice(&frame.to_le_bytes());
@@ -404,10 +522,37 @@ fn writer_loop(collector: Arc<Collector>, dir: PathBuf, queue: Arc<BufferQueue>)
         }
     };
 
+    let allocation_root = std::env::var("MPERF_PROFILE_ROOT_PID")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .is_none_or(|root| root == pid);
+    let mut allocation_sender = allocation_root
+        .then(|| std::env::var("MPERF_ALLOCATION_CHANNEL").ok())
+        .flatten()
+        .and_then(|name| Sender::<Packet>::attach(&name, CHANNEL_BYTES).ok());
+    let mut batch_sequence = 0;
+    let mut channel_dropped_operations = 0;
+    let mut allocation_records = Vec::new();
     while let Some(buffer) = queue.next_full() {
+        allocation_records.clear();
         let mut offset = 0;
         let data = &buffer.data;
-        while offset + RECORD_BYTES <= data.len() {
+        while offset < data.len() {
+            let tag = data[offset];
+            offset += 1;
+            if tag == 1 {
+                if offset + ALLOCATION_BYTES > data.len() {
+                    break;
+                }
+                if let Some(record) = Allocation::decode(&data[offset..offset + ALLOCATION_BYTES]) {
+                    allocation_records.push(record);
+                }
+                offset += ALLOCATION_BYTES;
+                continue;
+            }
+            if tag != 0 || offset + RECORD_BYTES > data.len() {
+                break;
+            }
             let record = unsafe {
                 std::ptr::read_unaligned(data.as_ptr().add(offset) as *const EventRecord)
             };
@@ -446,7 +591,29 @@ fn writer_loop(collector: Arc<Collector>, dir: PathBuf, queue: Arc<BufferQueue>)
                 meta.value_string_id.push(0);
             }
         }
-        queue.recycle(buffer);
+        if let Some(sender) = &mut allocation_sender {
+            for records in allocation_records.chunks(512) {
+                batch_sequence += 1;
+                let batch = Batch {
+                    sequence: batch_sequence,
+                    produced: collector.allocation_sequence.load(Ordering::Relaxed),
+                    producer_dropped: collector.allocation_dropped.load(Ordering::Relaxed),
+                    channel_dropped_operations,
+                    paused: collector.allocation_paused.load(Ordering::Relaxed),
+                    footer: false,
+                    records: records.to_vec(),
+                };
+                let before = sender.dropped_count();
+                if sender.send_sync(&batch.encode()).is_err() || sender.dropped_count() != before {
+                    channel_dropped_operations += records.len() as u64;
+                }
+            }
+        }
+        if buffer.data.capacity() != 0 {
+            queue.recycle(buffer);
+        } else {
+            collector.flush_slots();
+        }
         if events.len() >= 8192 {
             flush(&mut events, &mut events_writer);
         }
@@ -455,7 +622,10 @@ fn writer_loop(collector: Arc<Collector>, dir: PathBuf, queue: Arc<BufferQueue>)
                 match command {
                     ControlCommand::Pause => collector.paused.store(true, Ordering::Relaxed),
                     ControlCommand::Resume => collector.paused.store(false, Ordering::Relaxed),
-                    ControlCommand::Flush => flush(&mut events, &mut events_writer),
+                    ControlCommand::Flush => {
+                        collector.flush_slots();
+                        flush(&mut events, &mut events_writer)
+                    }
                 }
             }
             control.publish(CollectorStats {
@@ -467,6 +637,19 @@ fn writer_loop(collector: Arc<Collector>, dir: PathBuf, queue: Arc<BufferQueue>)
         }
     }
 
+    if let Some(sender) = allocation_sender {
+        batch_sequence += 1;
+        let footer = Batch {
+            sequence: batch_sequence,
+            produced: collector.allocation_sequence.load(Ordering::Relaxed),
+            producer_dropped: collector.allocation_dropped.load(Ordering::Relaxed),
+            channel_dropped_operations,
+            paused: collector.allocation_paused.load(Ordering::Relaxed),
+            footer: true,
+            records: Vec::new(),
+        };
+        let _ = sender.send_sync(&footer.encode());
+    }
     flush(&mut events, &mut events_writer);
     clock.push("end");
     let mut registry = collector.registry.lock().unwrap();
@@ -558,7 +741,34 @@ fn writer_loop(collector: Arc<Collector>, dir: PathBuf, queue: Arc<BufferQueue>)
 }
 
 pub fn current_tid() -> u32 {
-    current_thread_id()
+    CACHED_TID
+        .try_with(|tid| {
+            let cached = tid.get();
+            if cached != 0 {
+                cached
+            } else {
+                let value = current_thread_id();
+                tid.set(value);
+                value
+            }
+        })
+        .unwrap_or_else(|_| current_thread_id())
+}
+
+pub struct InternalGuard(bool);
+impl InternalGuard {
+    pub fn enter() -> Self {
+        Self(
+            INTERNAL_THREAD
+                .try_with(|flag| flag.replace(true))
+                .unwrap_or(true),
+        )
+    }
+}
+impl Drop for InternalGuard {
+    fn drop(&mut self) {
+        let _ = INTERNAL_THREAD.try_with(|flag| flag.set(self.0));
+    }
 }
 
 fn write_process_metadata(dir: &Path, pid: u32, collector: &Collector) {
@@ -607,4 +817,17 @@ fn json_string(value: &str) -> String {
     }
     out.push('"');
     out
+}
+
+struct ProducerGuard<'a>(&'a AtomicU64);
+impl<'a> ProducerGuard<'a> {
+    fn enter(active: &'a AtomicU64) -> Self {
+        active.fetch_add(1, Ordering::AcqRel);
+        Self(active)
+    }
+}
+impl Drop for ProducerGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
 }

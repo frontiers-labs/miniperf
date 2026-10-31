@@ -27,7 +27,8 @@ struct QueueState {
 }
 
 /// Bounded buffer pool and handoff queue between producer threads and the
-/// writer thread. On pool exhaustion callers drop and count — never block.
+/// writer thread. The queue uses a mutex; pool exhaustion drops and counts
+/// records instead of waiting for capacity.
 pub struct BufferQueue {
     state: Mutex<QueueState>,
     ready: Condvar,
@@ -73,7 +74,14 @@ impl BufferQueue {
             if state.closing {
                 return None;
             }
-            state = self.ready.wait(state).unwrap();
+            let (next, timeout) = self
+                .ready
+                .wait_timeout(state, std::time::Duration::from_millis(20))
+                .unwrap();
+            state = next;
+            if timeout.timed_out() && !state.closing {
+                return Some(Buffer { data: Vec::new() });
+            }
         }
     }
 

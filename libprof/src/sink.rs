@@ -30,6 +30,10 @@ use crate::Counter;
 pub enum Record {
     /// A performance-counter sample.
     Sample(Sample),
+    /// One application-visible allocation ownership boundary.
+    Allocation(crate::Allocation),
+    /// Terminal completeness and scope of allocation instrumentation.
+    AllocationCoverage(AllocationCoverage),
     /// A precise memory-access sample (PEBS/IBS/SPE).
     MemSample(MemSample),
     /// A process address-space mapping.
@@ -236,4 +240,31 @@ impl SourceStatus {
     pub fn is_available(&self) -> bool {
         self.status == "available"
     }
+}
+
+/// Terminal accounting for one root-process allocation capture.
+#[derive(Debug)]
+pub struct AllocationCoverage {
+    /// Root PID. Fork descendants are outside capture scope.
+    pub pid: u64,
+    /// All produced operations arrived, without pauses, with a graceful footer.
+    pub complete: bool,
+    /// Producer drained and shut down gracefully.
+    pub footer: bool,
+    /// Operations accepted by the producer before buffering.
+    pub produced: u64,
+    /// Operations delivered to the sink.
+    pub observed_operations: u64,
+    /// Operations lost before IPC.
+    pub producer_dropped: u64,
+    /// Operations in lost IPC batches, reported by the writer.
+    pub channel_dropped_operations: u64,
+    /// Lost IPC packets, including a possibly lost footer.
+    pub channel_dropped_packets: u64,
+    /// Operations excluded while the collector was paused.
+    pub paused_operations: u64,
+    /// Invalid or out-of-sequence protocol data was observed.
+    pub invalid_protocol: bool,
+    /// Stack attribution interval. Zero means metadata only.
+    pub stack_every: u64,
 }

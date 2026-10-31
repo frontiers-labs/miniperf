@@ -116,7 +116,7 @@ Thin proxies forward events from common runtimes without code changes. Each one 
 | CUDA kernel launches and transfers | `libmperf_cupti.so` | `CUDA_INJECTION64_PATH` |
 | MPI rank identity and clock alignment | `libmperf_mpi.so` | `LD_PRELOAD` |
 
-`mperf record` activates the libc shim itself in the `mem` scenario. The others you set up in the environment before the workload, for example:
+`mperf record --allocations sampled` activates allocation capture in every scenario. The `mem` scenario captures allocation metadata by default. The others you set up in the environment before the workload, for example:
 
 ```sh
 OMP_TOOL_LIBRARIES=$PWD/target/release/libmperf_ompt.so \
@@ -125,7 +125,7 @@ OMP_TOOL_LIBRARIES=$PWD/target/release/libmperf_ompt.so \
 
 Release packages ship the libc shim. Build the others from source with `cargo build --release -p miniperf-shim-ompt`, and likewise `itt`, `mpi`, and `cupti`.
 
-The libc shim samples allocations to keep overhead low: every sixteenth allocation per thread, plus every allocation of 65536 bytes or more. Frees are never sampled, so lifetimes stay complete. `MPERF_LIBC_SAMPLE_EVERY` and `MPERF_LIBC_SIZE_THRESHOLD` change the rates, and the effective rates are recorded in the trace as two counters.
+Allocation lifetimes use a separate typed stream through the shared collector buffers. `--allocations metadata` captures ownership boundaries without stacks. `sampled` captures one stack per sixteen successful allocation introductions per thread; `full` requests every stack. Only attribution is sampled. Counts and requested bytes are never scaled. See [Allocation lifetimes](allocations.md) for coverage and query semantics.
 
 ## Loss policy
 

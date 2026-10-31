@@ -32,6 +32,7 @@ pub enum BackendKind {
 
 #[derive(Clone, Debug, Default)]
 pub struct Options {
+    pub allocations: crate::source::AllocationMode,
     pub backend: BackendKind,
     pub qemu: Option<PathBuf>,
     pub qemu_plugin: Option<PathBuf>,
@@ -101,6 +102,7 @@ trait RooflineBackend {
 }
 
 struct CompilerBackend {
+    allocations: crate::source::AllocationMode,
     method: RooflineMethodInfo,
 }
 
@@ -133,6 +135,7 @@ pub async fn record(
     let backend: Box<dyn RooflineBackend> = match selected.backend {
         BackendKind::Auto => unreachable!("automatic Roofline method must resolve to a backend"),
         BackendKind::Compiler => Box::new(CompilerBackend {
+            allocations: options.allocations,
             method: selected.info,
         }),
         BackendKind::Qemu => Box::new(qemu::QemuBackend::new(
@@ -507,6 +510,8 @@ impl RooflineBackend for CompilerBackend {
                 baseline_env,
                 None,
                 bandwidth_timeline_path(output_directory),
+                self.allocations,
+                output_directory,
             )
             .await?;
 
@@ -555,18 +560,22 @@ async fn profile_command(
     mut env: Vec<(String, String)>,
     rss_output: Option<PathBuf>,
     bandwidth_output: Option<PathBuf>,
+    allocations: crate::source::AllocationMode,
+    directory: &Path,
 ) -> Result<ProfiledRun> {
-    if let Some(rss_path) = rss_output.as_ref() {
-        let allocation_path = rss_path.with_file_name("memory-allocations.txt");
-        env.push((
-            "MPERF_MEMORY_ALLOCATIONS".to_string(),
-            allocation_path.to_string_lossy().into_owned(),
-        ));
-        if let Some(preload) = memory_preload_path() {
-            let preload = std::env::var("LD_PRELOAD")
-                .map(|current| format!("{}:{current}", preload.display()))
-                .unwrap_or_else(|_| preload.to_string_lossy().into_owned());
-            env.push(("LD_PRELOAD".to_string(), preload));
+    let mut warnings = Vec::new();
+    let mut allocation_source = allocations
+        .stack_every()
+        .map(libprof::AllocationSource::new);
+    if let Some(source) = &allocation_source {
+        match libprof::Source::probe(source, directory) {
+            libprof::Availability::Available => {
+                env.extend(libprof::Source::child_environment(source, directory))
+            }
+            libprof::Availability::Unavailable { reason } => {
+                warnings.push(format!("allocations unavailable: {reason}"));
+                allocation_source = None;
+            }
         }
     }
     let precise_memory_source = rss_output
@@ -576,7 +585,16 @@ async fn profile_command(
     if let Some((source, directory)) = &precise_memory_source {
         env.extend(source.child_environment(directory));
     }
-    let process = Process::new(command, &env)?;
+    let process = std::rc::Rc::new(Process::new(command, &env)?);
+    let allocation_context = libprof::SessionContext {
+        directory: directory.to_owned(),
+        sink: dispatcher.clone(),
+        process: Some(process.clone()),
+        attached_pid: None,
+    };
+    if let Some(source) = allocation_source.as_mut() {
+        libprof::Source::start(source, &allocation_context)?;
+    }
     let sampler_stop = Arc::new(AtomicBool::new(false));
     let bandwidth_thread =
         bandwidth_output.and_then(|path| start_bandwidth_timeline(path, sampler_stop.clone()));
@@ -590,7 +608,6 @@ async fn profile_command(
         .counters(&counters)
         .process(&process)
         .build()?;
-    let mut warnings = Vec::new();
     // This pass builds its own driver rather than a Pass, so the host ceiling
     // has to be reported here too.
     if let Some((effective, requested)) = driver.sample_rate().filter(|(e, r)| e < r) {
@@ -660,6 +677,13 @@ async fn profile_command(
             .filter(|status| !status.is_available())
         {
             eprintln!("Warning: {}: {}", status.name, status.message);
+        }
+    }
+    if let Some(source) = allocation_source.as_mut() {
+        for status in libprof::Source::stop(source, &allocation_context) {
+            if !status.is_available() {
+                warnings.push(format!("allocations: {}", status.message));
+            }
         }
     }
     ensure_process_success(&process, "Roofline performance run")?;
@@ -837,15 +861,6 @@ pub(super) fn package_path(relative: &str) -> Option<PathBuf> {
     ]
     .into_iter()
     .find(|path| path.is_file())
-}
-
-/// The `LD_PRELOAD` shim that reports allocations. It is an ELF shared object
-/// loaded through a Linux-only mechanism; elsewhere there is nothing to
-/// preload.
-fn memory_preload_path() -> Option<PathBuf> {
-    cfg!(target_os = "linux")
-        .then(|| package_path("libmperf_libc.so"))
-        .flatten()
 }
 
 fn monotonic_timestamp() -> Result<u64> {

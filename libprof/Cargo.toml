@@ -29,6 +29,7 @@ symbolize = ["dep:symbolize"]
 criterion = ["dep:criterion"]
 
 [dependencies]
+shmem = { path = "../shmem" }
 anyhow = "1.0"
 cfg-if = "1.0.0"
 libc = "0.2.144"

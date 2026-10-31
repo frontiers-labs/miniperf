@@ -81,6 +81,15 @@ if [[ "${platform}" == macos-* ]] && command -v plutil >/dev/null 2>&1; then
     plutil -lint "${package_root}/mperf-gui.app/Contents/Info.plist" >/dev/null || status=1
 fi
 
+if [[ "${platform}" != windows-* ]]; then
+    collector="${package_root}/lib/miniperf/libmperf_collector.so"
+    if [[ "${platform}" == macos-* ]]; then
+        collector="${package_root}/lib/miniperf/libmperf_collector.dylib"
+    fi
+    python3 "$(dirname "${BASH_SOURCE[0]}")/verify-collector-isolation.py" \
+        --platform "${platform}" --artifact "${collector}" || status=1
+fi
+
 if [[ "${status}" -ne 0 ]]; then
     printf '\n%s package verification failed\n' "${platform}" >&2
     exit 1

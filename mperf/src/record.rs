@@ -74,6 +74,7 @@ pub async fn do_record(
     command: Vec<String>,
     roofline_options: roofline::Options,
     duration: Option<std::time::Duration>,
+    allocations: crate::source::AllocationMode,
 ) -> Result<()> {
     println!("Record profile with {scenario:?} scenario");
 
@@ -151,6 +152,7 @@ pub async fn do_record(
             &command,
             output_directory,
             duration,
+            allocations,
         ),
         Scenario::Mem if pid.is_some() => Err(anyhow::anyhow!(
             "record mem requires a command and does not support --pid"
@@ -171,12 +173,12 @@ pub async fn do_record(
         )
         .await
         .map(|info| (info, Vec::new())),
-        Scenario::TMA => topdown(dispatcher.clone(), &command, output_directory),
+        Scenario::TMA => topdown(dispatcher.clone(), &command, output_directory, allocations),
     };
 
     drop(dispatcher);
 
-    join_handle.join().await;
+    join_handle.join().await?;
 
     let (info, collectors) = recorded?;
 
@@ -251,6 +253,7 @@ fn snapshot(
     command: &[String],
     output_directory: &Path,
     duration: Option<std::time::Duration>,
+    allocations: crate::source::AllocationMode,
 ) -> Result<(ScenarioInfo, Vec<mperf_data::SnapshotCollectorStatus>)> {
     if pid.is_none() && command.is_empty() {
         anyhow::bail!("record snapshot requires a command or --pid");
@@ -270,6 +273,11 @@ fn snapshot(
             Box::new(libprof::BpfSource::default()),
         ],
     };
+    let mut pass = pass;
+    if let Some(every) = allocations.stack_every() {
+        pass.optional
+            .push(Box::new(libprof::AllocationSource::new(every)));
+    }
     let mut pass = pass.resolve(output_directory)?;
     let child_env = pass.child_environment(output_directory);
 
@@ -458,6 +466,7 @@ fn topdown(
     dispatcher: Arc<EventDispatcher>,
     command: &[String],
     output_directory: &Path,
+    allocations: crate::source::AllocationMode,
 ) -> Result<(ScenarioInfo, Vec<mperf_data::SnapshotCollectorStatus>)> {
     let scenario = libprof::tma_scenario().context("TMA is not supported on this CPU")?;
     // Validate the formula groups, but do not turn each one into an independent
@@ -482,6 +491,11 @@ fn topdown(
             Box::new(libprof::HostTelemetrySource::default()),
         ],
     };
+    let mut pass = pass;
+    if let Some(every) = allocations.stack_every() {
+        pass.optional
+            .push(Box::new(libprof::AllocationSource::new(every)));
+    }
     let mut pass = pass.resolve(output_directory)?;
     let child_env = pass.child_environment(output_directory);
     let process = Rc::new(Process::new(command, &child_env)?);
