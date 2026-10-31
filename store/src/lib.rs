@@ -11,7 +11,7 @@ mod session;
 
 pub use miniperf_store_writer::*;
 #[cfg(feature = "session")]
-pub use recording::{Recording, RecordingError};
+pub use recording::Recording;
 #[cfg(feature = "session")]
 pub use session::{Session, table_base_name};
 

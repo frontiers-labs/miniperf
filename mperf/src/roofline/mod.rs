@@ -550,6 +550,9 @@ impl ProfiledRun {
         method.warnings.extend(self.warnings.iter().cloned());
         if self.measured_dram {
             method.traffic = "dram-measured".to_string();
+            method
+                .warnings
+                .retain(|warning| !warning.contains("host-LLC model"));
             method.warnings.push(
                 "DRAM traffic is measured on system-wide memory-controller counters and therefore includes traffic from other processes"
                     .to_string(),

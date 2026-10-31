@@ -11,9 +11,8 @@ mod trace;
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use mperf_data::{EventType, RecordInfo, Scenario};
-use tokio::fs;
 
 use store::query::quote_identifier;
 use store::{Columns, Session};
@@ -23,12 +22,7 @@ use store::{Columns, Session};
 pub async fn perform_postprocessing(res_dir: &Path, pb: kdam::Bar) -> Result<()> {
     let mut pb = pb;
 
-    let data = fs::read_to_string(res_dir.join("info.json"))
-        .await
-        .context("failed to read info.json")?;
-    let info: RecordInfo = serde_json::from_str(&data).context("failed to parse info.json")?;
-
-    let tables = Session::open(res_dir)?;
+    let (info, tables) = store::Recording::open(res_dir)?.into_parts();
     samples::process(&tables, &info, res_dir, &mut pb).await?;
     allocations::process(&tables)?;
     snapshot::write_host_telemetry(&tables, res_dir)?;

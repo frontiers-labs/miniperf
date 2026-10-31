@@ -53,8 +53,7 @@ impl Session {
         };
         for (table, mut files) in tables {
             files.sort();
-            register_view(session.connection(), &table, &files, ViewMode::Create)
-                .with_context(|| format!("failed to create view over table '{table}'"))?;
+            session.register(&table, &files)?;
         }
         Ok(session)
     }
@@ -94,7 +93,7 @@ impl Session {
 
     /// Expose existing Parquet files as one logical table view.
     pub fn register(&self, name: &str, files: &[PathBuf]) -> Result<()> {
-        register_view(&self.connection, name, files, ViewMode::Replace)
+        register_view(&self.connection, name, files)
             .with_context(|| format!("failed to expose table '{name}'"))
     }
 
@@ -122,17 +121,7 @@ impl Session {
     }
 }
 
-enum ViewMode {
-    Create,
-    Replace,
-}
-
-fn register_view(
-    connection: &Connection,
-    name: &str,
-    files: &[PathBuf],
-    mode: ViewMode,
-) -> duckdb::Result<()> {
+fn register_view(connection: &Connection, name: &str, files: &[PathBuf]) -> duckdb::Result<()> {
     if files.is_empty() {
         return Ok(());
     }
@@ -141,12 +130,8 @@ fn register_view(
         .map(|file| format!("'{}'", escape(file)))
         .collect::<Vec<_>>()
         .join(", ");
-    let command = match mode {
-        ViewMode::Create => "CREATE VIEW",
-        ViewMode::Replace => "CREATE OR REPLACE VIEW",
-    };
     connection.execute_batch(&format!(
-        "{command} {} AS SELECT * FROM read_parquet([{files}]);",
+        "CREATE OR REPLACE VIEW {} AS SELECT * FROM read_parquet([{files}]);",
         quote_identifier(name),
     ))
 }

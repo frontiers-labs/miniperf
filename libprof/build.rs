@@ -19,8 +19,23 @@ fn main() -> Result<(), Box<dyn Error>> {
         let path = entry?;
         println!("cargo:rerun-if-changed={}", path.display());
 
-        let file = File::open(path)?;
+        let file = File::open(&path)?;
         let data: PlatformDesc = serde_json::from_reader(file)?;
+
+        for scenario in data.scenarios.as_deref().unwrap_or_default() {
+            pmu_data::validate_tma_metrics(
+                scenario.events.iter().map(String::as_str),
+                &scenario.metrics,
+            )
+            .map_err(|error| {
+                format!(
+                    "{} [{}] scenario '{}': {error}",
+                    path.display(),
+                    data.family_id,
+                    scenario.name
+                )
+            })?;
+        }
 
         let arch = std::env::var("CARGO_CFG_TARGET_ARCH")?;
 

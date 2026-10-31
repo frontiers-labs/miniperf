@@ -16,11 +16,10 @@ miniperf-store-writer = { path = "writer" }
 duckdb = { version = "1.10505.0", optional = true }
 mperf-data = { path = "../mperf-data", optional = true }
 serde_json = { version = "1.0", optional = true }
-thiserror = { version = "2", optional = true }
 
 [features]
 default = ["session"]
-session = ["dep:duckdb", "dep:mperf-data", "dep:serde_json", "dep:thiserror"]
+session = ["dep:duckdb", "dep:mperf-data", "dep:serde_json"]
 
 [dev-dependencies]
 tempfile = "3"

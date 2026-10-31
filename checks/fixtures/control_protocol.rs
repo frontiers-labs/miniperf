@@ -6,7 +6,7 @@ use shmem::proc_channel::{Receiver, Sender};
 
 fn main() {
     let pid = std::process::id();
-    let prefix = format!("/mperf_control_check_{pid}");
+    let prefix = format!("/mc{pid:x}");
     // This check changes its environment before starting any other threads.
     unsafe { std::env::set_var("MPERF_CONTROL_SHMEM", &prefix) };
     let mut plane = ControlPlane::create(pid).expect("create control plane");
@@ -43,7 +43,7 @@ fn main() {
     assert_eq!(stats.recv_sync(), None);
     drop((commands, stats, plane));
 
-    let prefix = format!("{prefix}_client");
+    let prefix = format!("/md{pid:x}");
     let stats = Sender::new(&format!("{prefix}-{pid}-stats"), 64 * 1024).unwrap();
     let mut commands = Receiver::new(&format!("{prefix}-{pid}-cmd"), 4 * 1024).unwrap();
     let mut client =
