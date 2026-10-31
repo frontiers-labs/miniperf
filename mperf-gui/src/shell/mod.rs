@@ -1,3 +1,4 @@
+mod allocations;
 mod asm;
 mod cores;
 mod derived;
@@ -190,11 +191,12 @@ enum ViewId {
     TopDown,
     Resources,
     Memory,
+    Allocations,
     Roofline,
 }
 
 impl ViewId {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
         Self::Summary,
         Self::Hotspots,
         Self::Flame,
@@ -205,6 +207,7 @@ impl ViewId {
         Self::TopDown,
         Self::Resources,
         Self::Memory,
+        Self::Allocations,
         Self::Roofline,
     ];
 
@@ -220,6 +223,7 @@ impl ViewId {
             Self::TopDown => "Top-Down",
             Self::Resources => "Resources",
             Self::Memory => "Memory",
+            Self::Allocations => "Allocations",
             Self::Roofline => "Roofline",
         }
     }
@@ -236,6 +240,7 @@ impl ViewId {
             Self::TopDown => Icon::Layers,
             Self::Resources => Icon::Gauge,
             Self::Memory => Icon::MemoryStick,
+            Self::Allocations => Icon::MemoryStick,
             Self::Roofline => Icon::Mountain,
         }
     }
@@ -258,6 +263,7 @@ impl ViewId {
                 .is_some_and(tma::TmaData::has_hierarchy),
             Self::Resources => session.snapshot.is_some(),
             Self::Memory => session.memory.is_some(),
+            Self::Allocations => session.allocations.is_some(),
             Self::Roofline => session.roofline.is_some(),
         }
     }
@@ -347,6 +353,8 @@ pub struct ShellView {
     side_panel_open: bool,
     panel_width: f32,
     selected_frame: Option<usize>,
+    allocation_stack: Option<u64>,
+    allocation_sites: Derived<Vec<(u64, allocations::Site)>>,
     /// Index into the recording's roofline loops, for the Roofline view.
     roofline_loop: Option<usize>,
     /// Zoom/pan window of the roofline plot; `None` fits every loop.
@@ -445,6 +453,8 @@ impl ShellView {
             side_panel_open: true,
             panel_width: 300.0,
             selected_frame: None,
+            allocation_stack: None,
+            allocation_sites: Derived::default(),
             roofline_loop: None,
             roofline_view: None,
             roofline_drag: None,
@@ -499,6 +509,8 @@ impl ShellView {
         self.roofline_view = None;
         self.roofline_drag = None;
         self.source_tabs.clear();
+        self.allocation_stack = None;
+        self.allocation_sites.reset();
         self.brush.clear();
         self.analysis.reset();
         self.flame.reset();
@@ -580,6 +592,7 @@ impl ShellView {
         let Some(session) = self.session.clone() else {
             return;
         };
+        self.ensure_allocation_sites(cx);
 
         let key = self.analysis_key();
         if self.analysis.needs(key) {
@@ -867,7 +880,12 @@ impl ShellView {
     /// `--tour` reads this rather than loading a recording itself, so it can
     /// only ever observe what a user would see.
     pub fn load_error(&self) -> Option<&str> {
-        self.load_error.as_deref()
+        self.load_error.as_deref().or_else(|| {
+            self.session
+                .as_ref()
+                .and_then(|session| session.allocations.as_ref())
+                .and_then(|data| data.error.as_deref())
+        })
     }
 
     /// Whether a session finished loading.
@@ -2987,6 +3005,7 @@ impl ShellView {
             Some(ViewId::TopDown) => topdown::render(self, session, cx),
             Some(ViewId::Resources) => resources::render(session, cx),
             Some(ViewId::Memory) => memory::render(session, cx),
+            Some(ViewId::Allocations) => allocations::render(self, session, cx),
             Some(ViewId::Roofline) => roofline::render(self, session, cx),
         }
     }

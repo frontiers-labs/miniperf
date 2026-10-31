@@ -1,3 +1,4 @@
+mod allocations;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::Path;
@@ -23,6 +24,8 @@ pub struct EventDispatcher {
 
 enum Msg {
     Event(Box<Event>),
+    Allocation(libprof::Allocation),
+    AllocationCoverage(libprof::AllocationCoverage),
     MemSample(MemSample),
     Module(ProcMapEntry),
     Resource(libprof::ResourceSample),
@@ -31,7 +34,7 @@ enum Msg {
 }
 
 pub struct DispatcherJoinHandle {
-    worker: std::thread::JoinHandle<()>,
+    worker: std::thread::JoinHandle<anyhow::Result<()>>,
 }
 
 const BATCH_ROWS: usize = 8192;
@@ -53,6 +56,7 @@ const RESOURCE_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_s
 const RESOURCE_BATCH_ROWS: usize = 4096;
 
 struct Worker {
+    allocations: Option<allocations::Writer>,
     interner: Arc<Mutex<StringInterner>>,
     samples: SampleRawRows,
     samples_writer: SegmentWriter,
@@ -83,6 +87,7 @@ impl Worker {
         let mut clock = ClockAnchorRows::default();
         clock.push("start");
         Worker {
+            allocations: Some(allocations::Writer::new(dir)),
             interner,
             samples: SampleRawRows::default(),
             samples_writer: SegmentWriter::new(dir, "samples_raw", None, SampleRawRows::schema()),
@@ -306,7 +311,12 @@ impl Worker {
         }
     }
 
-    fn finish(mut self) {
+    fn finish(mut self) -> anyhow::Result<()> {
+        let allocation_result = self
+            .allocations
+            .take()
+            .map(|writer| writer.finish())
+            .transpose();
         self.flush_samples();
         self.flush_mem_samples();
         self.flush_events();
@@ -363,6 +373,7 @@ impl Worker {
                 eprintln!("failed to write {table}: {err:#}");
             }
         }
+        allocation_result.map(|_| ())
     }
 }
 
@@ -404,6 +415,10 @@ impl EventDispatcher {
             while let Ok(message) = rx.recv() {
                 match message {
                     Msg::Event(event) => worker.consume(*event),
+                    Msg::Allocation(record) => worker.allocations.as_mut().unwrap().push(record),
+                    Msg::AllocationCoverage(coverage) => {
+                        worker.allocations.as_mut().unwrap().coverage(coverage)
+                    }
                     Msg::MemSample(sample) => worker.consume_mem_sample(sample),
                     Msg::Module(entry) => {
                         worker.modules.insert(entry);
@@ -413,7 +428,7 @@ impl EventDispatcher {
                     Msg::Metric(group, name, value) => worker.metrics.push((group, name, value)),
                 }
             }
-            worker.finish();
+            worker.finish()
         });
         (
             Arc::new(EventDispatcher {
@@ -468,9 +483,11 @@ impl EventDispatcher {
 }
 
 impl DispatcherJoinHandle {
-    pub async fn join(self) {
+    pub async fn join(self) -> anyhow::Result<()> {
         let worker = self.worker;
-        let _ = tokio::task::spawn_blocking(move || worker.join()).await;
+        tokio::task::spawn_blocking(move || worker.join())
+            .await?
+            .map_err(|_| anyhow::anyhow!("recording writer panicked"))?
     }
 }
 
@@ -480,6 +497,12 @@ impl DispatcherJoinHandle {
 impl libprof::Sink for EventDispatcher {
     fn record(&self, record: libprof::Record) {
         match record {
+            libprof::Record::Allocation(record) => {
+                let _ = self.tx.send(Msg::Allocation(record));
+            }
+            libprof::Record::AllocationCoverage(coverage) => {
+                let _ = self.tx.send(Msg::AllocationCoverage(coverage));
+            }
             libprof::Record::Sample(sample) => {
                 let unique_id = self.unique_id();
                 let mut callstack = smallvec::smallvec![CallFrame::IP(sample.ip)];

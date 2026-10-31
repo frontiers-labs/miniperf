@@ -58,7 +58,7 @@ impl Source for InternalEventsSource {
 }
 
 /// The collector core shipped next to the running executable, when present.
-fn collector_library_path() -> Option<PathBuf> {
+pub(crate) fn collector_library_path() -> Option<PathBuf> {
     let library = if cfg!(target_os = "macos") {
         "libmperf_collector.dylib"
     } else {

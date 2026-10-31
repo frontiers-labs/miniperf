@@ -1,5 +1,5 @@
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -20,6 +20,7 @@ type AllocationMap = (Vec<Allocation>, HashMap<u64, Vec<u64>>);
 /// the call stack that requested it.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Allocation {
+    pub pid: u32,
     pub start: u64,
     pub end: u64,
     pub from_ns: i64,
@@ -27,49 +28,50 @@ pub(crate) struct Allocation {
     pub site: u64,
 }
 
-/// For every `(address, timestamp)` probe, the index of the allocation that was
-/// live at that address and time, if any.
-///
-/// Sweeps both sides in address order with a heap of currently-spanning
-/// allocations, so the cost is `O((n + m) log n)` rather than a nested scan.
+/// Match samples against process-local, half-open address and ownership ranges.
+/// A time sweep keeps only live generations in the address map, so repeated
+/// reuse of one address does not require scanning every historical allocation.
 pub(crate) fn join_allocations(
     allocations: &[Allocation],
-    probes: &[(u64, i64)],
+    probes: &[(u32, u64, i64)],
 ) -> Vec<Option<usize>> {
-    let mut by_start: Vec<usize> = (0..allocations.len()).collect();
-    by_start.sort_unstable_by_key(|index| allocations[*index].start);
-    let mut by_address: Vec<usize> = (0..probes.len()).collect();
-    by_address.sort_unstable_by_key(|index| probes[*index].0);
-
+    let mut introductions = (0..allocations.len()).collect::<Vec<_>>();
+    introductions.sort_unstable_by_key(|index| allocations[*index].from_ns);
+    let mut probes_by_time = (0..probes.len()).collect::<Vec<_>>();
+    probes_by_time.sort_unstable_by_key(|index| probes[*index].2);
+    let mut live = BTreeMap::new();
+    let mut endings = BinaryHeap::<Reverse<(i64, usize)>>::new();
     let mut matches = vec![None; probes.len()];
-    let mut active = BinaryHeap::<Reverse<(u64, usize)>>::new();
     let mut next = 0;
-
-    for probe_index in by_address {
-        let (address, time) = probes[probe_index];
-        while next < by_start.len() && allocations[by_start[next]].start <= address {
-            let allocation = &allocations[by_start[next]];
-            active.push(Reverse((allocation.end, by_start[next])));
+    for probe in probes_by_time {
+        let (pid, address, time) = probes[probe];
+        while next < introductions.len() && allocations[introductions[next]].from_ns <= time {
+            let index = introductions[next];
+            let allocation = &allocations[index];
+            live.insert((allocation.pid, allocation.start), index);
+            endings.push(Reverse((allocation.to_ns, index)));
             next += 1;
         }
-        while active
-            .peek()
-            .is_some_and(|Reverse((end, _))| *end <= address)
-        {
-            active.pop();
+        while endings.peek().is_some_and(|Reverse((end, _))| *end <= time) {
+            let Reverse((_, index)) = endings.pop().unwrap();
+            let allocation = &allocations[index];
+            let key = (allocation.pid, allocation.start);
+            if live.get(&key) == Some(&index) {
+                live.remove(&key);
+            }
         }
-        // The heap holds every allocation spanning this address across the whole
-        // recording; address reuse keeps that set tiny, so picking the one live
-        // at this instant is a short scan.
-        matches[probe_index] = active
-            .iter()
-            .map(|Reverse((_, index))| *index)
-            .find(|index| {
+        matches[probe] = live
+            .range(..=(pid, address))
+            .next_back()
+            .and_then(|(_, index)| {
                 let allocation = &allocations[*index];
-                allocation.from_ns <= time && time < allocation.to_ns
+                (allocation.pid == pid
+                    && allocation.start <= address
+                    && address < allocation.end
+                    && time < allocation.to_ns)
+                    .then_some(*index)
             });
     }
-
     matches
 }
 
@@ -269,10 +271,9 @@ fn write_alloc_site_memory(
     resolved_ips: &mut HashMap<(u32, u64), ResolvedIp>,
 ) -> Result<()> {
     let (allocations, sites) = load_allocations(tables, res_dir)?;
-    let pid = samples.first().map(|sample| sample.pid).unwrap_or_default();
-    let probes: Vec<(u64, i64)> = samples
+    let probes: Vec<(u32, u64, i64)> = samples
         .iter()
-        .map(|sample| (sample.data_addr, sample.timestamp))
+        .map(|sample| (sample.pid, sample.data_addr, sample.timestamp))
         .collect();
     let matches = join_allocations(&allocations, &probes);
 
@@ -287,9 +288,9 @@ fn write_alloc_site_memory(
         latencies: Vec<u64>,
     }
 
-    let mut stats = HashMap::<u64, SiteStats>::new();
+    let mut stats = HashMap::<(u32, u64), SiteStats>::new();
     for allocation in &allocations {
-        let entry = stats.entry(allocation.site).or_default();
+        let entry = stats.entry((allocation.pid, allocation.site)).or_default();
         entry.allocations += 1;
         entry.allocated_bytes += allocation.end.saturating_sub(allocation.start) as i64;
     }
@@ -297,7 +298,7 @@ fn write_alloc_site_memory(
         let Some(allocation) = matched.map(|index| &allocations[index]) else {
             continue;
         };
-        let entry = stats.entry(allocation.site).or_default();
+        let entry = stats.entry((allocation.pid, allocation.site)).or_default();
         entry.samples += 1;
         entry.misses += i64::from(sample.source.hit == Some(false));
         entry.hitm += i64::from(sample.source.snoop == MemSnoop::Hitm);
@@ -308,7 +309,7 @@ fn write_alloc_site_memory(
         entry.latencies.push(sample.latency);
     }
 
-    let mut rows: Vec<(u64, SiteStats)> = stats.into_iter().collect();
+    let mut rows: Vec<((u32, u64), SiteStats)> = stats.into_iter().collect();
     rows.sort_unstable_by_key(|(site, entry)| {
         (Reverse(entry.latencies.iter().sum::<u64>()), *site)
     });
@@ -321,20 +322,21 @@ fn write_alloc_site_memory(
             .unwrap_or_default()
     };
     let mut columns = Columns::default();
+    columns.u64("pid", rows.iter().map(|(site, _)| site.0 as u64).collect());
     columns.text(
         "alloc_site",
         rows.iter()
             .map(|(site, _)| {
                 sites
-                    .get(site)
-                    .map(|frames| resolve_folded_stack(resolver, resolved_ips, pid, frames))
+                    .get(&site.1)
+                    .map(|frames| resolve_folded_stack(resolver, resolved_ips, site.0, frames))
                     .unwrap_or_else(|| "[unknown]".to_owned())
             })
             .collect(),
     );
     columns.u64(
         "alloc_stack_id",
-        rows.iter().map(|(site, _)| *site).collect(),
+        rows.iter().map(|(site, _)| site.1).collect(),
     );
     columns.i64(
         "allocation_count",
@@ -402,11 +404,12 @@ fn write_cacheline_contention(tables: &Tables) -> Result<()> {
     )
 }
 
-/// Live allocation ranges from the libc shim's sampled `malloc`/`free` trace
-/// points: `flow_id` carries the pointer and the attached stack identifies the
-/// site. The unthrottled `memory-allocations.txt` stream carries no call stack,
-/// so it cannot attribute anything to a site.
+/// Prefer typed, unthrottled lifetimes. Legacy sampled trace events remain a
+/// reader fallback for recordings made before allocation capture was typed.
 fn load_allocations(tables: &Tables, res_dir: &Path) -> Result<AllocationMap> {
+    if tables.has_table("allocations") {
+        return typed_allocations(tables);
+    }
     if !tables.has_table("events") || !tables.has_table("payloads") {
         return Ok((Vec::new(), HashMap::new()));
     }
@@ -427,7 +430,7 @@ fn load_allocations(tables: &Tables, res_dir: &Path) -> Result<AllocationMap> {
 
     let connection = tables.connection();
     let mut statement = connection.prepare(&format!(
-        "SELECT e.timestamp, e.flow_id, e.value, s.string, {stack_id}
+        "SELECT e.timestamp, e.flow_id, e.value, s.string, {stack_id},e.pid
          FROM events e
          JOIN payloads p ON p.event_id = e.event_id
          JOIN strings s ON s.id = p.name_id
@@ -443,18 +446,20 @@ fn load_allocations(tables: &Tables, res_dir: &Path) -> Result<AllocationMap> {
                 row.get::<_, i64>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, i64>(4)?,
+                row.get::<_, u32>(5)?,
             ))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
-    let mut open = HashMap::<u64, (i64, i64, u64)>::new();
+    let mut open = HashMap::<(u32, u64), (i64, i64, u64)>::new();
     let mut allocations = Vec::new();
-    for (timestamp, pointer, size, name, stack_id) in rows {
+    for (timestamp, pointer, size, name, stack_id, pid) in rows {
         if name == "malloc" {
             if let Some((start, size, site)) =
-                open.insert(pointer, (timestamp, size, stack_id as u64))
+                open.insert((pid, pointer), (timestamp, size, stack_id as u64))
             {
                 allocations.push(Allocation {
+                    pid,
                     start: pointer,
                     end: pointer.saturating_add(size.max(0) as u64),
                     from_ns: start,
@@ -462,8 +467,9 @@ fn load_allocations(tables: &Tables, res_dir: &Path) -> Result<AllocationMap> {
                     site,
                 });
             }
-        } else if let Some((start, size, site)) = open.remove(&pointer) {
+        } else if let Some((start, size, site)) = open.remove(&(pid, pointer)) {
             allocations.push(Allocation {
+                pid,
                 start: pointer,
                 end: pointer.saturating_add(size.max(0) as u64),
                 from_ns: start,
@@ -472,8 +478,9 @@ fn load_allocations(tables: &Tables, res_dir: &Path) -> Result<AllocationMap> {
             });
         }
     }
-    for (pointer, (start, size, site)) in open {
+    for ((pid, pointer), (start, size, site)) in open {
         allocations.push(Allocation {
+            pid,
             start: pointer,
             end: pointer.saturating_add(size.max(0) as u64),
             from_ns: start,
@@ -550,4 +557,37 @@ fn list_values(list: &ListArray, index: usize) -> Result<Vec<u64>> {
         .downcast_ref::<UInt64Array>()
         .context("expected a list of unsigned 64-bit values")?;
     Ok(values.values().to_vec())
+}
+
+fn typed_allocations(tables: &Tables) -> Result<AllocationMap> {
+    // A missing ownership boundary can make address reuse ambiguous. Keep
+    // observed totals available, but do not attach samples to uncertain ranges.
+    if tables.scalar_f64("SELECT complete FROM allocation_summary") != Some(1.0) {
+        return Ok((Vec::new(), HashMap::new()));
+    }
+    let mut statement = tables.connection().prepare(
+        "SELECT pid,address,requested_bytes,allocated_ns,freed_ns,stack_id FROM allocations",
+    )?;
+    let allocations = statement
+        .query_map([], |row| {
+            let start = row.get::<_, u64>(1)?;
+            Ok(Allocation {
+                pid: row.get::<_, u64>(0)? as u32,
+                start,
+                end: start.saturating_add(row.get(2)?),
+                from_ns: row.get::<_, u64>(3)? as i64,
+                to_ns: row.get::<_, Option<i64>>(4)?.unwrap_or(i64::MAX),
+                site: row.get(5)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut statement = tables
+        .connection()
+        .prepare("SELECT stack_id,pc FROM allocation_stack_raw ORDER BY stack_id,frame_index")?;
+    let mut stacks = HashMap::<u64, Vec<u64>>::new();
+    for row in statement.query_map([], |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?)))? {
+        let (stack, pc) = row?;
+        stacks.entry(stack).or_default().push(pc);
+    }
+    Ok((allocations, stacks))
 }

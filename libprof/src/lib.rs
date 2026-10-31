@@ -4,6 +4,7 @@
 //! [`EventTimer`] measures focused scopes, while [`QuickSampler`] records a
 //! closure into memory without the profiler's file or dispatcher machinery.
 
+mod allocation;
 mod capabilities;
 mod cpu_family;
 #[cfg(feature = "criterion")]
@@ -21,6 +22,8 @@ mod sink;
 mod source;
 mod topdown;
 mod unwind;
+
+pub use allocation::{Allocation, AllocationAttribution, AllocationOperation};
 
 pub use capabilities::{capabilities, Capabilities, PmuDevice};
 pub use cpu_family::{host_cpu_description, host_metrics};
@@ -53,11 +56,12 @@ pub use quick::{top_symbols, SymbolCount};
 pub use quick::{QuickSampler, SampleBatch};
 pub use sampling_probe::{probe_sampling_group, SamplingProbe};
 pub use sink::{
-    MemSample, ProcAddr, ProcessInfo, Record, ResourceSample, Sample, Sink, SourceStatus, UserRegs,
+    AllocationCoverage, MemSample, ProcAddr, ProcessInfo, Record, ResourceSample, Sample, Sink,
+    SourceStatus, UserRegs,
 };
 pub use source::{
-    Availability, BpfSource, HostTelemetrySource, InternalEventsSource, PmuSamplingSource,
-    PreciseMemorySource, ProcfsSource, SessionContext, Source, SourceDecl,
+    AllocationSource, Availability, BpfSource, HostTelemetrySource, InternalEventsSource,
+    PmuSamplingSource, PreciseMemorySource, ProcfsSource, SessionContext, Source, SourceDecl,
 };
 pub use topdown::{is_topdown_event, sysfs_alias, GROUP_LEADER};
 pub use unwind::{Frames, PostHocUnwinder, StackSample};

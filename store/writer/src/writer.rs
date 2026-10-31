@@ -25,10 +25,15 @@ pub struct SegmentWriter {
 
 const DEFAULT_SEGMENT_BYTES: u64 = 64 * 1024 * 1024;
 
-fn writer_properties() -> WriterProperties {
-    WriterProperties::builder()
-        .set_compression(Compression::ZSTD(ZstdLevel::try_new(1).unwrap()))
-        .build()
+fn writer_properties(table: &str) -> WriterProperties {
+    let mut properties = WriterProperties::builder()
+        .set_compression(Compression::ZSTD(ZstdLevel::try_new(1).unwrap()));
+    if table == "events" {
+        properties = properties
+            .set_column_dictionary_enabled("timestamp".into(), false)
+            .set_column_dictionary_enabled("instance".into(), false);
+    }
+    properties.build()
 }
 
 impl SegmentWriter {
@@ -74,7 +79,7 @@ impl SegmentWriter {
             self.current = Some(ArrowWriter::try_new(
                 file,
                 self.schema.clone(),
-                Some(writer_properties()),
+                Some(writer_properties(&self.table)),
             )?);
         }
         let writer = self.current.as_mut().unwrap();
@@ -113,7 +118,7 @@ pub fn write_table(dir: &Path, name: &str, batches: &[RecordBatch]) -> Result<Pa
     let path = dir.join(format!("{name}.parquet"));
     let file =
         File::create(&path).with_context(|| format!("failed to create {}", path.display()))?;
-    let mut writer = ArrowWriter::try_new(file, schema, Some(writer_properties()))?;
+    let mut writer = ArrowWriter::try_new(file, schema, Some(writer_properties(name)))?;
     for batch in batches {
         writer.write(batch)?;
     }

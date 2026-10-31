@@ -1,3 +1,4 @@
+mod allocations;
 mod charts;
 mod gallery;
 mod memory;
@@ -274,6 +275,25 @@ fn run_tour(handle: gpui::WindowHandle<shell::ShellView>, cx: &mut App) {
                                     std::process::exit(1);
                                 }
                             }
+                        }
+                    }
+                    let deadline = std::time::Instant::now() + TOUR_LOAD_TIMEOUT;
+                    loop {
+                        cx.background_executor().timer(TOUR_TAB_DWELL).await;
+                        match handle.update(cx, |view, _, cx| view.allocation_tour_ready(cx)) {
+                            Ok(true) => break,
+                            Ok(false) if std::time::Instant::now() < deadline => {}
+                            result => {
+                                eprintln!("tour: allocation summaries failed: {result:?}");
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    match handle.update(cx, |view, _, cx| view.tour_allocations(cx)) {
+                        Ok(Ok(())) => {}
+                        result => {
+                            eprintln!("tour: allocations failed: {result:?}");
+                            std::process::exit(1);
                         }
                     }
                     let region_count =

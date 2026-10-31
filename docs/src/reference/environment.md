@@ -12,8 +12,6 @@ Variables you set before running `mperf`:
 | `MPERF_QEMU_PLUGIN` | The miniperf QEMU plugin shared library. | artifact next to `mperf` |
 | `MPERF_DYNAMORIO` | `drrun` launcher or DynamoRIO directory. | bundle next to `mperf`, then `PATH` |
 | `MPERF_DR_CLIENT` | The miniperf DynamoRIO client library `libdr_roofline.so`. | discovered next to `mperf` or in the bundle |
-| `MPERF_LIBC_SAMPLE_EVERY` | The libc shim records every Nth allocation per thread. | `16` |
-| `MPERF_LIBC_SIZE_THRESHOLD` | Allocations of at least this many bytes are always recorded. | `65536` |
 | `MPERF_SPE_DEBUG` | Print Arm SPE decoder diagnostics. | unset |
 
 Variables `mperf record` sets for the profiled process. Applications and shims read them. Do not set them by hand unless you run a process outside `mperf record` and want it to trace into an existing session:
@@ -23,8 +21,9 @@ Variables `mperf record` sets for the profiled process. Applications and shims r
 | `MPERF_SESSION_DIR` | The recording directory. When unset, every trace macro and shim is a no-op. |
 | `MPERF_COLLECTOR_LIBRARY` | Path to `libmperf_collector.so`. Defaults to the bare library name, resolved by the dynamic loader. |
 | `MPERF_CONTROL_SHMEM` | Control-channel prefix for live statistics, pause, resume, and flush. Remote MPI ranks run without it and write files only. |
-| `MPERF_PROFILE_ROOT_PID` | PID of the profiled root process. The libc shim scopes allocation capture to that tree. |
-| `MPERF_MEMORY_ALLOCATIONS` | Output path of the raw allocation stream in the `mem` scenario. |
+| `MPERF_PROFILE_ROOT_PID` | PID of the profiled root process. The libc shim scopes allocation capture to that root process. |
+| `MPERF_ALLOCATION_CHANNEL` | Root allocation IPC channel owned by AllocationSource. |
+| `MPERF_ALLOCATION_STACK_EVERY` | Stack attribution interval. `0` means metadata only. Lifetimes are always observed. |
 | `MPERF_COLLECTOR_ROOFLINE_INSTRUMENTED` | `1` on the instrumented Roofline run. |
 
 Standard variables that change behavior:

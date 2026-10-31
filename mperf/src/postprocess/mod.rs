@@ -1,10 +1,11 @@
+mod allocations;
 mod assembly;
 mod mem_samples;
 mod memory;
 mod roofline;
 mod samples;
 mod snapshot;
-mod tables;
+pub(crate) mod tables;
 mod tma;
 mod trace;
 
@@ -29,6 +30,7 @@ pub async fn perform_postprocessing(res_dir: &Path, pb: kdam::Bar) -> Result<()>
 
     let tables = Tables::open(res_dir)?;
     samples::process(&tables, &info, res_dir, &mut pb).await?;
+    allocations::process(&tables)?;
     snapshot::write_host_telemetry(&tables, res_dir)?;
     snapshot::write_collectors(&tables, &info)?;
 

@@ -38,6 +38,10 @@ fn roofline_enabled() -> bool {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn mperf_roofline_internal_is_instrumented_profiling() -> i32 {
+    if crate::session::thread_is_internal() {
+        return 0;
+    }
+    let _guard = crate::session::InternalGuard::enter();
     (collector().is_some() && roofline_enabled()) as i32
 }
 
@@ -47,6 +51,10 @@ pub extern "C" fn mperf_roofline_internal_is_instrumented_profiling() -> i32 {
 pub unsafe extern "C" fn mperf_roofline_internal_notify_loop_begin(
     info: *const LoopInfo,
 ) -> *mut LoopHandle {
+    if crate::session::thread_is_internal() {
+        return std::ptr::null_mut();
+    }
+    let _guard = crate::session::InternalGuard::enter();
     let Some(collector) = collector() else {
         return std::ptr::null_mut();
     };
@@ -79,6 +87,10 @@ pub unsafe extern "C" fn mperf_roofline_internal_notify_loop_begin(
 /// `handle` must come from `mperf_roofline_internal_notify_loop_begin`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mperf_roofline_internal_notify_loop_end(handle: *mut LoopHandle) {
+    if crate::session::thread_is_internal() {
+        return;
+    }
+    let _guard = crate::session::InternalGuard::enter();
     let Some(collector) = collector() else {
         return;
     };
@@ -109,6 +121,10 @@ pub unsafe extern "C" fn mperf_roofline_internal_notify_loop_stats(
     handle: *mut LoopHandle,
     stats: *const LoopStats,
 ) {
+    if crate::session::thread_is_internal() {
+        return;
+    }
+    let _guard = crate::session::InternalGuard::enter();
     let Some(collector) = collector() else {
         return;
     };

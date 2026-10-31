@@ -228,3 +228,23 @@ pub fn scenario_counters(scenario: Scenario) -> Vec<Counter> {
             .collect(),
     }
 }
+
+/// Allocation lifetimes are opt-in; only call stack attribution is sampled.
+#[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
+pub enum AllocationMode {
+    #[default]
+    Off,
+    Metadata,
+    Sampled,
+    Full,
+}
+impl AllocationMode {
+    pub fn stack_every(self) -> Option<u64> {
+        match self {
+            Self::Off => None,
+            Self::Metadata => Some(0),
+            Self::Sampled => Some(16),
+            Self::Full => Some(1),
+        }
+    }
+}

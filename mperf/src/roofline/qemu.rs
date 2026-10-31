@@ -33,6 +33,7 @@ pub(super) struct QemuBackend {
     method: RooflineMethodInfo,
     cache: CacheInfo,
     memory_profile: bool,
+    allocations: crate::source::AllocationMode,
 }
 
 /// Which same-artifact accounting tool drives run 2. Both emit the
@@ -236,6 +237,7 @@ impl QemuBackend {
             method,
             cache: detect_host_cache(),
             memory_profile,
+            allocations: options.allocations,
         })
     }
 
@@ -293,6 +295,7 @@ impl QemuBackend {
             method,
             cache: detect_host_cache(),
             memory_profile,
+            allocations: options.allocations,
         })
     }
 
@@ -348,14 +351,6 @@ impl QemuBackend {
                 self.cache.associativity,
                 if self.memory_profile { "on" } else { "off" }
             ));
-            if self.memory_profile
-                && let Some(preload) = super::memory_preload_path()
-            {
-                command.push("-E".to_string());
-                command.push(format!("LD_PRELOAD={}", preload.display()));
-                command.push("-E".to_string());
-                command.push("MPERF_MEMORY_ALLOCATIONS=/dev/null".to_string());
-            }
         }
         command.extend(guest.iter().cloned());
         Ok(command)
@@ -405,19 +400,8 @@ impl QemuBackend {
                     );
                 }
                 command.extend(guest.iter().cloned());
-                let mut env = Vec::new();
-                if self.memory_profile
-                    && let Some(preload) = super::memory_preload_path()
-                {
-                    env.push((
-                        "LD_PRELOAD".to_string(),
-                        preload.to_string_lossy().into_owned(),
-                    ));
-                    env.push((
-                        "MPERF_MEMORY_ALLOCATIONS".to_string(),
-                        "/dev/null".to_string(),
-                    ));
-                }
+                let env = Vec::new();
+
                 Ok((command, env))
             }
         }
@@ -545,6 +529,7 @@ pub(super) fn probe(options: &Options, guest: &Path) -> Result<()> {
         },
         cache: detect_host_cache(),
         memory_profile: false,
+        allocations: crate::source::AllocationMode::Off,
     };
     let qemu = backend.qemu_for(guest)?;
     ensure_plugin_support(&qemu)
@@ -818,6 +803,8 @@ impl RooflineBackend for QemuBackend {
                 self.memory_profile
                     .then(|| output_directory.join("memory-rss.txt")),
                 super::bandwidth_timeline_path(output_directory),
+                self.allocations,
+                output_directory,
             )
             .await?;
             let timing_path = output_directory.join("memory-native.json");

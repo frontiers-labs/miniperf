@@ -81,6 +81,9 @@ enum Commands {
         /// Stop a snapshot after this duration (for example `10s` or `2m`).
         #[arg(long, value_parser = parse_duration)]
         duration: Option<std::time::Duration>,
+        /// Capture libc allocation lifetimes; sample only stack attribution.
+        #[arg(long, value_enum)]
+        allocations: Option<source::AllocationMode>,
         #[arg(last = true)]
         command: Vec<String>,
     },
@@ -165,9 +168,16 @@ pub async fn run() -> Result<()> {
             output_directory,
             pid,
             duration,
+            allocations,
             command,
         } => {
+            let allocations = allocations.unwrap_or(if scenario == Scenario::Mem {
+                source::AllocationMode::Metadata
+            } else {
+                source::AllocationMode::Off
+            });
             let roofline = roofline::Options {
+                allocations,
                 backend: roofline_backend,
                 qemu,
                 qemu_plugin,
@@ -193,6 +203,7 @@ pub async fn run() -> Result<()> {
                 command,
                 roofline,
                 duration,
+                allocations,
             )
             .await;
             // Without info.json there is no recording here, only whatever

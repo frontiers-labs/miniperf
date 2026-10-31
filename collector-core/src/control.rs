@@ -38,7 +38,7 @@ impl ControlPlane {
     }
 
     pub fn publish(&self, stats: CollectorStats) {
-        let _ = self.stats.send_sync(stats);
+        let _ = self.stats.send_sync(&stats);
     }
 
     pub fn poll_command(&self) -> Option<ControlCommand> {
@@ -80,6 +80,6 @@ impl ControlClient {
     }
 
     pub fn send(&self, command: ControlCommand) {
-        let _ = self.commands.send_sync(command);
+        let _ = self.commands.send_sync(&command);
     }
 }

@@ -47,13 +47,13 @@ pub(crate) struct BandwidthSample {
 struct AllocationPoint {
     timestamp: u64,
     live_allocated: u64,
-    live_mapped: u64,
+    live_mapped: Option<u64>,
 }
 
 struct AllocationSummary {
     live_allocated: u64,
     peak_allocated: u64,
-    live_mapped: u64,
+    live_mapped: Option<u64>,
     points: Vec<AllocationPoint>,
     child_seen: bool,
 }
@@ -151,7 +151,11 @@ pub(crate) fn process(tables: &Tables, record_info: &RecordInfo, res_dir: &Path)
 
     let rss_samples = parse_rss_samples(&res_dir.join("memory-rss.txt"))?;
     let peak_rss = rss_samples.iter().map(|(_, rss)| *rss).max();
-    let allocations = parse_allocation_samples(&res_dir.join("memory-allocations.txt"))?;
+    let allocations = if tables.has_table("allocation_summary") {
+        typed_allocations(tables)?
+    } else {
+        parse_allocation_samples(&res_dir.join("memory-allocations.txt"))?
+    };
     let mut quality = match &record_info.scenario_info {
         ScenarioInfo::Mem(info) => info.method.quality.clone(),
         ScenarioInfo::Roofline(info) => info
@@ -208,7 +212,11 @@ pub(crate) fn process(tables: &Tables, record_info: &RecordInfo, res_dir: &Path)
     );
     summary.i64_opt(
         "live_mapped_bytes",
-        vec![allocations.as_ref().map(|a| a.live_mapped as i64)],
+        vec![
+            allocations
+                .as_ref()
+                .and_then(|a| a.live_mapped.map(|v| v as i64)),
+        ],
     );
     summary.i64_opt("peak_rss_bytes", vec![peak_rss.map(|rss| rss as i64)]);
     summary.text("quality", vec![quality]);
@@ -242,7 +250,7 @@ pub(crate) fn process(tables: &Tables, record_info: &RecordInfo, res_dir: &Path)
             timeline.push(TimelinePoint {
                 timestamp: point.timestamp,
                 allocated: Some(point.live_allocated as i64),
-                mapped: Some(point.live_mapped as i64),
+                mapped: point.live_mapped.map(|v| v as i64),
                 ..TimelinePoint::default()
             });
         }
@@ -499,13 +507,13 @@ fn parse_allocation_samples(path: &Path) -> Result<Option<AllocationSummary>> {
         points.push(AllocationPoint {
             timestamp,
             live_allocated,
-            live_mapped,
+            live_mapped: Some(live_mapped),
         });
     }
     Ok(Some(AllocationSummary {
         live_allocated,
         peak_allocated,
-        live_mapped,
+        live_mapped: Some(live_mapped),
         points,
         child_seen,
     }))
@@ -532,4 +540,45 @@ fn unmap_range(mappings: &mut BTreeMap<u64, u64>, start: u64, size: u64, live: &
             mappings.insert(end, mapping_end - end);
         }
     }
+}
+
+fn typed_allocations(tables: &Tables) -> Result<Option<AllocationSummary>> {
+    let summary = tables.connection().query_row(
+        "SELECT complete,
+                live_at_end_bytes::UBIGINT,
+                peak_observed_bytes::UBIGINT
+         FROM allocation_summary",
+        [],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, u64>(1)?,
+                row.get::<_, u64>(2)?,
+            ))
+        },
+    )?;
+    if summary.0 != 1 {
+        return Ok(None);
+    }
+    let mut statement = tables.connection().prepare(
+        "SELECT timestamp_ns, observed_live_bytes::UBIGINT
+         FROM allocation_timeline
+         ORDER BY timestamp_ns",
+    )?;
+    let points = statement
+        .query_map([], |row| {
+            Ok(AllocationPoint {
+                timestamp: row.get(0)?,
+                live_allocated: row.get(1)?,
+                live_mapped: None,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(Some(AllocationSummary {
+        live_allocated: summary.1,
+        peak_allocated: summary.2,
+        live_mapped: None,
+        points,
+        child_seen: false,
+    }))
 }

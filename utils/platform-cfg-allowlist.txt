@@ -7,8 +7,8 @@
 # a static library into the DynamoRIO client and the QEMU plugin: that would
 # put rayon and mperf-data inside every instrumented process.
 #
-# store/clock.rs is the CLOCK_MONOTONIC binding a recording is anchored to. It
-# has to be the same clock perf timestamps come from, and store cannot depend
+# store/writer/src/clock.rs binds the CLOCK_MONOTONIC clock recordings use.
+# It has to be the same clock perf timestamps come from, and store cannot depend
 # on libprof (Windows builds the viewer without it), so the syscall is selected
 # here. It is one function alone in its own file so the rest of store stays
 # guarded.
@@ -16,4 +16,4 @@
 # Every other entry is a bug: branch at runtime instead.
 mperf/src/roofline/calibrate.rs
 mperf/src/roofline/qemu.rs
-store/src/clock.rs
+store/writer/src/clock.rs

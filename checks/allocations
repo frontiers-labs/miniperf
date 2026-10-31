@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# Allocation ownership and stacks, queried from fresh shipped-binary recordings.
+# shellcheck source=checks/lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+[[ "$(uname -s)" == Linux ]] || skip "allocation preload currently requires Linux"
+require_pmu
+command -v rustc >/dev/null || fail "rustc is required for the allocation workload"
+
+for frames in no yes; do
+    rustc --edition=2024 -O -g -C "force-frame-pointers=${frames}" \
+        "${checks_root}/fixtures/allocation_lifetimes.rs" \
+        -o "${CHECK_WORK}/bin/allocation-lifetimes-${frames}" || fail "Rust fixture build failed"
+done
+cp "${CHECK_WORK}/bin/allocation-lifetimes-no" "${CHECK_WORK}/bin/allocation-lifetimes-stripped"
+strip --strip-all "${CHECK_WORK}/bin/allocation-lifetimes-stripped" || fail "could not strip allocation workload"
+
+for configuration in no:metadata no:sampled no:full yes:full stripped:full; do
+    frames="${configuration%:*}"
+    mode="${configuration#*:}"
+    dir="${CHECK_WORK}/rec-allocations-${frames}-${mode}"
+    "${mperf}" record -s snapshot --allocations "${mode}" -o "${dir}" -- \
+        "${CHECK_WORK}/bin/allocation-lifetimes-${frames}" \
+        >"${dir}.stdout" 2>"${dir}.stderr" \
+        || { cat "${dir}.stderr" >&2; fail "allocation recording failed"; }
+    python3 - "${mperf}" "${dir}" "${mode}" "${frames}" <<'PY' || fail "allocation ownership check failed"
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+mperf, directory, mode, frames = sys.argv[1:]
+def query(sql):
+    result = subprocess.run([mperf, "query", "--max-rows", "10000", "-f", "json", directory, sql], check=True, capture_output=True, text=True)
+    payload = json.loads(result.stdout)
+    assert not payload["truncated"], sql
+    return payload["rows"]
+
+expected = [json.loads(line) for line in Path(directory + ".stdout").read_text().splitlines() if line.startswith('{"sequence":')]
+assert len(expected) >= 100, "fixture did not complete"
+operations = query("SELECT * FROM allocation_operations ORDER BY sequence")
+assert len({row["sequence"] for row in operations}) == len(operations), "operation identities reused"
+assert len({(row["pid"], row["process_epoch"]) for row in operations}) == 1, "root process identity mismatch"
+capture = query("SELECT * FROM allocation_capture")
+assert len(capture) == 1 and capture[0]["complete"] == 1 and capture[0]["footer"] == 1, capture
+for field in ("producer_dropped", "channel_dropped_operations", "channel_dropped_packets", "paused_operations", "invalid_protocol"):
+    assert capture[0][field] == 0, capture
+assert capture[0]["produced"] == capture[0]["observed_operations"] == len(operations), capture
+assert capture[0]["scope"] == "root_process_libc_interposable", capture
+
+cursor = 0
+def find(predicate):
+    global cursor
+    while cursor < len(operations):
+        row = operations[cursor]
+        cursor += 1
+        if predicate(row):
+            return row
+    raise AssertionError("missing fixture operation: " + json.dumps(event))
+
+live = {}
+generations = []
+cross_thread = 0
+for event in expected:
+    pointer, old, size = event["address"], event["old_address"], event["requested_bytes"]
+    if event["kind"] == "allocated":
+        row = find(lambda row: row["operation"] == 1 and row["address"] == pointer and row["requested_bytes"] == size)
+    elif event["kind"] == "freed":
+        row = find(lambda row: row["operation"] == 2 and row["old_address"] == old)
+        generation = live.pop(old)
+        generation["freed_ns"] = row["timestamp_ns"]
+        if event["case"] == "cross_thread":
+            assert generation["tid"] != row["tid"], "cross-thread free lost its thread"
+            cross_thread += 1
+        continue
+    else:
+        begin = find(lambda row: row["operation"] == 3 and row["old_address"] == old and row["requested_bytes"] == size)
+        row = find(lambda row: row["operation"] == 4 and row["operation_id"] == begin["sequence"] and row["address"] == pointer and row["requested_bytes"] == size)
+        retires = bool(old and (pointer or size == 0))
+        if old:
+            assert row["disposition"] == retires, event
+        if retires:
+            live.pop(old)["freed_ns"] = begin["timestamp_ns"]
+        if not pointer:
+            continue
+    assert pointer not in live, "pointer reuse merged live generations"
+    generation = {"allocation_id": row["sequence"], "pid": row["pid"], "process_epoch": row["process_epoch"], "address": pointer,
+                  "requested_bytes": size, "allocated_ns": row["timestamp_ns"], "freed_ns": None, "tid": row["tid"], "stack_id": row["stack_id"]}
+    live[pointer] = generation
+    generations.append(generation)
+
+assert cross_thread == 8
+assert len(generations) == 55, len(generations)
+assert sum(row["requested_bytes"] for row in generations) == 4254353
+assert sum(row["requested_bytes"] for row in live.values()) == 120001, live
+assert len({row["address"] for row in generations}) < len(generations), "fixture did not reuse a pointer"
+actual = {row["allocation_id"]: row for row in query("SELECT * FROM allocations")}
+for generation in generations:
+    row = actual[generation["allocation_id"]]
+    for key, value in generation.items():
+        assert row[key] == value, (key, value, row)
+    assert row["lifetime_ns"] == (None if row["freed_ns"] is None else row["freed_ns"] - row["allocated_ns"]), row
+identifiers = ",".join(str(row["allocation_id"]) for row in generations)
+fixture_peak = query(f"""WITH selected AS (
+    SELECT * FROM allocations WHERE allocation_id IN ({identifiers})
+), boundaries AS (
+    SELECT allocated_ns AS time, requested_bytes::BIGINT AS delta FROM selected
+    UNION ALL SELECT freed_ns AS time, -requested_bytes::BIGINT AS delta FROM selected WHERE freed_ns IS NOT NULL
+), live AS (
+    SELECT SUM(delta) OVER (ORDER BY time,delta ROWS UNBOUNDED PRECEDING) AS bytes FROM boundaries
+) SELECT MAX(bytes) AS bytes FROM live""")[0]["bytes"]
+assert fixture_peak == 4122067, fixture_peak
+attributed = [row for row in generations if row["stack_id"]]
+if mode == "metadata":
+    assert not attributed, "metadata capture unexpectedly unwound"
+elif mode == "full":
+    assert len(attributed) == len(generations), "full capture omitted application stacks"
+else:
+    assert 0 < len(attributed) < len(generations), "stack sampling did not preserve unknown-stack allocations"
+if attributed:
+    identifiers = ",".join(str(row["stack_id"]) for row in attributed)
+    application = "module LIKE '%allocation-lifetimes-stripped%'" if frames == "stripped" else "function LIKE '%allocation_fixture_%'"
+    symbols = query(f"SELECT DISTINCT stack_id FROM allocation_stacks WHERE stack_id IN ({identifiers}) AND ({application})")
+    assert symbols, "no meaningful application caller without frame pointers"
+    if mode == "full":
+        assert {row["stack_id"] for row in symbols} == {row["stack_id"] for row in attributed}, "some full stacks omit the application caller"
+summary = query("SELECT * FROM allocation_summary")[0]
+assert summary["complete"] == 1, summary
+totals = query("SELECT count(*) AS count, sum(requested_bytes) AS bytes, sum(CASE WHEN freed_ns IS NULL THEN requested_bytes ELSE 0 END) AS live FROM allocations")[0]
+assert (summary["observed_count"], summary["requested_bytes"], summary["live_at_end_bytes"]) == (totals["count"], totals["bytes"], totals["live"]), (summary, totals)
+timeline = query("SELECT min(observed_live_bytes) AS minimum, sum(delta_bytes) AS final_live, max(observed_live_bytes) AS peak FROM allocation_timeline")[0]
+assert timeline["minimum"] >= 0 and timeline["final_live"] == totals["live"] and timeline["peak"] == summary["peak_observed_bytes"], timeline
+site_totals = query("SELECT sum(allocation_count) AS count, sum(requested_bytes) AS bytes, sum(live_at_end_bytes) AS live FROM allocation_sites")[0]
+assert site_totals == totals, (site_totals, totals)
+print(json.dumps({"fixture_generations": len(generations), "fixture_requested_bytes": 4254353, "fixture_live_at_end_bytes": 120001, "fixture_peak_observed_bytes": fixture_peak, "fixture_attributed": len(attributed), "mode": mode, "complete": True}))
+PY
+done
+
+dir="${CHECK_WORK}/rec-allocations-off"
+"${mperf}" record -s snapshot --allocations off -o "${dir}" -- \
+    "${CHECK_WORK}/bin/allocation-lifetimes-no" >"${dir}.stdout" 2>"${dir}.stderr" \
+    || { cat "${dir}.stderr" >&2; fail "disabled allocation recording failed"; }
+assert_sql "${dir}" "SELECT COUNT(*) = 0 AS disabled_capture_is_absent FROM duckdb_views() WHERE NOT internal AND view_name = 'allocation_capture'"
+
+for scope in fork-exit fork-exec; do
+    dir="${CHECK_WORK}/rec-allocations-${scope}"
+    timeout 40 "${mperf}" record -s snapshot --allocations metadata -o "${dir}" -- \
+        "${CHECK_WORK}/bin/allocation-lifetimes-no" "${scope}" \
+        >"${dir}.stdout" 2>"${dir}.stderr" \
+        || { cat "${dir}.stderr" >&2; fail "${scope} did not finish successfully"; }
+    assert_sql "${dir}" "SELECT COUNT(DISTINCT pid) = 1 AS root_only, COUNT(*) FILTER (WHERE operation=1 AND requested_bytes=13579) = 1 AS parent_allocated, COUNT(*) FILTER (WHERE operation=1 AND requested_bytes=24681) = 0 AS child_excluded FROM allocation_operations"
+    assert_sql "${dir}" "SELECT complete = 1 AS parent_capture_complete, footer = 1 AS parent_footer FROM allocation_capture"
+done
+
+sleep 10 &
+attach_pid=$!
+trap 'kill "${attach_pid}" 2>/dev/null || true' EXIT
+dir="${CHECK_WORK}/rec-allocations-attach"
+timeout 40 "${mperf}" record -s snapshot --allocations sampled --duration 200ms \
+    -p "${attach_pid}" -o "${dir}" >"${dir}.stdout" 2>"${dir}.stderr" \
+    || { cat "${dir}.stderr" >&2; fail "allocation attach recording failed"; }
+kill "${attach_pid}" 2>/dev/null || true
+wait "${attach_pid}" 2>/dev/null || true
+trap - EXIT
+assert_sql "${dir}" "SELECT status = 'unavailable' AS attach_has_honest_scope FROM snapshot_collectors WHERE name = 'allocations'"
+
+dir="${CHECK_WORK}/rec-allocations-killed"
+timeout 40 "${mperf}" record -s snapshot --allocations metadata -o "${dir}" -- \
+    "${CHECK_WORK}/bin/allocation-lifetimes-no" killed >"${dir}.stdout" 2>"${dir}.stderr"
+killed_status=$?
+[[ "${killed_status}" != 124 && -f "${dir}/info.json" ]] \
+    || { cat "${dir}.stderr" >&2; fail "killed target did not produce a bounded recording"; }
+assert_sql "${dir}" "SELECT complete = 0 AS killed_capture_incomplete, footer = 0 AS missing_footer_reported FROM allocation_capture"
+python3 - "${dir}/info.json" <<'PY' || fail "killed capture did not report degraded coverage"
+import json, sys
+with open(sys.argv[1]) as source:
+    collectors = json.load(source)["collectors"]
+assert any(row["name"] == "allocations" and row["status"] == "degraded" for row in collectors), collectors
+PY
+
+dir="${CHECK_WORK}/rec-allocations-saturation"
+timeout 90 "${mperf}" record -s snapshot --allocations metadata -o "${dir}" -- \
+    "${CHECK_WORK}/bin/allocation-lifetimes-no" bench 4 200000 \
+    >"${dir}.stdout" 2>"${dir}.stderr" \
+    || { cat "${dir}.stderr" >&2; fail "allocation saturation workload failed"; }
+python3 - "${mperf}" "${dir}" <<'PY' || fail "allocation saturation coverage is dishonest"
+import json, subprocess, sys
+from pathlib import Path
+mperf, directory = sys.argv[1:]
+def query(sql):
+    result = subprocess.run([mperf, "query", "-f", "json", directory, sql], check=True, capture_output=True, text=True)
+    return json.loads(result.stdout)["rows"]
+work = [json.loads(line) for line in Path(directory + ".stdout").read_text().splitlines() if line.startswith('{"iterations":')]
+assert len(work) == 1 and work[0]["allocations"] == 800000 and work[0]["requested_bytes"] == 6751200000 and work[0]["checksum"] == 136375424 and work[0]["failures"] == 0, work
+capture = query("SELECT * FROM allocation_capture")[0]
+summary = query("SELECT * FROM allocation_summary")[0]
+assert capture["invalid_protocol"] == 0, "ordinary channel loss was reported as protocol corruption"
+loss = sum(capture[field] for field in ("producer_dropped", "channel_dropped_operations", "channel_dropped_packets", "paused_operations"))
+if loss or not capture["footer"] or capture["invalid_protocol"]:
+    assert capture["complete"] == summary["complete"] == 0, (capture, summary)
+else:
+    assert capture["complete"] == summary["complete"] == 1, (capture, summary)
+    observed = query("SELECT count(*) AS count FROM allocation_operations WHERE operation=1 AND requested_bytes BETWEEN 8191 AND 8687")[0]["count"]
+    assert observed == 800000, observed
+assert capture["produced"] == capture["observed_operations"] + capture["producer_dropped"] + capture["channel_dropped_operations"], capture
+print(json.dumps({"saturation": capture, "summary_complete": summary["complete"]}))
+PY
+note "exact allocation lifetimes, byte totals, thread identity, reused pointers and stack coverage passed"

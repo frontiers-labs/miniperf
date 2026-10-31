@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# The injected SDK must never depend on the analyzer's database.
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
+python3 utils/verify-collector-isolation.py
