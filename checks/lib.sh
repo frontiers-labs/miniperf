@@ -11,9 +11,10 @@ checks_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # shellcheck disable=SC2034  # read by the checks that source this file
 mperf="${MPERF_PACKAGE}/bin/mperf"
-# Windows packages ship the viewer at the root rather than under bin/.
+# Windows packages ship their executables at the root rather than under bin/.
 # shellcheck disable=SC2034  # read by the checks that source this file
 if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
+    mperf="${MPERF_PACKAGE}/mperf.exe"
     mperf_gui="${MPERF_PACKAGE}/mperf-gui.exe"
 else
     mperf_gui="${MPERF_PACKAGE}/bin/mperf-gui"
