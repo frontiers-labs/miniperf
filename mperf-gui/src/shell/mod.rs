@@ -926,9 +926,7 @@ impl ShellView {
         }
         self.source_tabs.push(SourceTab {
             frame_id,
-            title: symbolize::FunctionName::new(&frame.name)
-                .friendly()
-                .to_owned(),
+            title: frame.friendly_name.clone(),
             document,
             scroll,
             asm_scroll: UniformListScrollHandle::new(),
@@ -1617,8 +1615,7 @@ impl ShellView {
                             let entity = entity.clone();
                             let module = session.module_label(frame_id);
                             let dimmed = !symbol_query.is_empty()
-                                && !symbolize::FunctionName::new(&function.label)
-                                    .matches(&symbol_query);
+                                && !session.profile.frames[frame_id].matches_symbol(&symbol_query);
                             let self_pct = function.self_fraction * 100.0;
                             let bar_width = (self_pct / 100.0 * 240.0).min(66.0) as f32;
                             let number = |value: String, muted: bool| {
@@ -1654,9 +1651,9 @@ impl ShellView {
                                                     el.text_color(theme.muted_foreground)
                                                 })
                                                 .child(
-                                                    symbolize::FunctionName::new(&function.label)
-                                                        .friendly()
-                                                        .to_owned(),
+                                                    session.profile.frames[function.frame_id]
+                                                        .friendly_name
+                                                        .clone(),
                                                 ),
                                         ),
                                 )
@@ -1865,7 +1862,7 @@ impl ShellView {
                             )
                         })
                         .children(top.into_iter().map(|function| {
-                            self.render_summary_hotspot(&function, hotspots_tab, cx)
+                            self.render_summary_hotspot(session, &function, hotspots_tab, cx)
                         })),
                 )
             })
@@ -1920,6 +1917,7 @@ impl ShellView {
 
     fn render_summary_hotspot(
         &self,
+        session: &ShellSession,
         function: &FunctionStat,
         hotspots_tab: Option<usize>,
         cx: &mut Context<Self>,
@@ -1951,11 +1949,7 @@ impl ShellView {
                     .truncate()
                     .font_family(theme.font_mono.clone())
                     .text_size(px(11.0))
-                    .child(
-                        symbolize::FunctionName::new(&function.label)
-                            .friendly()
-                            .to_owned(),
-                    ),
+                    .child(session.profile.frames[frame_id].friendly_name.clone()),
             )
             .child(
                 div()
@@ -2127,11 +2121,7 @@ impl ShellView {
                         .font_family(theme.font_mono.clone())
                         .text_size(px(11.5))
                         .font_weight(FontWeight::MEDIUM)
-                        .child(
-                            symbolize::FunctionName::new(&hottest.function_name)
-                                .friendly()
-                                .to_owned(),
-                        ),
+                        .child(hottest.friendly_name.clone()),
                 )
                 .child(
                     div()
@@ -3093,9 +3083,9 @@ impl ShellView {
                                         .text_size(px(11.0))
                                         .font_weight(FontWeight::MEDIUM)
                                         .child(
-                                            symbolize::FunctionName::new(&function.label)
-                                                .friendly()
-                                                .to_owned(),
+                                            session.profile.frames[function.frame_id]
+                                                .friendly_name
+                                                .clone(),
                                         ),
                                 )
                                 .when(has_source, |el| {
@@ -3188,9 +3178,9 @@ impl ShellView {
                                 .truncate()
                                 .font_family(theme.font_mono.clone())
                                 .child(
-                                    symbolize::FunctionName::new(&relation.label)
-                                        .friendly()
-                                        .to_owned(),
+                                    session.profile.frames[relation.frame_id]
+                                        .friendly_name
+                                        .clone(),
                                 ),
                         )
                         .child(
