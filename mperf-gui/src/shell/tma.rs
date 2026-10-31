@@ -4,16 +4,18 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use anyhow::{Context, Result};
 use mperf_data::ScenarioInfo;
 
 use crate::model::{TmaSummaryData, TmaSummaryRow};
-use crate::sql::{Connection, Value, as_f64, as_i64, as_text};
+use crate::sql::{Connection, SqlResult};
 
 /// One second of pipeline-slot shares, aligned with [`TmaData::level1`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct TmaInterval {
     pub start_ns: u64,
-    pub values: Vec<f64>,
+    /// Missing or non-finite measurements remain unavailable.
+    pub values: Vec<Option<f64>>,
 }
 
 #[derive(Clone, Debug)]
@@ -23,8 +25,8 @@ pub struct TmaData {
     /// Indices into `rows` of the level-1 metrics.
     pub level1: Vec<usize>,
     pub intervals: Vec<TmaInterval>,
-    /// Level-1 shares per function name, aligned with `level1`.
-    pub functions: HashMap<String, Vec<f64>>,
+    /// Level-1 shares per function name, aligned with `level1`; `None` is unavailable.
+    pub functions: HashMap<String, Vec<Option<f64>>>,
     pub error: Option<String>,
 }
 
@@ -44,12 +46,22 @@ impl TmaData {
             .map(|index| summary.rows[*index].name.as_str())
             .collect();
 
+        let mut errors: Vec<String> = summary.error.into_iter().collect();
+        let intervals = load_intervals(connection, &names).unwrap_or_else(|error| {
+            errors.push(format!("{error:#}"));
+            Vec::new()
+        });
+        let functions = load_functions(connection, &names).unwrap_or_else(|error| {
+            errors.push(format!("{error:#}"));
+            HashMap::new()
+        });
+
         Some(Self {
-            intervals: load_intervals(connection, &names),
-            functions: load_functions(connection, &names),
+            intervals,
+            functions,
             level1,
             rows: summary.rows,
-            error: summary.error,
+            error: (!errors.is_empty()).then(|| errors.join("\n")),
         })
     }
 
@@ -95,90 +107,61 @@ pub fn is_child_of(name: &str, parent: &str) -> bool {
         .is_some_and(|rest| !rest.contains('.'))
 }
 
-fn load_intervals(connection: &Connection, names: &[&str]) -> Vec<TmaInterval> {
-    let Ok(mut statement) =
-        connection.prepare("SELECT start_ns, metric, value FROM tma_intervals ORDER BY start_ns;")
-    else {
-        return Vec::new();
-    };
-    let Ok(mut rows) = statement.query([]) else {
-        return Vec::new();
-    };
-    let mut by_start = BTreeMap::<u64, Vec<f64>>::new();
-    loop {
-        let row = match rows.next() {
-            Ok(Some(row)) => row,
-            _ => break,
-        };
-        let Ok(metric) = row.get::<_, Value>(1) else {
-            continue;
-        };
-        let Some(metric) = as_text(&metric) else {
-            continue;
-        };
+fn load_intervals(connection: &Connection, names: &[&str]) -> Result<Vec<TmaInterval>> {
+    let mut statement = connection
+        .prepare("SELECT start_ns, metric, value FROM tma_intervals ORDER BY start_ns;")
+        .context("Per-interval TMA data is unavailable: failed to query `tma_intervals`")?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, u64>(0)?,
+                row.get::<_, String>(1)?,
+                finite_share(row.get::<_, Option<f64>>(2)?),
+            ))
+        })
+        .context("failed to read `tma_intervals`")?;
+    let mut by_start = BTreeMap::<u64, Vec<Option<f64>>>::new();
+    for row in rows {
+        let (start_ns, metric, value) = row.context("failed to decode a `tma_intervals` row")?;
         let Some(column) = names.iter().position(|name| *name == metric) else {
             continue;
         };
-        let Ok(value) = row.get::<_, Value>(2) else {
-            continue;
-        };
-        let Some(value) = as_f64(&value).filter(|value| value.is_finite()) else {
-            continue;
-        };
-        let Ok(start_ns) = row.get::<_, Value>(0) else {
-            continue;
-        };
-        let start_ns = as_i64(&start_ns).unwrap_or_default().max(0) as u64;
         by_start
             .entry(start_ns)
-            .or_insert_with(|| vec![0.0; names.len()])[column] = value.clamp(0.0, 1.0);
+            .or_insert_with(|| vec![None; names.len()])[column] = value;
     }
-    by_start
+    Ok(by_start
         .into_iter()
         .map(|(start_ns, values)| TmaInterval { start_ns, values })
-        .collect()
+        .collect())
 }
 
 /// Level-1 shares per function from `VIEW tma`, whose columns spell the metric
 /// names with underscores.
-fn load_functions(connection: &Connection, names: &[&str]) -> HashMap<String, Vec<f64>> {
-    let Ok(mut statement) = connection.prepare("SELECT * FROM tma;") else {
-        return HashMap::new();
-    };
-    let Ok(mut rows) = statement.query([]) else {
-        return HashMap::new();
-    };
-    let columns: Vec<String> = names
-        .iter()
-        .map(|name| name.replace('.', "_"))
-        .collect::<Vec<_>>();
-    let mut functions = HashMap::new();
-    loop {
-        let row = match rows.next() {
-            Ok(Some(row)) => row,
-            _ => break,
-        };
-        let Ok(function) = row.get::<_, Value>("func_name") else {
-            continue;
-        };
-        let Some(function) = as_text(&function) else {
-            continue;
-        };
-        let values: Vec<f64> = columns
-            .iter()
-            .map(|column| {
-                row.get::<_, Value>(column.as_str())
-                    .ok()
-                    .as_ref()
-                    .and_then(as_f64)
-                    .filter(|value| value.is_finite())
-                    .unwrap_or(0.0)
-                    .clamp(0.0, 1.0)
-            })
-            .collect();
-        if values.iter().sum::<f64>() > 0.0 {
-            functions.insert(function.to_owned(), values);
-        }
-    }
-    functions
+fn load_functions(
+    connection: &Connection,
+    names: &[&str],
+) -> Result<HashMap<String, Vec<Option<f64>>>> {
+    let mut statement = connection
+        .prepare("SELECT * FROM tma;")
+        .context("Per-function TMA data is unavailable: failed to query `tma`")?;
+    let columns: Vec<String> = names.iter().map(|name| name.replace('.', "_")).collect();
+    let rows = statement
+        .query_map([], |row| {
+            let function = row.get::<_, String>("func_name")?;
+            let values = columns
+                .iter()
+                .map(|column| Ok(finite_share(row.get::<_, Option<f64>>(column.as_str())?)))
+                .collect::<SqlResult<Vec<_>>>()?;
+            Ok((function, values))
+        })
+        .context("failed to read `tma`")?;
+    rows.collect::<SqlResult<HashMap<_, _>>>()
+        .context("failed to decode a `tma` row")
+}
+
+fn finite_share(value: Option<f64>) -> Option<f64> {
+    value
+        .filter(|value| value.is_finite())
+        .map(|value| value.clamp(0.0, 1.0))
 }
