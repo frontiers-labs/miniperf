@@ -406,7 +406,7 @@ mod tests {
 
     static NEXT_NAME: AtomicUsize = AtomicUsize::new(0);
 
-    fn name(_label: &str) -> String {
+    fn name() -> String {
         format!(
             "/mp_{:x}_{:x}",
             std::process::id(),
@@ -434,7 +434,7 @@ mod tests {
 
     #[test]
     fn rejects_non_power_of_two_capacity() {
-        let err = match Sender::new(&name("bad_capacity"), 1000) {
+        let err = match Sender::new(&name(), 1000) {
             Ok(_) => panic!("non-power-of-two capacity was accepted"),
             Err(err) => err,
         };
@@ -443,7 +443,7 @@ mod tests {
 
     #[test]
     fn attach_preserves_queued_data() {
-        let name = name("attach");
+        let name = name();
         let sender = Sender::new(&name, 64).unwrap();
         sender.send_sync(&42_u64.to_le_bytes()).unwrap();
         let mut receiver = unsafe { Receiver::attach(&name, 64).unwrap() };
@@ -452,7 +452,7 @@ mod tests {
 
     #[test]
     fn wraps_header_and_payload() {
-        let name = name("wrap");
+        let name = name();
         let sender = Sender::new(&name, 64).unwrap();
         let mut receiver = unsafe { Receiver::attach(&name, 64).unwrap() };
         for value in 0..20_u8 {
@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn full_ring_drops_and_reports_counter() {
-        let name = name("drops");
+        let name = name();
         let sender = Sender::new(&name, 32).unwrap();
         let mut receiver = unsafe { Receiver::attach(&name, 32).unwrap() };
         sender.send_sync(&1_u64.to_le_bytes()).unwrap();
@@ -478,7 +478,7 @@ mod tests {
 
     #[test]
     fn duplicate_creation_does_not_reset_live_channel() {
-        let name = name("duplicate");
+        let name = name();
         let sender = Sender::new(&name, 64).unwrap();
         sender.send_sync(b"queued").unwrap();
         let error = match Sender::new(&name, 64) {
@@ -492,7 +492,7 @@ mod tests {
 
     #[test]
     fn attachment_rejects_wrong_mapping_extent() {
-        let name = name("extent");
+        let name = name();
         let _sender = Sender::new(&name, 64).unwrap();
         let error = match unsafe { Receiver::attach(&name, 128) } {
             Ok(_) => panic!("wrong mapping extent was accepted"),
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn receiver_attaches_to_page_padded_backing() {
-        let name = name("pad_recv");
+        let name = name();
         let sender = Sender::new(&name, 64).unwrap();
         sender.send_sync(b"queued").unwrap();
         pad_backing_to_page(&name);
@@ -517,7 +517,7 @@ mod tests {
 
     #[test]
     fn sender_attaches_to_page_padded_backing() {
-        let name = name("pad_send");
+        let name = name();
         let mut receiver = Receiver::new(&name, 64).unwrap();
         pad_backing_to_page(&name);
         let sender = unsafe { Sender::attach(&name, 64).unwrap() };
@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn attachment_rejects_wrong_capacity_with_page_padded_backing() {
-        let name = name("capacity");
+        let name = name();
         let sender = Sender::new(&name, 64).unwrap();
         sender.send_sync(b"queued").unwrap();
         pad_backing_to_page(&name);
@@ -544,7 +544,7 @@ mod tests {
 
     #[test]
     fn receiver_keeps_semaphore_and_mapping_after_creator_drops() {
-        let name = name("receiver_lifetime");
+        let name = name();
         let sender = Sender::new(&name, 64).unwrap();
         let mut receiver = unsafe { Receiver::attach(&name, 64).unwrap() };
         sender.send_sync(b"retained").unwrap();
@@ -556,14 +556,14 @@ mod tests {
     #[test]
     fn async_receive_future_can_move_between_threads() {
         fn require_send(_: impl Send) {}
-        let mut receiver = Receiver::new(&name("future"), 64).unwrap();
+        let mut receiver = Receiver::new(&name(), 64).unwrap();
         require_send(receiver.recv());
     }
 
     #[test]
     fn concurrent_spsc_stress_preserves_order() {
         const COUNT: usize = 100_000;
-        let name = name("stress");
+        let name = name();
         let mut receiver = Receiver::new(&name, 1 << 16).unwrap();
         let sender = unsafe { Sender::attach(&name, 1 << 16).unwrap() };
 
@@ -590,7 +590,7 @@ mod tests {
     #[ignore = "throughput benchmark; run with --release --ignored"]
     fn throughput_single_pair_exceeds_one_million_events_per_second() {
         const COUNT: usize = 1_000_000;
-        let name = name("throughput");
+        let name = name();
         let mut receiver = Receiver::new(&name, 1 << 20).unwrap();
         let sender = unsafe { Sender::attach(&name, 1 << 20).unwrap() };
         let start = Instant::now();
