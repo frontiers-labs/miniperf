@@ -1,6 +1,6 @@
-use crate::postprocess::tables::Columns;
 use libprof::Allocation;
 use std::{collections::HashMap, path::Path};
+use store::Columns;
 use store::{SegmentWriter, arrow::record_batch::RecordBatch};
 
 pub(super) struct Writer {

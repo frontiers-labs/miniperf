@@ -11,8 +11,9 @@ use store::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use store::{SampleRows, SegmentWriter, StackRows};
 use tokio::{fs::File, io::AsyncWriteExt};
 
-use super::tables::{Columns, Tables};
+use super::tables::Tables;
 use crate::utils;
+use store::Columns;
 
 /// A core cluster resolved for post-processing: `(family_id, display name,
 /// inclusive CPU ranges)`.

@@ -16,7 +16,8 @@ use anyhow::{Context, Result};
 use mperf_data::{EventType, RecordInfo, Scenario};
 use tokio::fs;
 
-use tables::{Columns, Tables, quote_identifier};
+use store::Columns;
+use tables::{Tables, quote_identifier};
 
 /// Turn a recording into the derived tables every consumer reads: one Parquet
 /// file per table in the session directory.

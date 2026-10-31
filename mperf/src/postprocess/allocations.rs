@@ -1,8 +1,9 @@
-use super::tables::{Columns, Tables};
+use super::tables::Tables;
 use crate::utils;
 use anyhow::Result;
 use shmem::allocation::Operation;
 use std::collections::HashMap;
+use store::Columns;
 
 struct Boundary {
     pid: u64,

@@ -1,12 +1,14 @@
 //! Parquet session-directory writing and recovery for miniperf.
 
 mod clock;
+mod columns;
 mod hash;
 mod interner;
 mod recover;
 mod tables;
 mod writer;
 
+pub use columns::Columns;
 pub use hash::{stack_hash, string_hash, xxh3};
 pub use interner::StringInterner;
 pub use recover::{RecoveryReport, recover_session};

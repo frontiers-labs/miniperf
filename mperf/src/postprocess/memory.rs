@@ -5,7 +5,8 @@ use anyhow::{Context, Result};
 use mperf_data::{RecordInfo, ScenarioInfo};
 use serde::Deserialize;
 
-use super::tables::{Columns, Tables};
+use super::tables::Tables;
+use store::Columns;
 
 #[derive(Deserialize)]
 struct MemoryArtifact {
