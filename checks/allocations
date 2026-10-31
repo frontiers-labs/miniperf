@@ -17,7 +17,7 @@ strip --strip-all "${CHECK_WORK}/bin/allocation-lifetimes-stripped" || fail "cou
 for configuration in no:metadata no:sampled no:full yes:full stripped:full; do
     frames="${configuration%:*}"
     mode="${configuration#*:}"
-    dir="${CHECK_WORK}/allocations-${frames}-${mode}"
+    dir="${CHECK_WORK}/rec-allocations-${frames}-${mode}"
     "${mperf}" record -s snapshot --allocations "${mode}" -o "${dir}" -- \
         "${CHECK_WORK}/bin/allocation-lifetimes-${frames}" \
         >"${dir}.stdout" 2>"${dir}.stderr" \
@@ -135,14 +135,14 @@ print(json.dumps({"fixture_generations": len(generations), "fixture_requested_by
 PY
 done
 
-dir="${CHECK_WORK}/allocations-off"
+dir="${CHECK_WORK}/rec-allocations-off"
 "${mperf}" record -s snapshot --allocations off -o "${dir}" -- \
     "${CHECK_WORK}/bin/allocation-lifetimes-no" >"${dir}.stdout" 2>"${dir}.stderr" \
     || { cat "${dir}.stderr" >&2; fail "disabled allocation recording failed"; }
 assert_sql "${dir}" "SELECT COUNT(*) = 0 AS disabled_capture_is_absent FROM duckdb_views() WHERE NOT internal AND view_name = 'allocation_capture'"
 
 for scope in fork-exit fork-exec; do
-    dir="${CHECK_WORK}/allocations-${scope}"
+    dir="${CHECK_WORK}/rec-allocations-${scope}"
     timeout 40 "${mperf}" record -s snapshot --allocations metadata -o "${dir}" -- \
         "${CHECK_WORK}/bin/allocation-lifetimes-no" "${scope}" \
         >"${dir}.stdout" 2>"${dir}.stderr" \
@@ -154,7 +154,7 @@ done
 sleep 10 &
 attach_pid=$!
 trap 'kill "${attach_pid}" 2>/dev/null || true' EXIT
-dir="${CHECK_WORK}/allocations-attach"
+dir="${CHECK_WORK}/rec-allocations-attach"
 timeout 40 "${mperf}" record -s snapshot --allocations sampled --duration 200ms \
     -p "${attach_pid}" -o "${dir}" >"${dir}.stdout" 2>"${dir}.stderr" \
     || { cat "${dir}.stderr" >&2; fail "allocation attach recording failed"; }
@@ -163,7 +163,7 @@ wait "${attach_pid}" 2>/dev/null || true
 trap - EXIT
 assert_sql "${dir}" "SELECT status = 'unavailable' AS attach_has_honest_scope FROM snapshot_collectors WHERE name = 'allocations'"
 
-dir="${CHECK_WORK}/allocations-killed"
+dir="${CHECK_WORK}/rec-allocations-killed"
 timeout 40 "${mperf}" record -s snapshot --allocations metadata -o "${dir}" -- \
     "${CHECK_WORK}/bin/allocation-lifetimes-no" killed >"${dir}.stdout" 2>"${dir}.stderr"
 killed_status=$?
@@ -177,7 +177,7 @@ with open(sys.argv[1]) as source:
 assert any(row["name"] == "allocations" and row["status"] == "degraded" for row in collectors), collectors
 PY
 
-dir="${CHECK_WORK}/allocations-saturation"
+dir="${CHECK_WORK}/rec-allocations-saturation"
 timeout 90 "${mperf}" record -s snapshot --allocations metadata -o "${dir}" -- \
     "${CHECK_WORK}/bin/allocation-lifetimes-no" bench 4 200000 \
     >"${dir}.stdout" 2>"${dir}.stderr" \
