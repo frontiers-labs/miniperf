@@ -12,7 +12,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 # from the profiler.
 required_for() {
     case "$1" in
-        snapshot) printf 'Summary\nHotspots\nFlame Graph\nResources\n' ;;
+        snapshot)
+            printf 'Summary\nResources\n'
+            if [[ "$2" == yes ]]; then
+                printf 'Hotspots\nFlame Graph\n'
+            fi
+            ;;
         tma)      printf 'Summary\nHotspots\nTop-Down\n' ;;
         *)        printf 'Summary\n' ;;
     esac
@@ -41,16 +46,29 @@ while IFS= read -r info; do
     dir="$(dirname "${info}")"
     scenario="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["scenario"].lower())' "${info}")"
     note "touring ${scenario} (${dir})"
+    if [[ ! -f "${dir}/gui-check.json" ]]; then
+        [[ -x "${mperf}" ]] \
+            || fail "missing ${dir}/gui-check.json; export GUI references on the recording host before running the viewer-only package"
+        python3 "${checks_root}/../utils/export-gui-reference.py" "${mperf}" "${dir}" \
+            || fail "could not export GUI references for ${dir}"
+    fi
+    has_samples="$(python3 -c '
+import json, sys
+reference = json.load(open(sys.argv[1]))
+assert reference["schema_version"] == 1, "unsupported GUI reference schema"
+assert type(reference["has_samples"]) is bool, "invalid sample presence reference"
+print("yes" if reference["has_samples"] else "no")
+' "${dir}/gui-check.json")" || fail "invalid GUI references for ${dir}"
     prefix="${CHECK_WORK}/tour-${visited}"
     log="${prefix}.tour"
     launch "${mperf_gui}" --tour "${dir}" >"${log}" 2>&1 \
         || { cat "${log}" >&2; fail "the viewer could not display the ${scenario} recording"; }
-    grep -qi panic "${log}" && { cat "${log}" >&2; fail "the viewer panicked on ${scenario}"; }
+    grep -qiE '^thread .* panicked at ' "${log}" && { cat "${log}" >&2; fail "the viewer panicked on ${scenario}"; }
     while IFS= read -r tab; do
         [[ -z "${tab}" ]] && continue
         grep -qF "tour: rendered ${tab}" "${log}" \
             || { cat "${log}" >&2; fail "${scenario} did not offer the ${tab} tab"; }
-    done < <(required_for "${scenario}")
+    done < <(required_for "${scenario}" "${has_samples}")
     if [[ "$(basename "${dir}")" == rec-rust-names-* ]]; then
         python3 "${checks_root}/../utils/verify-rust-names.py" --tour "${log}" \
             || fail "the viewer lost Rust instance identity, search, or source/assembly lookup"
