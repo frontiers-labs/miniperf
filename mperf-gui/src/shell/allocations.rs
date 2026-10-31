@@ -1,13 +1,12 @@
 use super::{ShellView, ViewId, session::ShellSession};
 use crate::{
     allocations::Boundary,
-    profile::ProfileFrame,
     profile_analysis::SampleFilter,
     snapshot::{format_bytes, format_count},
     ui::{self, ActiveTheme},
 };
 use gpui::{Context, div, prelude::*, px};
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 #[derive(Default)]
 pub(super) struct Site {
@@ -20,73 +19,9 @@ pub(super) struct Site {
     peak: u64,
 }
 
-fn allocator_wrapper(name: &str) -> bool {
-    let demangled = symbolize::demangle_full(name);
-    let name = symbolize::FunctionName::new(&demangled);
-    let name = name.friendly();
-    let rust_name = name.strip_prefix('<').unwrap_or(name);
-    name.starts_with("operator new(")
-        || name.starts_with("operator new[](")
-        || [
-            "alloc::alloc::",
-            "alloc::raw_vec::",
-            "alloc::boxed::Box<",
-            "alloc::boxed::box_new",
-            "alloc::vec::Vec<",
-            "std::sys::alloc::",
-            "std::alloc::System ",
-        ]
-        .iter()
-        .any(|prefix| rust_name.starts_with(prefix))
-        || matches!(
-            name.strip_prefix("__rustc::").unwrap_or(name),
-            "__rust_alloc"
-                | "__rust_alloc_zeroed"
-                | "__rust_realloc"
-                | "__rdl_alloc"
-                | "__rdl_alloc_zeroed"
-                | "__rdl_realloc"
-        )
-}
-
-fn application_frame<'a>(session: &'a ShellSession, frames: &[usize]) -> Option<&'a ProfileFrame> {
-    frames
-        .iter()
-        .filter_map(|id| session.profile.frames.get(*id))
-        .find(|frame| {
-            let module = frame
-                .module
-                .as_deref()
-                .and_then(|module| Path::new(module).file_name())
-                .and_then(|name| name.to_str());
-            module.is_some_and(|name| {
-                !matches!(
-                    name,
-                    "libmperf_collector.so"
-                        | "libmperf_libc.so"
-                        | "libc.so.6"
-                        | "libgcc_s.so.1"
-                        | "libpthread.so.0"
-                        | "ld.so.1"
-                        | "ld64.so.1"
-                        | "ld64.so.2"
-                ) && !name.starts_with("ld-linux-")
-                    && name != "ld-linux.so.2"
-                    && !name.starts_with("ld-musl-")
-            }) && !allocator_wrapper(&frame.name)
-        })
-}
-
 fn allocation_sites(session: &ShellSession, filter: &SampleFilter) -> Vec<(u64, Site)> {
     let data = session.allocations.as_ref().unwrap();
     let cutoff = filter.range.map(|range| range.end_ns).unwrap_or(u64::MAX);
-    let application_frames = data
-        .stacks
-        .iter()
-        .filter_map(|(stack, frames)| {
-            application_frame(session, frames).map(|frame| (*stack, frame))
-        })
-        .collect::<HashMap<_, _>>();
     let mut sites = HashMap::<u64, (Site, Vec<(Boundary, i64)>)>::new();
     for lifetime in &data.lifetimes {
         let stack = data.stacks.get(&lifetime.stack);
@@ -103,9 +38,10 @@ fn allocation_sites(session: &ShellSession, filter: &SampleFilter) -> Vec<(u64, 
                 !stack.is_some_and(|frames| frames.iter().any(|id| selected.contains(id)))
             })
             || filter.leaf_frames.as_ref().is_some_and(|selected| {
-                !application_frames
+                !data
+                    .application_frames
                     .get(&lifetime.stack)
-                    .is_some_and(|frame| selected.contains(&frame.id))
+                    .is_some_and(|frame| selected.contains(frame))
             })
         {
             continue;
@@ -133,9 +69,9 @@ fn allocation_sites(session: &ShellSession, filter: &SampleFilter) -> Vec<(u64, 
                 peak = peak.max(live);
             }
             site.peak = peak as u64;
-            site.title = application_frames.get(&stack).map_or_else(
+            site.title = data.application_frames.get(&stack).map_or_else(
                 || "[unknown stack]".into(),
-                |frame| frame.friendly_name.clone(),
+                |frame| session.profile.frames[*frame].friendly_name.clone(),
             );
             (stack, site)
         })

@@ -2,7 +2,7 @@ use crate::{
     profile::{ProfileData, ProfileFrame},
     sql::{Connection, table_columns},
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, path::Path};
 
 #[derive(Default)]
 pub(crate) struct AllocationData {
@@ -15,6 +15,7 @@ pub(crate) struct AllocationData {
     pub attributed: u64,
     pub lifetimes: Vec<Lifetime>,
     pub stacks: HashMap<u64, Vec<usize>>,
+    pub application_frames: HashMap<u64, usize>,
     pub timeline: Vec<(u64, f64)>,
 }
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
@@ -64,6 +65,7 @@ impl AllocationData {
                     attributed: r.get(5)?,
                     lifetimes: Vec::new(),
                     stacks: HashMap::new(),
+                    application_frames: HashMap::new(),
                     timeline: Vec::new(),
                 })
             },
@@ -150,6 +152,80 @@ impl AllocationData {
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<Result<_, _>>()?;
         profile.frames.extend(frames);
+        data.application_frames = data
+            .stacks
+            .iter()
+            .filter_map(|(stack, frames)| {
+                application_frame(profile, frames).map(|frame| (*stack, frame.id))
+            })
+            .collect();
         Ok(data)
     }
+}
+
+fn allocator_wrapper(name: &str) -> bool {
+    let demangled = symbolize::demangle_full(name);
+    let slice_name = demangled.strip_prefix('<').unwrap_or(&demangled);
+    let slice_method = if slice_name.starts_with('[') {
+        slice_name.split_once("]>::")
+    } else if demangled.starts_with('<') {
+        slice_name.split_once(" as <[_]>::to_vec_in::ConvertVec>::")
+    } else {
+        None
+    };
+    let name = symbolize::FunctionName::new(&demangled);
+    let name = name.friendly();
+    let rust_name = name.strip_prefix('<').unwrap_or(name);
+    name.starts_with("operator new(")
+        || name.starts_with("operator new[](")
+        || [
+            "alloc::",
+            "core::",
+            "std::",
+            "hashbrown::alloc::",
+            "hashbrown::raw::",
+            "hashbrown::map::",
+        ]
+        .iter()
+        .any(|prefix| rust_name.starts_with(prefix))
+        || slice_method.is_some_and(|(_, method)| {
+            matches!(method.split("::").next(), Some("to_vec" | "to_vec_in"))
+        })
+        || matches!(
+            name.strip_prefix("__rustc::").unwrap_or(name),
+            "__rust_alloc"
+                | "__rust_alloc_zeroed"
+                | "__rust_realloc"
+                | "__rdl_alloc"
+                | "__rdl_alloc_zeroed"
+                | "__rdl_realloc"
+        )
+}
+
+fn application_frame<'a>(profile: &'a ProfileData, frames: &[usize]) -> Option<&'a ProfileFrame> {
+    frames
+        .iter()
+        .filter_map(|id| profile.frames.get(*id))
+        .find(|frame| {
+            let module = frame
+                .module
+                .as_deref()
+                .and_then(|module| Path::new(module).file_name())
+                .and_then(|name| name.to_str());
+            module.is_some_and(|name| {
+                !matches!(
+                    name,
+                    "libmperf_collector.so"
+                        | "libmperf_libc.so"
+                        | "libc.so.6"
+                        | "libgcc_s.so.1"
+                        | "libpthread.so.0"
+                        | "ld.so.1"
+                        | "ld64.so.1"
+                        | "ld64.so.2"
+                ) && !name.starts_with("ld-linux-")
+                    && name != "ld-linux.so.2"
+                    && !name.starts_with("ld-musl-")
+            }) && !allocator_wrapper(&frame.name)
+        })
 }
