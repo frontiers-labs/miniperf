@@ -33,45 +33,8 @@ pub struct ProcfsSource {
     worker: Option<thread::JoinHandle<Vec<SourceStatus>>>,
 }
 
-impl Source for ProcfsSource {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn declare(&self) -> SourceDecl {
-        SourceDecl {
-            name: "procfs_resources",
-        }
-    }
-
-    fn probe(&self, _directory: &Path) -> Availability {
-        if !platform::process_tree_supported() {
-            return Availability::Unavailable {
-                reason: "this host exposes no procfs process tree".to_string(),
-            };
-        }
-        Availability::Available
-    }
-
-    fn start(&mut self, context: &SessionContext) -> anyhow::Result<()> {
-        let root_pid = context.root_pid();
-        let launched = context.launched();
-        let cgroup = CgroupScope::create(root_pid, launched);
-        let path = cgroup.path();
-        let stop = Arc::new(AtomicBool::new(false));
-        let worker_stop = stop.clone();
-        let sink = context.sink.clone();
-        self.worker = Some(
-            thread::Builder::new()
-                .name("libprof-procfs-resources".to_string())
-                .spawn(move || collect(sink.as_ref(), root_pid, launched, path, worker_stop))?,
-        );
-        self.cgroup = Some(cgroup);
-        self.stop = Some(stop);
-        Ok(())
-    }
-
-    fn stop(&mut self, _context: &SessionContext) -> Vec<SourceStatus> {
+impl ProcfsSource {
+    fn finish(&mut self) -> Vec<SourceStatus> {
         if let Some(stop) = self.stop.take() {
             stop.store(true, Ordering::Release);
         }
@@ -95,6 +58,59 @@ impl Source for ProcfsSource {
             statuses.push(cgroup.status());
         }
         statuses
+    }
+}
+
+impl Drop for ProcfsSource {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+impl Source for ProcfsSource {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn declare(&self) -> SourceDecl {
+        SourceDecl {
+            name: "procfs_resources",
+        }
+    }
+
+    fn probe(&self, _directory: &Path) -> Availability {
+        if !platform::process_tree_supported() {
+            return Availability::Unavailable {
+                reason: "this host exposes no procfs process tree".to_string(),
+            };
+        }
+        Availability::Available
+    }
+
+    fn start(&mut self, context: &SessionContext) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.worker.is_none(),
+            "procfs collection is already running"
+        );
+        let root_pid = context.root_pid();
+        let launched = context.launched();
+        let cgroup = CgroupScope::create(root_pid, launched);
+        let path = cgroup.path();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let sink = context.sink.clone();
+        self.worker = Some(
+            thread::Builder::new()
+                .name("libprof-procfs-resources".to_string())
+                .spawn(move || collect(sink.as_ref(), root_pid, launched, path, worker_stop))?,
+        );
+        self.cgroup = Some(cgroup);
+        self.stop = Some(stop);
+        Ok(())
+    }
+
+    fn stop(&mut self, _context: &SessionContext) -> Vec<SourceStatus> {
+        self.finish()
     }
 }
 

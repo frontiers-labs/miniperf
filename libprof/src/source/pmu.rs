@@ -65,24 +65,51 @@ impl PmuSamplingSource {
         self.sample_rate
             .filter(|(effective, requested)| effective < requested)
     }
-}
 
-impl Source for PmuSamplingSource {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn declare(&self) -> SourceDecl {
-        SourceDecl {
-            name: "pmu_sampling",
+    fn finish(&mut self) -> Vec<SourceStatus> {
+        if self.drivers.is_empty() {
+            return Vec::new();
         }
+        let mut message = String::new();
+        let mut status = "available";
+        let mut quality = "exact";
+        for driver in &mut self.drivers {
+            if let Err(error) = driver.stop() {
+                status = "degraded";
+                quality = "lossy";
+                message = error.to_string();
+            }
+        }
+        self.drivers.clear();
+        if let (true, Some((effective, requested))) =
+            (status == "available", self.lowered_sample_rate())
+        {
+            status = "degraded";
+            quality = "best_effort";
+            message = format!(
+                "sampled at {effective} Hz instead of {requested} Hz: this host's \
+                 perf_event_max_sample_rate is shared between the groups this scenario opens, \
+                 and asking for more makes the kernel throttle the groups, which guts the \
+                 counters rather than only thinning the samples"
+            );
+        }
+        if status == "available" && crate::inherited_sampling_supported() == Some(false) {
+            status = "degraded";
+            quality = "best_effort";
+            message = "this kernel rejects inherited sampling groups with PERF_SAMPLE_READ \
+                       (Linux < 6.12); threads created after exec are not sampled"
+                .to_string();
+        }
+        vec![SourceStatus::new(
+            "pmu_sampling",
+            status,
+            "perf_events",
+            quality,
+            &message,
+        )]
     }
 
-    fn probe(&self, _directory: &Path) -> Availability {
-        Availability::Available
-    }
-
-    fn start(&mut self, context: &SessionContext) -> Result<()> {
+    fn start_drivers(&mut self, context: &SessionContext) -> Result<()> {
         // An attached target is a whole tree; a launched one is a single
         // suspended root whose descendants the kernel inherits sampling into.
         let target_pids = match context.attached_pid {
@@ -122,45 +149,40 @@ impl Source for PmuSamplingSource {
         }
         Ok(())
     }
+}
+
+impl Drop for PmuSamplingSource {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+impl Source for PmuSamplingSource {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn declare(&self) -> SourceDecl {
+        SourceDecl {
+            name: "pmu_sampling",
+        }
+    }
+
+    fn probe(&self, _directory: &Path) -> Availability {
+        Availability::Available
+    }
+
+    fn start(&mut self, context: &SessionContext) -> Result<()> {
+        anyhow::ensure!(self.drivers.is_empty(), "PMU sampling is already running");
+        let result = self.start_drivers(context);
+        if result.is_err() {
+            self.finish();
+        }
+        result
+    }
 
     fn stop(&mut self, _context: &SessionContext) -> Vec<SourceStatus> {
-        let mut message = String::new();
-        let mut status = "available";
-        let mut quality = "exact";
-        for driver in &mut self.drivers {
-            if let Err(error) = driver.stop() {
-                status = "degraded";
-                quality = "lossy";
-                message = error.to_string();
-            }
-        }
-        self.drivers.clear();
-        if let (true, Some((effective, requested))) =
-            (status == "available", self.lowered_sample_rate())
-        {
-            status = "degraded";
-            quality = "best_effort";
-            message = format!(
-                "sampled at {effective} Hz instead of {requested} Hz: this host's \
-                 perf_event_max_sample_rate is shared between the groups this scenario opens, \
-                 and asking for more makes the kernel throttle the groups, which guts the \
-                 counters rather than only thinning the samples"
-            );
-        }
-        if status == "available" && crate::inherited_sampling_supported() == Some(false) {
-            status = "degraded";
-            quality = "best_effort";
-            message = "this kernel rejects inherited sampling groups with PERF_SAMPLE_READ \
-                       (Linux < 6.12); threads created after exec are not sampled"
-                .to_string();
-        }
-        vec![SourceStatus::new(
-            "pmu_sampling",
-            status,
-            "perf_events",
-            quality,
-            &message,
-        )]
+        self.finish()
     }
 }
 
@@ -172,6 +194,43 @@ impl Source for PmuSamplingSource {
 pub struct PreciseMemorySource {
     driver: Option<Box<dyn SamplingDriver>>,
     satisfied: Option<crate::Satisfied>,
+}
+
+impl PreciseMemorySource {
+    fn finish(&mut self) -> Vec<SourceStatus> {
+        let Some(satisfied) = self.satisfied.take() else {
+            // Probed available, then opened nothing: the recording has no
+            // memory samples and must not be read as though it does.
+            self.driver = None;
+            return vec![SourceStatus::new(
+                "precise_memory",
+                "unavailable",
+                "none",
+                "unavailable",
+                "no precise memory sampling facility was opened",
+            )];
+        };
+        let mut status = "available";
+        let mut message = String::new();
+        if let Some(Err(error)) = self.driver.as_mut().map(|driver| driver.stop()) {
+            status = "degraded";
+            message = error.to_string();
+        }
+        self.driver = None;
+        vec![SourceStatus::new(
+            "precise_memory",
+            status,
+            satisfied.mechanism.name(),
+            quality_name(satisfied.quality),
+            &message,
+        )]
+    }
+}
+
+impl Drop for PreciseMemorySource {
+    fn drop(&mut self) {
+        self.finish();
+    }
 }
 
 impl Source for PreciseMemorySource {
@@ -215,45 +274,29 @@ impl Source for PreciseMemorySource {
             return Ok(());
         };
         let lbr = resolve(Feature::HwCallstack, &capabilities()).is_satisfied();
-        let mut driver = crate::mem_sampling_driver(
+        anyhow::ensure!(
+            self.driver.is_none(),
+            "precise memory sampling is already running"
+        );
+        let driver = crate::mem_sampling_driver(
             context.root_pid() as i32,
             crate::DEFAULT_SAMPLE_FREQUENCY_HZ,
             8 * 1024,
             lbr,
         )?;
-        driver.start(context.sink.clone())?;
         self.driver = Some(driver);
         self.satisfied = Some(satisfied);
+        if let Some(driver) = &mut self.driver {
+            if let Err(error) = driver.start(context.sink.clone()) {
+                self.finish();
+                return Err(error.into());
+            }
+        }
         Ok(())
     }
 
     fn stop(&mut self, _context: &SessionContext) -> Vec<SourceStatus> {
-        let Some(satisfied) = self.satisfied.take() else {
-            // Probed available, then opened nothing: the recording has no
-            // memory samples and must not be read as though it does.
-            self.driver = None;
-            return vec![SourceStatus::new(
-                "precise_memory",
-                "unavailable",
-                "none",
-                "unavailable",
-                "no precise memory sampling facility was opened",
-            )];
-        };
-        let mut status = "available";
-        let mut message = String::new();
-        if let Some(Err(error)) = self.driver.as_mut().map(|driver| driver.stop()) {
-            status = "degraded";
-            message = error.to_string();
-        }
-        self.driver = None;
-        vec![SourceStatus::new(
-            "precise_memory",
-            status,
-            satisfied.mechanism.name(),
-            quality_name(satisfied.quality),
-            &message,
-        )]
+        self.finish()
     }
 }
 

@@ -303,8 +303,9 @@ fn snapshot(
     }
 
     pass.start(&context)?;
-    let stop_reason = wait_for_target(&dispatcher, process.as_deref(), recorded_pid, duration)?;
+    let stop_reason = wait_for_target(&dispatcher, process.as_deref(), recorded_pid, duration);
     let statuses = pass.stop(&context);
+    let stop_reason = stop_reason?;
     warn_if_sample_rate_lowered(&pass);
     let recorded_counters = pass.recorded_counters();
     let collectors: Vec<mperf_data::SnapshotCollectorStatus> = statuses
@@ -530,8 +531,9 @@ fn topdown(
     process.cont();
     std::thread::sleep(std::time::Duration::from_millis(20));
     publish_process_maps(&dispatcher, recorded_pid as u32);
-    process.wait()?;
+    let waited = process.wait();
     let statuses = pass.stop(&context);
+    waited?;
     for status in statuses
         .iter()
         .filter(|status| status.status != "available")

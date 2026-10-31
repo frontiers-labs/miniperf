@@ -77,14 +77,19 @@ impl ResolvedPass {
     }
 
     pub fn start(&mut self, context: &SessionContext) -> Result<()> {
-        for source in &mut self.sources {
-            source.start(context).map_err(|error| {
-                error.context(format!(
+        for index in 0..self.sources.len() {
+            if let Err(error) = self.sources[index].start(context) {
+                let error = error.context(format!(
                     "failed to start source '{}' in pass '{}'",
-                    source.declare().name,
+                    self.sources[index].declare().name,
                     self.name
-                ))
-            })?;
+                ));
+                for source in self.sources[..=index].iter_mut().rev() {
+                    self.statuses
+                        .extend(source.stop(context).into_iter().map(collector_status));
+                }
+                return Err(error);
+            }
         }
         Ok(())
     }
