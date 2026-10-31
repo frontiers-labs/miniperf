@@ -8,9 +8,8 @@ use store::arrow::array::{Array, BinaryArray, Int64Array, ListArray, UInt32Array
 use store::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use super::samples::{RawSample, ResolvedIp, merge_lbr_stack, resolve_folded_stack};
-use super::tables::Tables;
 use crate::utils;
-use store::Columns;
+use store::{Columns, Session};
 
 const BATCH_ROWS: usize = 8192;
 
@@ -91,7 +90,7 @@ struct Sample {
 /// Materialize `mem_samples` plus the derived `alloc_site_memory` and
 /// `cacheline_contention` tables. A no-op unless the recording ran at the
 /// precise-memory rung.
-pub(crate) fn process(tables: &Tables, res_dir: &Path) -> Result<()> {
+pub(crate) fn process(tables: &Session, res_dir: &Path) -> Result<()> {
     let segments = raw_segments(res_dir)?;
     if segments.is_empty() {
         return Ok(());
@@ -190,7 +189,7 @@ pub(crate) fn process(tables: &Tables, res_dir: &Path) -> Result<()> {
 }
 
 fn write_mem_samples(
-    tables: &Tables,
+    tables: &Session,
     samples: &[Sample],
     stack_ids: Vec<u64>,
     call_stacks: Vec<String>,
@@ -265,7 +264,7 @@ fn write_mem_samples(
 /// Per allocation-site memory behaviour: the flagship join of precise samples
 /// against the libc shim's live allocation ranges.
 fn write_alloc_site_memory(
-    tables: &Tables,
+    tables: &Session,
     res_dir: &Path,
     samples: &[Sample],
     resolver: &symbolize::Resolver,
@@ -388,7 +387,7 @@ fn percentile(values: &[u64], fraction: f64) -> Option<u64> {
 
 /// Cache lines touched by more than one thread, ordered by how strongly they
 /// look like false sharing.
-fn write_cacheline_contention(tables: &Tables) -> Result<()> {
+fn write_cacheline_contention(tables: &Session) -> Result<()> {
     tables.write_query(
         "cacheline_contention",
         "SELECT cache_line,
@@ -407,7 +406,7 @@ fn write_cacheline_contention(tables: &Tables) -> Result<()> {
 
 /// Prefer typed, unthrottled lifetimes. Legacy sampled trace events remain a
 /// reader fallback for recordings made before allocation capture was typed.
-fn load_allocations(tables: &Tables, res_dir: &Path) -> Result<AllocationMap> {
+fn load_allocations(tables: &Session, res_dir: &Path) -> Result<AllocationMap> {
     if tables.has_table("allocations") {
         return typed_allocations(tables);
     }
@@ -560,7 +559,7 @@ fn list_values(list: &ListArray, index: usize) -> Result<Vec<u64>> {
     Ok(values.values().to_vec())
 }
 
-fn typed_allocations(tables: &Tables) -> Result<AllocationMap> {
+fn typed_allocations(tables: &Session) -> Result<AllocationMap> {
     // A missing ownership boundary can make address reuse ambiguous. Keep
     // observed totals available, but do not attach samples to uncertain ranges.
     if tables.scalar_f64("SELECT complete FROM allocation_summary") != Some(1.0) {

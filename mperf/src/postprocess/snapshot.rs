@@ -4,12 +4,12 @@ use std::path::Path;
 use anyhow::Result;
 use mperf_data::{RecordInfo, ScenarioInfo};
 
-use super::tables::{Tables, quote_identifier};
-use store::Columns;
+use store::query::quote_identifier;
+use store::{Columns, Session};
 
 /// Materialize the host-scoped resource tables. Clocks, temperatures and the
 /// procfs telemetry are host state, so every scenario gets them.
-pub(crate) fn write_host_telemetry(tables: &Tables, res_dir: &Path) -> Result<()> {
+pub(crate) fn write_host_telemetry(tables: &Session, res_dir: &Path) -> Result<()> {
     let rows = if tables.has_table("resource_samples") {
         ResourceRows::read(
             tables,
@@ -28,7 +28,7 @@ pub(crate) fn write_host_telemetry(tables: &Tables, res_dir: &Path) -> Result<()
 /// of the run rather than grouped on: a sensor that improved mid-recording —
 /// a cluster's clock promoted off the governor's request onto the AMU, say —
 /// would otherwise split one series into a row per source.
-fn write_summary(tables: &Tables) -> Result<()> {
+fn write_summary(tables: &Session) -> Result<()> {
     tables.write_query(
         "snapshot_summary",
         "SELECT resource, resource_id, category, metric, MAX(value) AS value, unit, scope,
@@ -40,7 +40,7 @@ fn write_summary(tables: &Tables) -> Result<()> {
 }
 
 /// Materialize the snapshot-only tables from the procfs and bpftrace side files.
-pub(crate) fn process(tables: &Tables, info: &RecordInfo, res_dir: &Path) -> Result<()> {
+pub(crate) fn process(tables: &Session, info: &RecordInfo, res_dir: &Path) -> Result<()> {
     merge_bpf_metrics(tables)?;
     write_processes(tables)?;
     remove_intermediates(tables, res_dir, "process_samples")?;
@@ -49,7 +49,7 @@ pub(crate) fn process(tables: &Tables, info: &RecordInfo, res_dir: &Path) -> Res
 
 /// Delete the record-time intermediates once the final snapshot tables are
 /// materialized, mirroring `samples_raw`.
-fn remove_intermediates(tables: &Tables, res_dir: &Path, table: &str) -> Result<()> {
+fn remove_intermediates(tables: &Session, res_dir: &Path, table: &str) -> Result<()> {
     tables
         .connection()
         .execute_batch(&format!("DROP VIEW IF EXISTS {};", quote_identifier(table)))?;
@@ -83,7 +83,7 @@ struct ResourceRows {
 }
 
 impl ResourceRows {
-    fn read(tables: &Tables, select: &str) -> Result<Self> {
+    fn read(tables: &Session, select: &str) -> Result<Self> {
         let mut rows = Self::default();
         let mut statement = tables.connection().prepare(select)?;
         let mut result = statement.query([])?;
@@ -102,7 +102,7 @@ impl ResourceRows {
         Ok(rows)
     }
 
-    fn write(self, tables: &Tables) -> Result<()> {
+    fn write(self, tables: &Session) -> Result<()> {
         let mut columns = Columns::default();
         columns.i64("timestamp_ns", self.timestamp_ns);
         columns.text("resource", self.resource);
@@ -121,7 +121,7 @@ impl ResourceRows {
 /// Append the bpftrace-derived aggregates to the materialized resource
 /// samples. They are attributed to the profiled process tree, so unlike clocks
 /// and temperatures they belong to the snapshot scenario only.
-fn merge_bpf_metrics(tables: &Tables) -> Result<()> {
+fn merge_bpf_metrics(tables: &Session) -> Result<()> {
     if !tables.has_table("bpf_metrics") {
         return Ok(());
     }
@@ -186,7 +186,7 @@ fn merge_bpf_metrics(tables: &Tables) -> Result<()> {
     write_summary(tables)
 }
 
-fn write_processes(tables: &Tables) -> Result<()> {
+fn write_processes(tables: &Session) -> Result<()> {
     if tables.has_table("process_samples") {
         return tables.write_query(
             "snapshot_processes",
@@ -205,7 +205,7 @@ fn write_processes(tables: &Tables) -> Result<()> {
     tables.write("snapshot_processes", columns.finish()?)
 }
 
-pub(crate) fn write_collectors(tables: &Tables, info: &RecordInfo) -> Result<()> {
+pub(crate) fn write_collectors(tables: &Session, info: &RecordInfo) -> Result<()> {
     let mut name = Vec::new();
     let mut status = Vec::new();
     let mut source = Vec::new();
@@ -238,7 +238,7 @@ pub(crate) fn write_collectors(tables: &Tables, info: &RecordInfo) -> Result<()>
     tables.write("snapshot_collectors", columns.finish()?)
 }
 
-fn write_findings(tables: &Tables, info: &RecordInfo) -> Result<()> {
+fn write_findings(tables: &Session, info: &RecordInfo) -> Result<()> {
     let duration_ns = tables
         .scalar_f64("SELECT MAX(timestamp_ns) FROM snapshot_resource_samples")
         .unwrap_or(0.0)
@@ -363,7 +363,7 @@ fn write_findings(tables: &Tables, info: &RecordInfo) -> Result<()> {
     tables.write("snapshot_findings", columns.finish()?)
 }
 
-fn max_metric(tables: &Tables, metric: &str) -> f64 {
+fn max_metric(tables: &Session, metric: &str) -> f64 {
     let metric = metric.replace('\'', "''");
     tables
         .scalar_f64(&format!(
@@ -377,7 +377,7 @@ fn max_metric(tables: &Tables, metric: &str) -> f64 {
 /// whose little cores sit at their 1.8GHz ceiling is not throttled just
 /// because its big cores can reach 2.6GHz, and a GPU domain is not a CPU at
 /// all.
-fn slowest_cpu_cluster(tables: &Tables) -> Option<(String, f64, f64)> {
+fn slowest_cpu_cluster(tables: &Session) -> Option<(String, f64, f64)> {
     let mut statement = tables
         .connection()
         .prepare(
@@ -396,7 +396,7 @@ fn slowest_cpu_cluster(tables: &Tables) -> Option<(String, f64, f64)> {
         .ok()
 }
 
-fn rate_metric(tables: &Tables, metric: &str, duration_s: f64) -> f64 {
+fn rate_metric(tables: &Session, metric: &str, duration_s: f64) -> f64 {
     let metric = metric.replace('\'', "''");
     tables
         .scalar_f64(&format!(
@@ -407,7 +407,7 @@ fn rate_metric(tables: &Tables, metric: &str, duration_s: f64) -> f64 {
         / duration_s.max(f64::EPSILON)
 }
 
-fn metric_delta_sum(tables: &Tables, metrics: &[&str]) -> f64 {
+fn metric_delta_sum(tables: &Session, metrics: &[&str]) -> f64 {
     metrics
         .iter()
         .map(|metric| {
@@ -425,7 +425,7 @@ fn metric_delta_sum(tables: &Tables, metrics: &[&str]) -> f64 {
         .sum()
 }
 
-fn max_device_rate(tables: &Tables, metric: &str, duration_units: f64) -> f64 {
+fn max_device_rate(tables: &Session, metric: &str, duration_units: f64) -> f64 {
     tables
         .scalar_f64(&format!(
             "SELECT COALESCE(MAX(delta), 0) FROM (
@@ -437,7 +437,7 @@ fn max_device_rate(tables: &Tables, metric: &str, duration_units: f64) -> f64 {
         / duration_units.max(f64::EPSILON)
 }
 
-fn max_network_utilization(tables: &Tables, duration_s: f64) -> Result<f64> {
+fn max_network_utilization(tables: &Session, duration_s: f64) -> Result<f64> {
     let mut statement = tables.connection().prepare(
         "SELECT resource_id, metric, MAX(value) AS maximum, MIN(value) AS minimum
          FROM snapshot_resource_samples

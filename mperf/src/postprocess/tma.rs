@@ -2,11 +2,11 @@ use anyhow::Result;
 use mperf_data::{EventType, ScenarioInfo};
 
 use super::event_column_name;
-use super::tables::Tables;
+use store::Session;
 
 /// Materialize the per-function `tma` table plus the interval and summary
 /// tables the UI reads without re-expanding formulas.
-pub(crate) fn process(tables: &Tables, info: &ScenarioInfo) -> Result<()> {
+pub(crate) fn process(tables: &Session, info: &ScenarioInfo) -> Result<()> {
     let ScenarioInfo::TMA(info) = info else {
         unreachable!("TMA tables require TMA recording metadata");
     };

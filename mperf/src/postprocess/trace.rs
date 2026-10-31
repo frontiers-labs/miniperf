@@ -1,11 +1,11 @@
 use anyhow::Result;
 
-use super::tables::Tables;
+use store::Session;
 
 /// Materialize the defined default view over user/runtime trace events: one
 /// row per trace point and kind, grouped by name/function — what renders as
 /// a table in the hotspots view when no visualization manifest is attached.
-pub(crate) fn write_custom_events(tables: &Tables) -> Result<()> {
+pub(crate) fn write_custom_events(tables: &Session) -> Result<()> {
     if !tables.has_table("events") {
         return Ok(());
     }

@@ -1,9 +1,8 @@
-use super::tables::Tables;
 use crate::utils;
 use anyhow::Result;
 use shmem::allocation::Operation;
 use std::collections::HashMap;
-use store::Columns;
+use store::{Columns, Session};
 
 struct Boundary {
     pid: u64,
@@ -36,7 +35,7 @@ struct Lifetime {
 
 /// Replay ownership boundaries. Realloc outcomes are matched before retirement,
 /// because another thread can reuse the old address before realloc returns.
-pub(crate) fn process(tables: &Tables) -> Result<()> {
+pub(crate) fn process(tables: &Session) -> Result<()> {
     if !tables.has_table("allocation_capture") {
         return Ok(());
     }
@@ -293,7 +292,7 @@ pub(crate) fn process(tables: &Tables) -> Result<()> {
     Ok(())
 }
 
-fn symbolize_stacks(tables: &Tables) -> Result<()> {
+fn symbolize_stacks(tables: &Session) -> Result<()> {
     let modules = utils::load_modules(tables.connection())?;
     let resolver = utils::resolve_proc_maps(&modules);
 

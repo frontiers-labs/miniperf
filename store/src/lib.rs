@@ -3,6 +3,8 @@
 //! in-memory DuckDB with one view per table.
 
 #[cfg(feature = "session")]
+pub mod query;
+#[cfg(feature = "session")]
 mod recording;
 #[cfg(feature = "session")]
 mod session;

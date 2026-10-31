@@ -5,8 +5,7 @@ use anyhow::{Context, Result};
 use mperf_data::{RecordInfo, ScenarioInfo};
 use serde::Deserialize;
 
-use super::tables::Tables;
-use store::Columns;
+use store::{Columns, Session};
 
 #[derive(Deserialize)]
 struct MemoryArtifact {
@@ -106,7 +105,7 @@ impl Timeline {
 }
 
 /// Materialize the memory tables from the QEMU model and native side files.
-pub(crate) fn process(tables: &Tables, record_info: &RecordInfo, res_dir: &Path) -> Result<()> {
+pub(crate) fn process(tables: &Session, record_info: &RecordInfo, res_dir: &Path) -> Result<()> {
     let artifact_path = res_dir.join("qemu-roofline.memory.json");
     let artifact: MemoryArtifact = serde_json::from_reader(
         std::fs::File::open(&artifact_path)
@@ -353,7 +352,7 @@ pub(crate) fn process(tables: &Tables, record_info: &RecordInfo, res_dir: &Path)
 }
 
 fn write_histogram<K>(
-    tables: &Tables,
+    tables: &Session,
     table: &str,
     bucket_name: &str,
     count_name: &str,
@@ -543,7 +542,7 @@ fn unmap_range(mappings: &mut BTreeMap<u64, u64>, start: u64, size: u64, live: &
     }
 }
 
-fn typed_allocations(tables: &Tables) -> Result<Option<AllocationSummary>> {
+fn typed_allocations(tables: &Session) -> Result<Option<AllocationSummary>> {
     let summary = tables.connection().query_row(
         "SELECT complete,
                 live_at_end_bytes::UBIGINT,

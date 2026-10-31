@@ -5,7 +5,6 @@ mod memory;
 mod roofline;
 mod samples;
 mod snapshot;
-pub(crate) mod tables;
 mod tma;
 mod trace;
 
@@ -16,8 +15,8 @@ use anyhow::{Context, Result};
 use mperf_data::{EventType, RecordInfo, Scenario};
 use tokio::fs;
 
-use store::Columns;
-use tables::{Tables, quote_identifier};
+use store::query::quote_identifier;
+use store::{Columns, Session};
 
 /// Turn a recording into the derived tables every consumer reads: one Parquet
 /// file per table in the session directory.
@@ -29,7 +28,7 @@ pub async fn perform_postprocessing(res_dir: &Path, pb: kdam::Bar) -> Result<()>
         .context("failed to read info.json")?;
     let info: RecordInfo = serde_json::from_str(&data).context("failed to parse info.json")?;
 
-    let tables = Tables::open(res_dir)?;
+    let tables = Session::open(res_dir)?;
     samples::process(&tables, &info, res_dir, &mut pb).await?;
     allocations::process(&tables)?;
     snapshot::write_host_telemetry(&tables, res_dir)?;
@@ -89,7 +88,7 @@ pub(crate) fn event_column_name_for(name: &str) -> String {
 
 /// One row per rung considered for this recording: the chosen capture strategy
 /// and every better one, with the reason it was unavailable.
-fn write_capture_fidelity(tables: &Tables, info: &RecordInfo) -> Result<()> {
+fn write_capture_fidelity(tables: &Session, info: &RecordInfo) -> Result<()> {
     let mut scenario = Vec::new();
     let mut rung = Vec::new();
     let mut status = Vec::new();
@@ -115,7 +114,7 @@ fn write_capture_fidelity(tables: &Tables, info: &RecordInfo) -> Result<()> {
     tables.write("capture_fidelity", columns.finish()?)
 }
 
-fn write_hotspots(tables: &Tables) -> Result<()> {
+fn write_hotspots(tables: &Session) -> Result<()> {
     let available = tables.columns("pmu_counters");
     let counter = |name: &str| {
         if available.iter().any(|column| column == name) {
@@ -164,11 +163,11 @@ fn write_hotspots(tables: &Tables) -> Result<()> {
     )
 }
 
-fn write_derived_metrics(tables: &Tables) -> Result<()> {
+fn write_derived_metrics(tables: &Session) -> Result<()> {
     write_metric_definitions(tables, &libprof::host_metrics())
 }
 
-fn write_metric_definitions(tables: &Tables, metrics: &[libprof::Metric]) -> Result<()> {
+fn write_metric_definitions(tables: &Session, metrics: &[libprof::Metric]) -> Result<()> {
     let available = tables.columns("pmu_counters");
     let mut rows = Vec::<(String, f64, Option<String>, String)>::new();
     for metric in metrics {

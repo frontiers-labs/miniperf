@@ -5,13 +5,13 @@ use anyhow::Result;
 use kdam::BarExt;
 use object::{Object, ObjectSymbol, SymbolKind};
 
-use super::tables::{Tables, quote_identifier};
 use crate::disassembly::{DisassembleRequest, DisassembleTarget, default_disassembler};
 use crate::utils;
-use store::Columns;
+use store::query::quote_identifier;
+use store::{Columns, Session};
 
 /// Aggregate per-address sample counts and disassemble every sampled function.
-pub(crate) fn process(tables: &Tables, pb: &mut kdam::Bar) -> Result<()> {
+pub(crate) fn process(tables: &Session, pb: &mut kdam::Bar) -> Result<()> {
     write_assembly_samples(tables)?;
 
     let modules = if tables.has_table("modules") {
@@ -137,7 +137,7 @@ pub(crate) fn process(tables: &Tables, pb: &mut kdam::Bar) -> Result<()> {
     )
 }
 
-fn write_assembly_samples(tables: &Tables) -> Result<()> {
+fn write_assembly_samples(tables: &Session) -> Result<()> {
     let available = tables.columns("pmu_counters");
     let metric = |column: &str| {
         if available.iter().any(|name| name == column) {

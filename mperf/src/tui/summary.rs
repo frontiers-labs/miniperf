@@ -69,14 +69,12 @@ impl SummaryTab {
                 return Err("this recording has no pmu_counters table".to_string());
             }
             let conn = session.connection();
-            let mut columns_statement = conn
-                .prepare("PRAGMA table_info('pmu_counters')")
-                .map_err(|error| error.to_string())?;
-            let available_columns: HashSet<String> = columns_statement
-                .query_map([], |row| row.get::<_, String>("name"))
-                .map_err(|error| error.to_string())?
-                .collect::<store::duckdb::Result<_>>()
-                .map_err(|error| error.to_string())?;
+            let available_columns: HashSet<String> =
+                store::query::table_columns(conn, "pmu_counters")
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .map(|column| column.name)
+                    .collect();
 
             let has_branch = available_columns.contains("pmu_branch_instructions")
                 && available_columns.contains("pmu_branch_misses");

@@ -7,9 +7,8 @@ use object::{Object, ObjectSegment};
 use serde::Deserialize;
 use store::EventKind;
 
-use super::tables::Tables;
 use crate::utils;
-use store::Columns;
+use store::{Columns, Session};
 
 #[derive(Default)]
 struct RooflineLoopInfo {
@@ -183,7 +182,7 @@ impl BandwidthTimeline {
 
 /// Derived Roofline tables: the raw compiler-backend tables plus
 /// `roofline_loops`, one row per loop from whichever backend measured it.
-pub(crate) fn process(tables: &Tables, record_info: &RecordInfo, res_dir: &Path) -> Result<()> {
+pub(crate) fn process(tables: &Session, record_info: &RecordInfo, res_dir: &Path) -> Result<()> {
     let ScenarioInfo::Roofline(info) = &record_info.scenario_info else {
         return Ok(());
     };
@@ -246,7 +245,7 @@ fn loop_thread_columns(rows: &[LoopRow]) -> Result<store::arrow::record_batch::R
 }
 
 fn load_instrumented_loops(
-    tables: &Tables,
+    tables: &Session,
     info: &mperf_data::RooflineInfo,
 ) -> Result<(RooflineData, HashMap<u64, String>)> {
     let mut data = RooflineData {
@@ -288,7 +287,7 @@ fn load_instrumented_loops(
 
 /// `roofline_loop_runs` and `roofline_ops`: one row per instrumented loop
 /// execution, keyed by string ids.
-fn write_instrumented_tables(tables: &Tables, data: &RooflineData, res_dir: &Path) -> Result<()> {
+fn write_instrumented_tables(tables: &Session, data: &RooflineData, res_dir: &Path) -> Result<()> {
     let mut runs = Columns::default();
     runs.u64(
         "unique_id",
@@ -452,7 +451,7 @@ fn collect_instrumented_loops(
     Ok(())
 }
 
-fn load_payloads(tables: &Tables) -> Result<HashMap<u64, Payload>> {
+fn load_payloads(tables: &Session) -> Result<HashMap<u64, Payload>> {
     if !tables.has_table("payloads") {
         return Ok(HashMap::new());
     }
@@ -678,7 +677,7 @@ fn loop_columns(rows: Vec<LoopRow>) -> Result<store::arrow::record_batch::Record
 
 /// Attribute native sample time to the loops discovered by the binary backends.
 fn collect_binary_loops(
-    tables: &Tables,
+    tables: &Session,
     roofline_info: &mperf_data::RooflineInfo,
     artifact: BinaryLoopFile,
     res_dir: &Path,
@@ -938,7 +937,7 @@ fn parse_hex_address(value: &str) -> Result<u64> {
 /// The Roofline chart table: one row per loop in `roofline_loops`, with
 /// aggregate operation rates over wall-clock occupancy and arithmetic
 /// intensity against the best available traffic denominator.
-pub(crate) fn write_chart(tables: &Tables) -> Result<()> {
+pub(crate) fn write_chart(tables: &Session) -> Result<()> {
     let kinds = [
         "scalar_int",
         "scalar_float",
