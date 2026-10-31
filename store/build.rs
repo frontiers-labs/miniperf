@@ -20,7 +20,12 @@ fn main() {
         .as_str()
     {
         "macos" => "c++",
-        "windows" => return,
+        "windows" => {
+            // The linked DuckDB archive uses Windows Restart Manager; unlike
+            // libduckdb-sys's bundled path, its linked path omits this library.
+            println!("cargo:rustc-link-lib=dylib=rstrtmgr");
+            return;
+        }
         _ => "stdc++",
     };
     println!("cargo:rustc-link-lib=dylib={runtime}");
