@@ -57,6 +57,27 @@ cargo xtask check gui       # the viewer, over MPERF_RECORDINGS
 A check that needs hardware counters calls `require_pmu` and exits 3 where
 there are none, which reports as a visible skip rather than a silent pass.
 
+For GUI analysis changes, run the source scheduler and builder check against
+real recordings. It needs Rust but does not open a window:
+
+```sh
+checks/source/gui-analysis out-snapshot out-tma
+```
+
+This check complements `checks/gui/tour`, which exercises the shipped viewer.
+For recording-reader refactors, pin the table inventory, schemas, query
+envelopes, and row-value fingerprints before editing, then compare afterward:
+
+```sh
+python3 utils/verify-recording-structure.py capture --mperf target/debug/mperf \
+  --baseline /tmp/mperf-reader-pin.json out-snapshot out-tma
+python3 utils/verify-recording-structure.py compare --mperf target/debug/mperf \
+  --baseline /tmp/mperf-reader-pin.json out-snapshot out-tma
+```
+
+Use the same recordings and build configuration for both runs. Keep the pin
+outside the repository; these commands do not create recording fixtures.
+
 ## External binary dependencies
 
 DuckDB, DynamoRIO and qemu-user are not built by the main CI gate. The
