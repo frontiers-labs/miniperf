@@ -116,15 +116,17 @@ impl Source for AllocationSource {
         self.worker = Some(std::thread::spawn(move || {
             let mut result = Outcome::default();
             let mut expected = 1;
+            let mut missing_packets = 0;
             loop {
                 while let Some(packet) = receiver.try_recv() {
                     let Some(batch) = Batch::decode(&packet) else {
                         result.invalid = true;
                         continue;
                     };
-                    if batch.sequence != expected || result.footer {
+                    if batch.sequence < expected || result.footer {
                         result.invalid = true;
                     }
+                    missing_packets += batch.sequence.saturating_sub(expected);
                     expected = batch.sequence + 1;
                     result.produced = batch.produced;
                     result.producer_dropped = batch.producer_dropped;
@@ -146,14 +148,20 @@ impl Source for AllocationSource {
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
             result.packets_dropped = receiver.dropped_count() as u64;
+            result.invalid |= missing_packets > result.packets_dropped;
             result
         }));
         Ok(())
     }
     fn stop(&mut self, context: &SessionContext) -> Vec<SourceStatus> {
         if !context.launched() {
-            return vec![SourceStatus::new("allocations","unavailable","libc_preload","missing",
-            "Attach cannot inject allocation instrumentation into a running target; launch with --allocations")];
+            return vec![SourceStatus::new(
+                "allocations",
+                "unavailable",
+                "libc_preload",
+                "missing",
+                "Attach cannot inject allocation instrumentation into a running target; launch with --allocations",
+            )];
         }
         self.stop.store(true, Ordering::Release);
         let result = self
@@ -183,7 +191,18 @@ impl Source for AllocationSource {
                 invalid_protocol: result.invalid,
                 stack_every: self.stack_every,
             }));
-        let message=format!("root-process launch scope; libc-interposable allocator calls only; fork children, static/custom allocators excluded; footer={}; observed_operations={}; produced={}; producer_dropped={}; channel_dropped_operations={}; channel_dropped_packets={}; paused_operations={}; invalid_protocol={}; stack_every={}; requested bytes, not RSS; realloc intervals have uncertain internal peaks",result.footer,result.records,result.produced,result.producer_dropped,result.channel_dropped,result.packets_dropped,result.paused,result.invalid,self.stack_every);
+        let message = format!(
+            "root-process launch scope; libc-interposable allocator calls only; fork children, static/custom allocators excluded; footer={}; observed_operations={}; produced={}; producer_dropped={}; channel_dropped_operations={}; channel_dropped_packets={}; paused_operations={}; invalid_protocol={}; stack_every={}; requested bytes, not RSS; realloc intervals have uncertain internal peaks",
+            result.footer,
+            result.records,
+            result.produced,
+            result.producer_dropped,
+            result.channel_dropped,
+            result.packets_dropped,
+            result.paused,
+            result.invalid,
+            self.stack_every
+        );
         vec![SourceStatus::new(
             "allocations",
             if complete { "available" } else { "degraded" },

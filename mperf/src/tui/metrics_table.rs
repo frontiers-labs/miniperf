@@ -1032,34 +1032,27 @@ fn build_row(
     let mut cells = Vec::new();
 
     for idx in 0..sticky_len.min(layout.columns.len()) {
-        let column = &layout.columns[idx];
-        let value = row.values.get(idx).unwrap_or(&MetricValue::Null);
-        let formatted = if layout.function_column_index == Some(idx) {
-            symbolize::FunctionName::new(value.as_text().unwrap_or("N/A"))
-                .friendly()
-                .to_owned()
-        } else {
-            format_value(value, &column.format)
-        };
-        let text = Text::from(formatted).alignment(column.alignment);
-        cells.push(Cell::from(text));
+        cells.push(format_cell(row, layout, idx));
     }
 
     for idx in (sticky_len + column_offset).min(layout.columns.len())..layout.columns.len() {
-        let column = &layout.columns[idx];
-        let value = row.values.get(idx).unwrap_or(&MetricValue::Null);
-        let formatted = if layout.function_column_index == Some(idx) {
-            symbolize::FunctionName::new(value.as_text().unwrap_or("N/A"))
-                .friendly()
-                .to_owned()
-        } else {
-            format_value(value, &column.format)
-        };
-        let text = Text::from(formatted).alignment(column.alignment);
-        cells.push(Cell::from(text));
+        cells.push(format_cell(row, layout, idx));
     }
 
     Row::new(cells)
+}
+
+fn format_cell(row: &MetricsRow, layout: &RuntimeLayout, idx: usize) -> Cell<'static> {
+    let column = &layout.columns[idx];
+    let value = row.values.get(idx).unwrap_or(&MetricValue::Null);
+    let formatted = if layout.function_column_index == Some(idx) {
+        symbolize::FunctionName::new(value.as_text().unwrap_or("N/A"))
+            .friendly()
+            .to_owned()
+    } else {
+        format_value(value, &column.format)
+    };
+    Cell::from(Text::from(formatted).alignment(column.alignment))
 }
 
 fn collect_summary(

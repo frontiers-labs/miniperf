@@ -16,7 +16,11 @@ impl<'a> FunctionName<'a> {
         let legacy_hash = name.rsplit_once("::h").filter(|(_, hash)| {
             hash.len() == 16 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
         });
-        let is_rust = demangled.is_some() || legacy_hash.is_some() || has_disambiguator(name);
+        let is_rust = demangled.is_some()
+            || legacy_hash.is_some()
+            || name
+                .match_indices('[')
+                .any(|(index, _)| has_disambiguator(name, index));
         let friendly = if is_rust {
             Cow::Owned(abbreviate(legacy_hash.map_or(name, |(name, _)| name)))
         } else {
@@ -42,14 +46,18 @@ impl<'a> FunctionName<'a> {
     }
 }
 
-fn has_disambiguator(name: &str) -> bool {
-    name.split('[').skip(1).any(|part| {
-        part.split_once(']').is_some_and(|(hash, rest)| {
-            hash.len() >= 8
-                && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-                && rest.starts_with("::")
-        })
-    })
+fn has_disambiguator(name: &str, index: usize) -> bool {
+    name[..index]
+        .chars()
+        .next_back()
+        .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+        && name[index + 1..]
+            .split_once(']')
+            .is_some_and(|(hash, rest)| {
+                hash.len() >= 8
+                    && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    && rest.starts_with("::")
+            })
 }
 
 fn abbreviate(name: &str) -> String {
@@ -59,8 +67,7 @@ fn abbreviate(name: &str) -> String {
         if ch == '[' {
             if let Some(end) = name[index + 1..].find(']') {
                 let end = index + 1 + end;
-                let hash = &name[index + 1..end];
-                if !hash.is_empty() && hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                if has_disambiguator(name, index) {
                     while chars.peek().is_some_and(|(index, _)| *index <= end) {
                         chars.next();
                     }
@@ -137,25 +144,55 @@ mod tests {
     use super::FunctionName;
 
     #[test]
-    fn keeps_identity_and_searchable_generic_arguments() {
-        let full = "demo::work::<alloc::vec::Vec<u64>>::h0123456789abcdef";
-        let name = FunctionName::new(full);
-        assert_eq!(name.full(), full);
-        assert_eq!(name.friendly(), "demo::work::<…>");
-        assert!(name.matches("Vec<u64>"));
-        assert!(name.matches("WORK::<…>"));
+    fn formats_friendly_names() {
+        for (input, expected) in [
+            (
+                "demo::work::<alloc::vec::Vec<u64>>::h0123456789abcdef",
+                "demo::work::<…>",
+            ),
+            (
+                "<demo::Item<u64> as demo::Run>::run::h0123456789abcdef",
+                "<demo::Item<…> as demo::Run>::run",
+            ),
+            (
+                "demo::work::{{closure}}::h0123456789abcdef",
+                "demo::work::{{closure}}",
+            ),
+            (
+                "demo::work::<fn() -> u64>::h0123456789abcdef",
+                "demo::work::<…>",
+            ),
+            (
+                "<[f64] as s::Sum>::total::h0123456789abcdef",
+                "<[f64] as s::Sum>::total",
+            ),
+            ("<[f32]>::sort_by::h0123456789abcdef", "<[f32]>::sort_by"),
+            ("demo[01234567]::work", "demo::work"),
+            (
+                "_RNvNtCshdxFFIzI2qy_10rust_names4left4same",
+                "rust_names::left::same",
+            ),
+            (
+                "std::vector<int>::push_back(int)",
+                "std::vector<int>::push_back(int)",
+            ),
+            ("main", "main"),
+            ("λ::name", "λ::name"),
+            ("broken::<thing", "broken::<thing"),
+            ("a::h123", "a::h123"),
+            ("[unknown]", "[unknown]"),
+            ("foo[abc]::bar", "foo[abc]::bar"),
+            ("[abcdefab]::bar", "[abcdefab]::bar"),
+        ] {
+            assert_eq!(FunctionName::new(input).friendly(), expected, "{input}");
+        }
     }
 
     #[test]
-    fn retains_trait_and_closure_context() {
-        assert_eq!(
-            FunctionName::new("<demo::Item<u64> as demo::Run>::run::h0123456789abcdef").friendly(),
-            "<demo::Item<…> as demo::Run>::run"
-        );
-        assert_eq!(
-            FunctionName::new("demo::work::{{closure}}::h0123456789abcdef").friendly(),
-            "demo::work::{{closure}}"
-        );
+    fn searches_full_name_and_friendly_label() {
+        let name = FunctionName::new("demo::work::<alloc::vec::Vec<u64>>::h0123456789abcdef");
+        assert!(name.matches("Vec<u64>"));
+        assert!(name.matches("WORK::<…>"));
     }
 
     #[test]
@@ -164,28 +201,5 @@ mod tests {
         let encoded = super::encode_folded_name(full);
         assert!(!encoded.contains([';', '\n', '\r']));
         assert_eq!(super::decode_folded_name(&encoded), full);
-    }
-
-    #[test]
-    fn handles_function_pointer_arguments() {
-        assert_eq!(
-            FunctionName::new("demo::work::<fn() -> u64>::h0123456789abcdef").friendly(),
-            "demo::work::<…>"
-        );
-    }
-
-    #[test]
-    fn leaves_non_rust_and_unrecognized_names_unchanged() {
-        for name in [
-            "std::vector<int>::push_back(int)",
-            "main",
-            "λ::name",
-            "broken::<thing",
-            "a::h123",
-            "[unknown]",
-            "foo[abc]::bar",
-        ] {
-            assert_eq!(FunctionName::new(name).friendly(), name);
-        }
     }
 }

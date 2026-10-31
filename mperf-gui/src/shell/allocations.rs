@@ -1,4 +1,4 @@
-use super::{ShellView, session::ShellSession};
+use super::{ShellView, ViewId, session::ShellSession};
 use crate::{
     allocations::Boundary,
     profile::ProfileFrame,
@@ -10,25 +10,43 @@ use gpui::{Context, div, prelude::*, px};
 use std::{collections::HashMap, path::Path, sync::Arc};
 
 #[derive(Default)]
-struct Site {
+pub(super) struct Site {
+    title: String,
     count: u64,
     requested: u64,
     live: u64,
     ended_lifetime: u64,
     ended_count: u64,
-    changes: Vec<(Boundary, i64)>,
+    peak: u64,
 }
-impl Site {
-    fn peak(&mut self) -> u64 {
-        self.changes.sort_unstable_by_key(|(boundary, _)| *boundary);
-        let mut live = 0i64;
-        let mut peak = 0;
-        for (_, delta) in &self.changes {
-            live += delta;
-            peak = peak.max(live);
-        }
-        peak as u64
-    }
+
+fn allocator_wrapper(name: &str) -> bool {
+    let demangled = symbolize::demangle_full(name);
+    let name = symbolize::FunctionName::new(&demangled);
+    let name = name.friendly();
+    let rust_name = name.strip_prefix('<').unwrap_or(name);
+    name.starts_with("operator new(")
+        || name.starts_with("operator new[](")
+        || [
+            "alloc::alloc::",
+            "alloc::raw_vec::",
+            "alloc::boxed::Box<",
+            "alloc::boxed::box_new",
+            "alloc::vec::Vec<",
+            "std::sys::alloc::",
+            "std::alloc::System ",
+        ]
+        .iter()
+        .any(|prefix| rust_name.starts_with(prefix))
+        || matches!(
+            name.strip_prefix("__rustc::").unwrap_or(name),
+            "__rust_alloc"
+                | "__rust_alloc_zeroed"
+                | "__rust_realloc"
+                | "__rdl_alloc"
+                | "__rdl_alloc_zeroed"
+                | "__rdl_realloc"
+        )
 }
 
 fn application_frame<'a>(session: &'a ShellSession, frames: &[usize]) -> Option<&'a ProfileFrame> {
@@ -48,17 +66,28 @@ fn application_frame<'a>(session: &'a ShellSession, frames: &[usize]) -> Option<
                         | "libmperf_libc.so"
                         | "libc.so.6"
                         | "libgcc_s.so.1"
-                        | "ld-linux-x86-64.so.2"
                         | "libpthread.so.0"
-                )
-            })
+                        | "ld.so.1"
+                        | "ld64.so.1"
+                        | "ld64.so.2"
+                ) && !name.starts_with("ld-linux-")
+                    && name != "ld-linux.so.2"
+                    && !name.starts_with("ld-musl-")
+            }) && !allocator_wrapper(&frame.name)
         })
 }
 
 fn allocation_sites(session: &ShellSession, filter: &SampleFilter) -> Vec<(u64, Site)> {
     let data = session.allocations.as_ref().unwrap();
     let cutoff = filter.range.map(|range| range.end_ns).unwrap_or(u64::MAX);
-    let mut sites = HashMap::<u64, Site>::new();
+    let application_frames = data
+        .stacks
+        .iter()
+        .filter_map(|(stack, frames)| {
+            application_frame(session, frames).map(|frame| (*stack, frame))
+        })
+        .collect::<HashMap<_, _>>();
+    let mut sites = HashMap::<u64, (Site, Vec<(Boundary, i64)>)>::new();
     for lifetime in &data.lifetimes {
         let stack = data.stacks.get(&lifetime.stack);
         if filter.range.is_some_and(|range| {
@@ -74,26 +103,43 @@ fn allocation_sites(session: &ShellSession, filter: &SampleFilter) -> Vec<(u64, 
                 !stack.is_some_and(|frames| frames.iter().any(|id| selected.contains(id)))
             })
             || filter.leaf_frames.as_ref().is_some_and(|selected| {
-                !stack
-                    .and_then(|frames| application_frame(session, frames))
+                !application_frames
+                    .get(&lifetime.stack)
                     .is_some_and(|frame| selected.contains(&frame.id))
             })
         {
             continue;
         }
-        let site = sites.entry(lifetime.stack).or_default();
+        let (site, changes) = sites.entry(lifetime.stack).or_default();
         site.count += 1;
         site.requested += lifetime.bytes;
-        site.changes.push((lifetime.start, lifetime.bytes as i64));
+        changes.push((lifetime.start, lifetime.bytes as i64));
         if let Some(end) = lifetime.end.filter(|end| end.time <= cutoff) {
             site.ended_lifetime += end.time.saturating_sub(lifetime.start.time);
             site.ended_count += 1;
-            site.changes.push((end, -(lifetime.bytes as i64)));
+            changes.push((end, -(lifetime.bytes as i64)));
         } else {
             site.live += lifetime.bytes;
         }
     }
-    let mut sites = sites.into_iter().collect::<Vec<_>>();
+    let mut sites = sites
+        .into_iter()
+        .map(|(stack, (mut site, mut changes))| {
+            changes.sort_unstable_by_key(|(boundary, _)| *boundary);
+            let mut live = 0i64;
+            let mut peak = 0i64;
+            for (_, delta) in changes {
+                live += delta;
+                peak = peak.max(live);
+            }
+            site.peak = peak as u64;
+            site.title = application_frames.get(&stack).map_or_else(
+                || "[unknown stack]".into(),
+                |frame| frame.friendly_name.clone(),
+            );
+            (stack, site)
+        })
+        .collect::<Vec<_>>();
     sites.sort_by_key(|(_, site)| std::cmp::Reverse(site.requested));
     sites
 }
@@ -112,8 +158,7 @@ pub fn render(
             .into_any_element();
     }
     let selected = state.allocation_stack;
-    let filter = state.filter.resolve(session);
-    let sites = allocation_sites(session, &filter);
+    let sites = state.allocation_sites.latest();
     let mut content = div()
         .id("allocations")
         .size_full()
@@ -189,20 +234,8 @@ pub fn render(
         .flex_col()
         .text_size(px(11.))
         .child(ui::table_header(&columns, None, cx));
-    for (stack, mut site) in sites.into_iter().take(200) {
-        let title = data
-            .stacks
-            .get(&stack)
-            .and_then(|frames| application_frame(session, frames))
-            .map_or_else(
-                || "[unknown stack]".into(),
-                |frame| {
-                    symbolize::FunctionName::new(&frame.name)
-                        .friendly()
-                        .to_owned()
-                },
-            );
-        let peak = site.peak();
+    for (stack, site) in sites.into_iter().flat_map(|sites| sites.iter()).take(200) {
+        let stack = *stack;
         let lifetime = site
             .ended_lifetime
             .checked_div(site.ended_count)
@@ -210,11 +243,11 @@ pub fn render(
         table = table.child(
             ui::table_row(selected == Some(stack), cx)
                 .id(("allocation-site", stack))
-                .child(ui::table_cell(&columns[0]).child(title))
+                .child(ui::table_cell(&columns[0]).child(site.title.clone()))
                 .child(ui::table_cell(&columns[1]).child(format_count(site.count as f64)))
                 .child(ui::table_cell(&columns[2]).child(format_bytes(site.requested as f64)))
                 .child(ui::table_cell(&columns[3]).child(format_bytes(site.live as f64)))
-                .child(ui::table_cell(&columns[4]).child(format_bytes(peak as f64)))
+                .child(ui::table_cell(&columns[4]).child(format_bytes(site.peak as f64)))
                 .child(ui::table_cell(&columns[5]).child(lifetime))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.allocation_stack = Some(stack);
@@ -222,7 +255,12 @@ pub fn render(
                 })),
         );
     }
-    content = content.child(ui::viz_card("Call sites by requested bytes, first 200").child(table));
+    let title = if state.allocation_sites.stale(state.analysis_key()) {
+        "Call sites by requested bytes, first 200 · updating"
+    } else {
+        "Call sites by requested bytes, first 200"
+    };
+    content = content.child(ui::viz_card(title).child(table));
     if let Some(stack) = selected {
         let mut frames = div().flex().flex_col().gap(px(4.));
         if let Some(ids) = data.stacks.get(&stack) {
@@ -234,7 +272,7 @@ pub fn render(
                         .cursor_pointer()
                         .child(format!(
                             "{}  {}:{}",
-                            symbolize::FunctionName::new(&frame.name).friendly(),
+                            frame.friendly_name,
                             frame.file.clone().unwrap_or_default(),
                             frame.line.unwrap_or(0)
                         ))
@@ -253,6 +291,57 @@ pub fn render(
     content.into_any_element()
 }
 impl ShellView {
+    pub(super) fn ensure_allocation_sites(&mut self, cx: &mut Context<Self>) {
+        if self.active_view() != Some(ViewId::Allocations) {
+            return;
+        }
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        let key = self.analysis_key();
+        if !self.allocation_sites.needs(key) {
+            return;
+        }
+        self.allocation_sites.begin(key);
+        let filter = self.filter.clone();
+        cx.spawn(async move |this, cx| {
+            let sites = cx
+                .background_executor()
+                .spawn(async move {
+                    let resolved = filter.resolve(&session);
+                    Arc::new(allocation_sites(&session, &resolved))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.allocation_sites.install(key, sites) {
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Wait for the same filtered summaries the allocation table renders.
+    pub fn allocation_tour_ready(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.allocations.is_some())
+        {
+            return true;
+        }
+        if self.active_view() != Some(ViewId::Allocations) {
+            let index = self
+                .views()
+                .iter()
+                .position(|view| *view == ViewId::Allocations)
+                .expect("allocation data offers the allocation view");
+            self.set_active_tab(index, cx);
+        }
+        !self.allocation_sites.stale(self.analysis_key())
+    }
+
     /// Exercises the allocation data and normal source-tab path on a real recording.
     pub fn tour_allocations(&mut self, cx: &mut Context<Self>) -> anyhow::Result<()> {
         let Some(session) = self.session.clone() else {
@@ -278,8 +367,11 @@ impl ShellView {
             "tour: allocation_data {}",
             serde_json::json!({"count":data.count,"requested_bytes":data.bytes,"complete":data.complete,"stacks":data.stacks.len()})
         );
-        for (stack, mut site) in allocation_sites(&session, &SampleFilter::default()) {
-            let peak = site.peak();
+        let sites = self
+            .allocation_sites
+            .latest()
+            .expect("tour waits for allocation summaries");
+        for (stack, site) in sites.iter() {
             println!(
                 "tour: allocation_site {}",
                 serde_json::json!({
@@ -287,7 +379,8 @@ impl ShellView {
                     "count": site.count,
                     "requested_bytes": site.requested,
                     "live_bytes": site.live,
-                    "peak_bytes": peak,
+                    "peak_bytes": site.peak,
+                    "call_site": site.title,
                 })
             );
         }

@@ -193,6 +193,7 @@ work = [json.loads(line) for line in Path(directory + ".stdout").read_text().spl
 assert len(work) == 1 and work[0]["allocations"] == 800000 and work[0]["requested_bytes"] == 6751200000 and work[0]["checksum"] == 136375424 and work[0]["failures"] == 0, work
 capture = query("SELECT * FROM allocation_capture")[0]
 summary = query("SELECT * FROM allocation_summary")[0]
+assert capture["invalid_protocol"] == 0, "ordinary channel loss was reported as protocol corruption"
 loss = sum(capture[field] for field in ("producer_dropped", "channel_dropped_operations", "channel_dropped_packets", "paused_operations"))
 if loss or not capture["footer"] or capture["invalid_protocol"]:
     assert capture["complete"] == summary["complete"] == 0, (capture, summary)

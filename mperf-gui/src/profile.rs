@@ -22,9 +22,18 @@ pub(crate) struct ProfileData {
 pub(crate) struct ProfileFrame {
     pub(crate) id: usize,
     pub(crate) name: String,
+    pub(crate) friendly_name: String,
     pub(crate) module: Option<String>,
     pub(crate) file: Option<String>,
     pub(crate) line: Option<u32>,
+}
+
+impl ProfileFrame {
+    pub(crate) fn matches_symbol(&self, query: &str) -> bool {
+        let query = query.to_lowercase();
+        self.name.to_lowercase().contains(&query)
+            || self.friendly_name.to_lowercase().contains(&query)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -497,6 +506,9 @@ fn intern_frame(
     let id = frames.len();
     frames.push(ProfileFrame {
         id,
+        friendly_name: symbolize::FunctionName::new(&candidate.name)
+            .friendly()
+            .to_owned(),
         name: candidate.name,
         module: candidate.module,
         file: candidate.file,

@@ -734,18 +734,22 @@ impl<'a> FlamelensWidget<'a> {
                     let match_text = format!("{:width$}", match_text, width = width as usize,);
                     lines.push(("Match", Line::from(match_text)));
                 }
-                let selected_text = format!(
-                    "{} {}",
-                    self.decode_name(self.app.flamegraph().get_stack_short_name_from_info(stack)),
-                    FlamelensWidget::get_count_stats_str(
-                        None,
-                        stack.total_count,
-                        root_total_count,
-                        zoom_total_count
-                    ),
-                );
-                let status_text = format!("{:width$}", selected_text, width = width as usize,);
-                lines.push(("Selected", Line::from(status_text)));
+                if self.is_flamegraph_view() {
+                    let selected_text = format!(
+                        "{} {}",
+                        self.decode_name(
+                            self.app.flamegraph().get_stack_short_name_from_info(stack)
+                        ),
+                        FlamelensWidget::get_count_stats_str(
+                            None,
+                            stack.total_count,
+                            root_total_count,
+                            zoom_total_count
+                        ),
+                    );
+                    let status_text = format!("{:width$}", selected_text, width = width as usize,);
+                    lines.push(("Selected", Line::from(status_text)));
+                }
                 if self.app.debug {
                     let elapsed_str = format!(
                         "Debug: {}",

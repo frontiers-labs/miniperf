@@ -114,6 +114,7 @@ impl AllocationData {
             let id = profile.frames.len() + frames.len();
             frames.push(ProfileFrame {
                 id,
+                friendly_name: symbolize::FunctionName::new(&name).friendly().to_owned(),
                 name,
                 module,
                 file: (!file.is_empty()).then_some(file),

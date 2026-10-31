@@ -35,6 +35,7 @@ pub struct RooflineData {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RooflineLoop {
     pub function_name: String,
+    pub friendly_name: String,
     pub file_name: String,
     pub line: usize,
     pub scalar_int_ops: Option<f64>,
@@ -211,8 +212,12 @@ fn load_loops(connection: &Connection) -> Result<Vec<RooflineLoop>> {
         .context("failed to read a row from view `roofline`")?
     {
         let row = row_values(row, 23).context("failed to read a row from view `roofline`")?;
+        let function_name = string_value(&row[0]).unwrap_or_else(|| "[unknown loop]".to_string());
         loops.push(RooflineLoop {
-            function_name: string_value(&row[0]).unwrap_or_else(|| "[unknown loop]".to_string()),
+            friendly_name: symbolize::FunctionName::new(&function_name)
+                .friendly()
+                .to_owned(),
+            function_name,
             file_name: string_value(&row[1]).unwrap_or_default(),
             line: as_i64(&row[2]).unwrap_or_default().max(0) as usize,
             scalar_int_ops: finite_value(&row[3]),

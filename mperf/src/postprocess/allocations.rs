@@ -119,7 +119,7 @@ pub(crate) fn process(tables: &Tables) -> Result<()> {
                 conflicts += 1;
             }
             live.insert(key, lifetimes.len());
-            let old_address = old_sizes
+            let old_size = old_sizes
                 .get(&(record.pid, record.process_epoch, record.operation_id))
                 .copied()
                 .unwrap_or(0);
@@ -135,7 +135,7 @@ pub(crate) fn process(tables: &Tables) -> Result<()> {
                 freed_sequence: None,
                 stack_id: record.stack_id,
                 realloc_growth_bytes: if record.operation == Operation::ReallocEnd {
-                    record.requested_bytes.saturating_sub(old_address)
+                    record.requested_bytes.saturating_sub(old_size)
                 } else {
                     0
                 },

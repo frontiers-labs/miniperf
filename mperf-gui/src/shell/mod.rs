@@ -354,6 +354,7 @@ pub struct ShellView {
     panel_width: f32,
     selected_frame: Option<usize>,
     allocation_stack: Option<u64>,
+    allocation_sites: Derived<Vec<(u64, allocations::Site)>>,
     /// Index into the recording's roofline loops, for the Roofline view.
     roofline_loop: Option<usize>,
     /// Zoom/pan window of the roofline plot; `None` fits every loop.
@@ -453,6 +454,7 @@ impl ShellView {
             panel_width: 300.0,
             selected_frame: None,
             allocation_stack: None,
+            allocation_sites: Derived::default(),
             roofline_loop: None,
             roofline_view: None,
             roofline_drag: None,
@@ -508,6 +510,7 @@ impl ShellView {
         self.roofline_drag = None;
         self.source_tabs.clear();
         self.allocation_stack = None;
+        self.allocation_sites.reset();
         self.brush.clear();
         self.analysis.reset();
         self.flame.reset();
@@ -589,6 +592,7 @@ impl ShellView {
         let Some(session) = self.session.clone() else {
             return;
         };
+        self.ensure_allocation_sites(cx);
 
         let key = self.analysis_key();
         if self.analysis.needs(key) {
@@ -940,9 +944,7 @@ impl ShellView {
         }
         self.source_tabs.push(SourceTab {
             frame_id,
-            title: symbolize::FunctionName::new(&frame.name)
-                .friendly()
-                .to_owned(),
+            title: frame.friendly_name.clone(),
             document,
             scroll,
             asm_scroll: UniformListScrollHandle::new(),
@@ -1631,8 +1633,7 @@ impl ShellView {
                             let entity = entity.clone();
                             let module = session.module_label(frame_id);
                             let dimmed = !symbol_query.is_empty()
-                                && !symbolize::FunctionName::new(&function.label)
-                                    .matches(&symbol_query);
+                                && !session.profile.frames[frame_id].matches_symbol(&symbol_query);
                             let self_pct = function.self_fraction * 100.0;
                             let bar_width = (self_pct / 100.0 * 240.0).min(66.0) as f32;
                             let number = |value: String, muted: bool| {
@@ -1668,9 +1669,9 @@ impl ShellView {
                                                     el.text_color(theme.muted_foreground)
                                                 })
                                                 .child(
-                                                    symbolize::FunctionName::new(&function.label)
-                                                        .friendly()
-                                                        .to_owned(),
+                                                    session.profile.frames[function.frame_id]
+                                                        .friendly_name
+                                                        .clone(),
                                                 ),
                                         ),
                                 )
@@ -1879,7 +1880,7 @@ impl ShellView {
                             )
                         })
                         .children(top.into_iter().map(|function| {
-                            self.render_summary_hotspot(&function, hotspots_tab, cx)
+                            self.render_summary_hotspot(session, &function, hotspots_tab, cx)
                         })),
                 )
             })
@@ -1934,6 +1935,7 @@ impl ShellView {
 
     fn render_summary_hotspot(
         &self,
+        session: &ShellSession,
         function: &FunctionStat,
         hotspots_tab: Option<usize>,
         cx: &mut Context<Self>,
@@ -1965,11 +1967,7 @@ impl ShellView {
                     .truncate()
                     .font_family(theme.font_mono.clone())
                     .text_size(px(11.0))
-                    .child(
-                        symbolize::FunctionName::new(&function.label)
-                            .friendly()
-                            .to_owned(),
-                    ),
+                    .child(session.profile.frames[frame_id].friendly_name.clone()),
             )
             .child(
                 div()
@@ -2141,11 +2139,7 @@ impl ShellView {
                         .font_family(theme.font_mono.clone())
                         .text_size(px(11.5))
                         .font_weight(FontWeight::MEDIUM)
-                        .child(
-                            symbolize::FunctionName::new(&hottest.function_name)
-                                .friendly()
-                                .to_owned(),
-                        ),
+                        .child(hottest.friendly_name.clone()),
                 )
                 .child(
                     div()
@@ -3108,9 +3102,9 @@ impl ShellView {
                                         .text_size(px(11.0))
                                         .font_weight(FontWeight::MEDIUM)
                                         .child(
-                                            symbolize::FunctionName::new(&function.label)
-                                                .friendly()
-                                                .to_owned(),
+                                            session.profile.frames[function.frame_id]
+                                                .friendly_name
+                                                .clone(),
                                         ),
                                 )
                                 .when(has_source, |el| {
@@ -3203,9 +3197,9 @@ impl ShellView {
                                 .truncate()
                                 .font_family(theme.font_mono.clone())
                                 .child(
-                                    symbolize::FunctionName::new(&relation.label)
-                                        .friendly()
-                                        .to_owned(),
+                                    session.profile.frames[relation.frame_id]
+                                        .friendly_name
+                                        .clone(),
                                 ),
                         )
                         .child(

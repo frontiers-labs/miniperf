@@ -316,7 +316,7 @@ impl Collector {
 
     pub fn record_allocation(&self, mut record: Allocation) -> u64 {
         let _producer = ProducerGuard::enter(&self.producers);
-        if !self.accepting.load(Ordering::Acquire) {
+        if !self.accepting.load(Ordering::SeqCst) {
             return 0;
         }
         record.pid = self.pid as u64;
@@ -366,7 +366,7 @@ impl Collector {
     /// instead of waiting for capacity, surfacing later as a Loss row.
     pub fn record(&self, mut record: EventRecord, frames: &[u64]) {
         let _producer = ProducerGuard::enter(&self.producers);
-        if !self.accepting.load(Ordering::Acquire) || self.paused.load(Ordering::Relaxed) {
+        if !self.accepting.load(Ordering::SeqCst) || self.paused.load(Ordering::Relaxed) {
             return;
         }
         record.nframes = frames.len().min(MAX_FRAMES) as u8;
@@ -471,8 +471,8 @@ impl Collector {
     }
 
     fn finish(&self) {
-        self.accepting.store(false, Ordering::Release);
-        while self.producers.load(Ordering::Acquire) != 0 {
+        self.accepting.store(false, Ordering::SeqCst);
+        while self.producers.load(Ordering::SeqCst) != 0 {
             std::thread::yield_now();
         }
         for slot in self.slots.lock().unwrap().iter() {
@@ -822,7 +822,7 @@ fn json_string(value: &str) -> String {
 struct ProducerGuard<'a>(&'a AtomicU64);
 impl<'a> ProducerGuard<'a> {
     fn enter(active: &'a AtomicU64) -> Self {
-        active.fetch_add(1, Ordering::AcqRel);
+        active.fetch_add(1, Ordering::SeqCst);
         Self(active)
     }
 }

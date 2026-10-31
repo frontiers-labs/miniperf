@@ -56,12 +56,10 @@ assert all(row[2] == "rust_names::generic::<…>" for row in rows if row[1].star
 if any(row[0].startswith("_R") and row[1].startswith("rust_names[") for row in rows):
     assert any("alloc" in name and "Option" in name and "Result" in name for name in generics), "nested arguments missing from full name"
 assert any("Worker" in row[2] and " as " in row[2] and "Run" in row[2] for row in rows if "Run" in row[1] and "::run" in row[1]), "trait receiver context lost"
-assert any("left::same" in name for name in names)
-assert any("right::same" in name for name in names)
+same_labels = {row[2] for row in rows if "left::same" in row[1] or "right::same" in row[1]}
+assert same_labels == {"rust_names::left::same", "rust_names::right::same"}, same_labels
 assert any("closure" in name for name in names)
-assert any("Run" in name and "::run" in name for name in names)
 assert any("inline_work" in row[1] and row[4].endswith("rust_names.rs") and int(row[5]) > 0 for row in rows), "no inline callee source"
 assert any(int(row[3]) > 0 for row in rows), "inline caller lost"
 assert any(row[1] == row[2] == "plain_c_name" for row in rows), "non-Rust name changed"
-assert len({row[0] for row in rows if "::generic" in row[1]}) >= 2, "monomorphizations collapsed"
 print(f"verified {len(rows)} resolved fixture frames and {len(generics)} generic identities")

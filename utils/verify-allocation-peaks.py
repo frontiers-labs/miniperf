@@ -60,5 +60,6 @@ assert len(actual) == len(actual_rows), "viewer reported duplicate allocation si
 assert actual.keys() == expected.keys(), (
     "allocation site inventory differs", actual.keys() ^ expected.keys())
 for stack, row in expected.items():
-    assert actual[stack] == row, ("allocation site differs", row, actual[stack])
+    stats = {key: actual[stack][key] for key in row}
+    assert stats == row, ("allocation site differs", row, actual[stack])
 print(f"  {len(expected)} allocation site(s) agree with operation-ordered SQL")

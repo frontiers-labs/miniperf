@@ -4,7 +4,6 @@ use std::path::Path;
 use gpui::Context;
 
 use super::ShellView;
-use symbolize::FunctionName;
 
 impl ShellView {
     /// Reports the loaded full names and labels, and chooses local source tabs to visit.
@@ -30,8 +29,7 @@ impl ShellView {
         }
         let mut inspect = Vec::new();
         for frame in &session.profile.frames {
-            let name = FunctionName::new(&frame.name);
-            if name.full() == name.friendly() {
+            if frame.name == frame.friendly_name {
                 continue;
             }
             let local_source = frame
@@ -41,7 +39,7 @@ impl ShellView {
             println!(
                 "tour: function_name {}",
                 serde_json::json!({
-                    "id": frame.id, "full": name.full(), "friendly": name.friendly(),
+                    "id": frame.id, "full": frame.name, "friendly": frame.friendly_name,
                     "module": frame.module, "local_source": local_source,
                 })
             );
@@ -67,8 +65,7 @@ impl ShellView {
             .expect("tour requires a loaded session")
             .clone();
         let frame = &session.profile.frames[frame_id];
-        let name = FunctionName::new(&frame.name);
-        for query in [name.full(), name.friendly()] {
+        for query in [&frame.name, &frame.friendly_name] {
             self.filter.symbol = query.to_owned();
             let resolved = self.filter.resolve(&session);
             anyhow::ensure!(
