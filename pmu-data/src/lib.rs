@@ -157,6 +157,142 @@ pub struct TmaMetric {
     pub cpus: Option<String>,
 }
 
+/// Invalid syntax or references in a set of TMA metric formulas.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TmaFormulaError {
+    /// A metric formula could not be parsed.
+    InvalidFormula {
+        /// Name of the metric containing the formula.
+        metric: String,
+        /// Parser diagnostic for the formula.
+        error: String,
+    },
+    /// A variable names neither a recorded event nor a metric.
+    UnknownVariable {
+        /// Name of the metric containing the reference.
+        metric: String,
+        /// Unresolved event or metric name.
+        variable: String,
+    },
+    /// Metric references form a cycle.
+    Cycle {
+        /// Cycle in reference order, with the first metric repeated at the end.
+        metrics: Vec<String>,
+    },
+}
+
+impl std::fmt::Display for TmaFormulaError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidFormula { metric, error } => {
+                write!(formatter, "invalid TMA formula '{metric}': {error}")
+            }
+            Self::UnknownVariable { metric, variable } => {
+                write!(
+                    formatter,
+                    "TMA metric '{metric}' references unknown variable '{variable}'"
+                )
+            }
+            Self::Cycle { metrics } => {
+                write!(
+                    formatter,
+                    "TMA metric reference cycle: {}",
+                    metrics.join(" -> ")
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for TmaFormulaError {}
+
+/// Validates formula syntax, event and metric references, and metric cycles.
+///
+/// `events` contains the recorded counter names. An event takes precedence
+/// over a metric with the same name. Missing constants and zero denominators
+/// remain valid formulas; consumers evaluate those unavailable values as NULL.
+pub fn validate_tma_metrics<'a>(
+    events: impl IntoIterator<Item = &'a str>,
+    metrics: &[TmaMetric],
+) -> Result<(), TmaFormulaError> {
+    use arith_parser::Expr;
+
+    let events = events.into_iter().collect::<BTreeSet<_>>();
+    let names = metrics
+        .iter()
+        .enumerate()
+        .rev()
+        .map(|(index, metric)| (metric.name.as_str(), index))
+        .collect::<HashMap<_, _>>();
+    let mut dependencies = Vec::with_capacity(metrics.len());
+    for metric in metrics {
+        let expression = arith_parser::try_parse_expr(&metric.formula).map_err(|error| {
+            TmaFormulaError::InvalidFormula {
+                metric: metric.name.clone(),
+                error,
+            }
+        })?;
+        let mut referenced = Vec::new();
+        let mut expressions = vec![&expression];
+        while let Some(expression) = expressions.pop() {
+            match expression {
+                Expr::Variable(variable) if !events.contains(variable.as_str()) => {
+                    let index = names.get(variable.as_str()).ok_or_else(|| {
+                        TmaFormulaError::UnknownVariable {
+                            metric: metric.name.clone(),
+                            variable: variable.clone(),
+                        }
+                    })?;
+                    referenced.push(*index);
+                }
+                Expr::Binary { lhs, rhs, .. } => expressions.extend([&**rhs, &**lhs]),
+                Expr::Call { args, .. } => expressions.extend(args.iter().rev()),
+                Expr::Variable(_) | Expr::Constant(_) | Expr::Num(_) => {}
+            }
+        }
+        dependencies.push(referenced);
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Visit {
+        Unvisited,
+        Active,
+        Complete,
+    }
+    let mut visited = vec![Visit::Unvisited; metrics.len()];
+    for root in 0..metrics.len() {
+        if visited[root] == Visit::Complete {
+            continue;
+        }
+        visited[root] = Visit::Active;
+        let mut stack = vec![(root, 0)];
+        while let Some((index, next)) = stack.pop() {
+            let Some(&dependency) = dependencies[index].get(next) else {
+                visited[index] = Visit::Complete;
+                continue;
+            };
+            stack.push((index, next + 1));
+            match visited[dependency] {
+                Visit::Unvisited => {
+                    visited[dependency] = Visit::Active;
+                    stack.push((dependency, 0));
+                }
+                Visit::Active => {
+                    let cycle = stack
+                        .iter()
+                        .skip_while(|(index, _)| *index != dependency)
+                        .map(|(index, _)| metrics[*index].name.clone())
+                        .chain(std::iter::once(metrics[dependency].name.clone()))
+                        .collect();
+                    return Err(TmaFormulaError::Cycle { metrics: cycle });
+                }
+                Visit::Complete => {}
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A set of events that must be read as one perf group.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TmaGroup {
@@ -744,6 +880,148 @@ mod tests {
             ],
             ui: None,
         }
+    }
+
+    #[test]
+    fn tma_validation_reports_unknown_event_in_nested_metric() {
+        let mut scenario = two_level_scenario();
+        scenario.metrics[1].formula = "fe_bound + missing_event".to_owned();
+
+        assert_eq!(
+            validate_tma_metrics(
+                scenario.events.iter().map(String::as_str),
+                &scenario.metrics
+            ),
+            Err(TmaFormulaError::UnknownVariable {
+                metric: "fe_bound.rest".to_owned(),
+                variable: "missing_event".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn tma_validation_reports_nested_formula_syntax_error() {
+        let mut scenario = two_level_scenario();
+        scenario.metrics[0].formula = "fe_bound.rest".to_owned();
+        scenario.metrics[1].formula = "stall.fe / (".to_owned();
+
+        assert!(matches!(
+            validate_tma_metrics(scenario.events.iter().map(String::as_str), &scenario.metrics),
+            Err(TmaFormulaError::InvalidFormula { metric, .. }) if metric == "fe_bound.rest"
+        ));
+    }
+
+    #[test]
+    fn tma_validation_reports_nested_reference_cycle() {
+        let mut scenario = two_level_scenario();
+        scenario.metrics[0].formula = "fe_bound.rest".to_owned();
+        scenario.metrics[1].formula = "fe_bound".to_owned();
+
+        assert_eq!(
+            validate_tma_metrics(
+                scenario.events.iter().map(String::as_str),
+                &scenario.metrics
+            ),
+            Err(TmaFormulaError::Cycle {
+                metrics: vec![
+                    "fe_bound".to_owned(),
+                    "fe_bound.rest".to_owned(),
+                    "fe_bound".to_owned(),
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn tma_validation_reports_self_reference_cycle() {
+        let mut scenario = two_level_scenario();
+        scenario.metrics[0].formula = "fe_bound".to_owned();
+
+        assert_eq!(
+            validate_tma_metrics(
+                scenario.events.iter().map(String::as_str),
+                &scenario.metrics
+            ),
+            Err(TmaFormulaError::Cycle {
+                metrics: vec!["fe_bound".to_owned(), "fe_bound".to_owned()],
+            })
+        );
+    }
+
+    #[test]
+    fn tma_validation_accepts_missing_constants_and_zero_denominators() {
+        let mut scenario = two_level_scenario();
+        scenario.metrics[0].formula = "$missing / 0".to_owned();
+
+        assert_eq!(
+            validate_tma_metrics(
+                scenario.events.iter().map(String::as_str),
+                &scenario.metrics
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn tma_validation_resolves_recorded_events_before_metric_names() {
+        let mut scenario = two_level_scenario();
+        scenario.metrics[0].name = "cycles".to_owned();
+        scenario.metrics[0].formula = "cycles / 0".to_owned();
+        scenario.metrics.truncate(1);
+
+        assert_eq!(
+            validate_tma_metrics(
+                scenario.events.iter().map(String::as_str),
+                &scenario.metrics
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn tma_validation_accepts_real_zen5_nested_formulas() {
+        // Formulas from libprof/events/amd/zen5.json include references across
+        // coherent groups, which each metric evaluates independently.
+        let metrics = [
+            ("retiring", "ex_ret_ops / ($dispatch_width * cycles)"),
+            (
+                "retiring.microcode",
+                "retiring * ex_ret_ucode_ops / ex_ret_ops",
+            ),
+            (
+                "fe_bound",
+                "de_no_dispatch_per_slot.no_ops_from_frontend / ($dispatch_width * cycles)",
+            ),
+            (
+                "fe_bound.fetch_latency",
+                "de_no_dispatch_per_slot.no_ops_from_frontend_cmask8 / cycles",
+            ),
+            (
+                "fe_bound.fetch_bandwidth",
+                "fe_bound - fe_bound.fetch_latency",
+            ),
+        ]
+        .map(|(name, formula)| TmaMetric {
+            name: name.to_owned(),
+            desc: String::new(),
+            formula: formula.to_owned(),
+            group: None,
+            cpus: None,
+        });
+
+        assert_eq!(
+            validate_tma_metrics(
+                [
+                    "cycles",
+                    "ex_ret_ops",
+                    "ex_ret_ucode_ops",
+                    "de_no_dispatch_per_slot.no_ops_from_frontend",
+                    "de_no_dispatch_per_slot.no_ops_from_frontend_cmask8",
+                ],
+                &metrics,
+            ),
+            Ok(())
+        );
     }
 
     #[test]
