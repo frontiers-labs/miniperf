@@ -30,22 +30,19 @@ impl<T> Derived<T> {
         self.inflight = Some(key);
     }
 
-    pub fn install(&mut self, key: u64, value: Arc<T>) -> bool {
+    /// Completes the current request, retaining the old value on absent results.
+    /// An absent result permits a later retry without notifying the view.
+    pub fn complete(&mut self, key: u64, value: Option<Arc<T>>) -> bool {
         if self.inflight != Some(key) {
             return false;
         }
+        self.inflight = None;
+        let Some(value) = value else {
+            return false;
+        };
         self.value = Some(value);
         self.key = Some(key);
-        self.inflight = None;
         true
-    }
-
-    /// Marks an in-flight compute as finished with no value, so a view can
-    /// tell "still computing" from "nothing to show".
-    pub fn discard(&mut self, key: u64) {
-        if self.inflight == Some(key) {
-            self.inflight = None;
-        }
     }
 
     pub fn is_computing(&self) -> bool {

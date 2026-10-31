@@ -321,7 +321,7 @@ fn render_functions(
 
     let rows: Vec<(usize, String, f64, Vec<Option<f64>>)> = view
         .analysis
-        .latest()
+        .functions()
         .map(|analysis| {
             analysis
                 .functions

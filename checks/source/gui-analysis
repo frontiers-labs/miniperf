@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""Check the source analysis scheduler against pure builders on real recordings.
+
+Usage: checks/source/gui-analysis RECORDING_OR_DIRECTORY ...
+This source check needs Rust and never opens a window. checks/gui/tour separately
+checks the shipped viewer. No recording tables are constructed by this check.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import tomllib
+
+ROOT = Path(__file__).resolve().parents[2]
+GUI = ROOT / "mperf-gui"
+HERE = Path(__file__).resolve().parent
+
+
+def block(source, start):
+    """Copy a source item whose closing brace starts a line."""
+    begin = source.index(start)
+    end = source.index("\n}", begin) + 2
+    return source[begin:end]
+
+
+def toml_value(value):
+    if isinstance(value, dict):
+        return "{ " + ", ".join(f"{k} = {toml_value(v)}" for k, v in value.items()) + " }"
+    return json.dumps(value)
+
+
+def dependency(value, directory):
+    if isinstance(value, dict) and "path" in value:
+        value = {**value, "path": str((directory / value["path"]).resolve())}
+    return toml_value(value)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("recordings", nargs="+", type=Path)
+    args = parser.parse_args()
+    recordings = set()
+    for path in args.recordings:
+        path = path.resolve()
+        if (path / "info.json").is_file():
+            recordings.add(path)
+        else:
+            recordings.update(info.parent for info in path.rglob("info.json"))
+    if not recordings:
+        parser.error("no profiler recordings found")
+
+    manifest = tomllib.loads((GUI / "Cargo.toml").read_text())
+    cargo = '[package]\nname = "gui-analysis-check"\nversion = "0.0.0"\nedition = "2024"\n[dependencies]\n'
+    for name, value in manifest["dependencies"].items():
+        if name not in {"gpui", "clap"}:
+            cargo += f"{name} = {dependency(value, GUI)}\n"
+    cargo += "[patch.crates-io]\n"
+    patches = tomllib.loads((ROOT / "Cargo.toml").read_text())["patch"]["crates-io"]
+    for name, value in patches.items():
+        cargo += f"{name} = {dependency(value, ROOT)}\n"
+
+    source = "#![allow(dead_code, unused_imports)]\n"
+    for name in ["sql", "profile", "profile_analysis", "regions", "allocations", "memory", "model", "roofline", "snapshot"]:
+        source += f'#[path = {json.dumps(str(GUI / "src" / (name + ".rs")))}] mod {name};\n'
+    theme = (GUI / "src/ui/theme.rs").read_text()
+    source += "mod ui { #[derive(Clone, Copy)] " + block(theme, "pub enum ModuleKind") + "}\n"
+    source += "mod shell { use super::*;\n"
+    for name in ["session", "tma", "derived"]:
+        source += f'#[path = {json.dumps(str(GUI / "src/shell" / (name + ".rs")))}] mod {name};\n'
+    asm = (GUI / "src/shell/asm.rs").read_text()
+    source += "mod asm { use crate::sql::Connection; " + block(asm, "pub fn has_assembly") + "}\n"
+    shell = (GUI / "src/shell/mod.rs").read_text()
+    source += "#[derive(Clone, Copy, Debug, PartialEq, Eq)] " + block(shell, "enum ViewId") + "\n"
+    # Keeping assertions inside the included module permits checking its private
+    # state without exposing cache mutation in the application.
+    analysis = (GUI / "src/shell/analysis.rs").read_text().replace("//!", "//")
+    source += "mod analysis { " + analysis + "\n" + (HERE / "gui_analysis_sites.rs").read_text() + (HERE / "gui_analysis_contracts.rs").read_text() + "}\n"
+    source += (HERE / "gui_analysis_oracle.rs").read_text() + "}\n"
+    source += 'fn main() { for arg in std::env::args().skip(1) { shell::check(std::path::Path::new(&arg)); } }\n'
+    with tempfile.TemporaryDirectory(prefix="mperf-gui-analysis-") as directory:
+        work = Path(directory)
+        (work / "src").mkdir()
+        (work / "Cargo.toml").write_text(cargo)
+        shutil.copyfile(ROOT / "Cargo.lock", work / "Cargo.lock")
+        (work / "src/main.rs").write_text(source)
+        env = os.environ.copy()
+        env.setdefault("CARGO_TARGET_DIR", str(ROOT / "target"))
+        subprocess.run(["cargo", "run", "--offline", "--quiet", "--manifest-path", str(work / "Cargo.toml"), "--", *map(str, sorted(recordings))], cwd=ROOT, env=env, check=True)
+    print(f"source analysis check passed on {len(recordings)} real recording(s)")
+
+
+if __name__ == "__main__":
+    main()

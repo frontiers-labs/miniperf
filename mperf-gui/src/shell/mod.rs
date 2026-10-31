@@ -1,4 +1,5 @@
 mod allocations;
+mod analysis;
 mod asm;
 mod cores;
 mod derived;
@@ -24,10 +25,7 @@ use gpui::{
 
 use crate::charts;
 use crate::profile::TimeRange;
-use crate::profile_analysis::{
-    CallTree, CpuUtilizationHeatmap, FlameScopeHeatmap, FunctionAnalysis, FunctionMetrics,
-    FunctionStat, IcicleLayout, StackWeight, ThreadBalance,
-};
+use crate::profile_analysis::{FunctionAnalysis, FunctionMetrics, FunctionStat};
 use crate::recent;
 use crate::regions::RegionNodeId;
 use crate::source::{SourceDocument, SourceLocation};
@@ -36,7 +34,7 @@ use crate::ui::{
     badge, button, chip, dialog, dropdown_menu, empty_state, icon, kbd, stat_tile, tab_bar,
     table_cell, table_header_sortable, table_row,
 };
-use derived::Derived;
+use analysis::{AnalysisState, FlameWeight, StackMode};
 use flame::{FlameHover, FlameView};
 use flamescope::{ScopeHover, ScopeView, format_fold_period};
 use session::{GlobalFilter, ShellSession, format_count, format_duration_seconds};
@@ -45,12 +43,6 @@ use timeline::TimelineView;
 actions!(tracks_shell, [FocusSymbolFilter, ClearStage]);
 
 const KEY_CONTEXT: &str = "TracksShell";
-
-/// Upper bound on flame-scope rows per fold; the real count follows density.
-const SCOPE_MAX_BINS: usize = 50;
-
-/// Time buckets in the Cores occupancy lanes.
-const CORE_LANE_BUCKETS: usize = 360;
 
 /// Maps a Top-Down level-1 metric name onto its color category. Vendors name
 /// these differently, so match on the stem rather than the exact label.
@@ -270,20 +262,6 @@ impl ViewId {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum StackMode {
-    TopDown,
-    BottomUp,
-}
-
-/// Flame width semantics. `Instructions` appears only when the recording
-/// carries a per-sample instruction counter.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FlameWeight {
-    Cycles,
-    Instructions,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SortKey {
     SelfPct,
     TotalPct,
@@ -327,18 +305,9 @@ pub struct ShellView {
     picking_directory: bool,
 
     filter: GlobalFilter,
-    filter_generation: u64,
-    analysis: Derived<FunctionAnalysis>,
-    flame: Derived<CallTree>,
-    flame_stacks: StackMode,
-    flame_weight: FlameWeight,
-    flame_zoom: Option<usize>,
-    flame_layout: Option<Arc<IcicleLayout>>,
+    analysis: AnalysisState,
     flame_hover: Option<FlameHover>,
-    scope: Derived<FlameScopeHeatmap>,
     scope_hover: Option<ScopeHover>,
-    cpu_lanes: Derived<CpuUtilizationHeatmap>,
-    balance: Derived<ThreadBalance>,
 
     recording_menu_open: bool,
     threads_menu_open: bool,
@@ -354,7 +323,6 @@ pub struct ShellView {
     panel_width: f32,
     selected_frame: Option<usize>,
     allocation_stack: Option<u64>,
-    allocation_sites: Derived<Vec<(u64, allocations::Site)>>,
     /// Index into the recording's roofline loops, for the Roofline view.
     roofline_loop: Option<usize>,
     /// Zoom/pan window of the roofline plot; `None` fits every loop.
@@ -428,18 +396,9 @@ impl ShellView {
             load_error: None,
             picking_directory: false,
             filter: GlobalFilter::default(),
-            filter_generation: 0,
-            analysis: Derived::default(),
-            flame: Derived::default(),
-            flame_stacks: StackMode::TopDown,
-            flame_weight: FlameWeight::Cycles,
-            flame_zoom: None,
-            flame_layout: None,
+            analysis: AnalysisState::default(),
             flame_hover: None,
-            scope: Derived::default(),
             scope_hover: None,
-            cpu_lanes: Derived::default(),
-            balance: Derived::default(),
             recording_menu_open: false,
             threads_menu_open: false,
             modules_menu_open: false,
@@ -454,7 +413,6 @@ impl ShellView {
             panel_width: 300.0,
             selected_frame: None,
             allocation_stack: None,
-            allocation_sites: Derived::default(),
             roofline_loop: None,
             roofline_view: None,
             roofline_drag: None,
@@ -510,16 +468,10 @@ impl ShellView {
         self.roofline_drag = None;
         self.source_tabs.clear();
         self.allocation_stack = None;
-        self.allocation_sites.reset();
         self.brush.clear();
         self.analysis.reset();
-        self.flame.reset();
-        self.flame_layout = None;
         self.flame_hover = None;
-        self.scope.reset();
         self.scope_hover = None;
-        self.cpu_lanes.reset();
-        self.balance.reset();
         self.active_tab = self
             .views()
             .iter()
@@ -569,46 +521,26 @@ impl ShellView {
 
     /// Invalidates every derived dataset and recomputes what the open tab needs.
     fn refresh_analysis(&mut self, cx: &mut Context<Self>) {
-        self.filter_generation += 1;
-        self.flame_zoom = None;
+        self.analysis.invalidate();
         self.flame_hover = None;
         self.ensure_derived(cx);
     }
 
-    fn analysis_key(&self) -> u64 {
-        self.filter_generation
-    }
-
-    fn flame_key(&self) -> u64 {
-        let stacks = u64::from(self.flame_stacks == StackMode::BottomUp);
-        let weight = u64::from(self.flame_weight == FlameWeight::Instructions);
-        self.filter_generation * 4 + stacks * 2 + weight
-    }
-
-    /// Spawns whatever the active tab needs and is not already computing.
-    /// Hotspots feed the selection panel and the status bar, so the function
-    /// analysis is always kept fresh; heavier per-view datasets are lazy.
+    /// Runs the closed analysis jobs requested by the active view.
     fn ensure_derived(&mut self, cx: &mut Context<Self>) {
         let Some(session) = self.session.clone() else {
             return;
         };
-        self.ensure_allocation_sites(cx);
-
-        let key = self.analysis_key();
-        if self.analysis.needs(key) {
-            self.analysis.begin(key);
-            let filter = self.filter.clone();
+        let view = self.active_view();
+        for job in self.analysis.jobs(&session, &self.filter, view) {
             let session = session.clone();
             cx.spawn(async move |this, cx| {
-                let analysis = cx
+                let result = cx
                     .background_executor()
-                    .spawn(async move {
-                        let resolved = filter.resolve(&session);
-                        Arc::new(FunctionAnalysis::build(&session.profile, &resolved))
-                    })
+                    .spawn(async move { job.compute(&session) })
                     .await;
                 this.update(cx, |this, cx| {
-                    if this.analysis.install(key, analysis) {
+                    if this.analysis.install(result) {
                         cx.notify();
                     }
                 })
@@ -616,157 +548,17 @@ impl ShellView {
             })
             .detach();
         }
-
-        if self.active_view() == Some(ViewId::FlameScope) {
-            let key = self.filter.spatial_key();
-            if self.scope.needs(key) {
-                self.scope.begin(key);
-                let filter = self.filter.spatial();
-                let session = session.clone();
-                cx.spawn(async move |this, cx| {
-                    let heatmap = cx
-                        .background_executor()
-                        .spawn(async move {
-                            let resolved = filter.resolve(&session);
-                            FlameScopeHeatmap::build(&session.profile, &resolved, SCOPE_MAX_BINS)
-                                .map(Arc::new)
-                        })
-                        .await;
-                    this.update(cx, |this, cx| match heatmap {
-                        Some(heatmap) => {
-                            if this.scope.install(key, heatmap) {
-                                cx.notify();
-                            }
-                        }
-                        None => this.scope.discard(key),
-                    })
-                    .ok();
-                })
-                .detach();
-            }
-        }
-
-        if self.active_view() == Some(ViewId::Cores) {
-            let key = self.filter.spatial_key();
-            if self.cpu_lanes.needs(key) {
-                self.cpu_lanes.begin(key);
-                let filter = self.filter.spatial();
-                let session = session.clone();
-                cx.spawn(async move |this, cx| {
-                    let heatmap = cx
-                        .background_executor()
-                        .spawn(async move {
-                            let resolved = filter.resolve(&session);
-                            CpuUtilizationHeatmap::build_with_bucket_duration(
-                                &session.profile,
-                                &resolved,
-                                CORE_LANE_BUCKETS,
-                                None,
-                            )
-                            .map(Arc::new)
-                        })
-                        .await;
-                    this.update(cx, |this, cx| match heatmap {
-                        Some(heatmap) => {
-                            if this.cpu_lanes.install(key, heatmap) {
-                                cx.notify();
-                            }
-                        }
-                        None => this.cpu_lanes.discard(key),
-                    })
-                    .ok();
-                })
-                .detach();
-            }
-
-            let key = self.analysis_key();
-            if self.balance.needs(key) {
-                self.balance.begin(key);
-                let filter = self.filter.clone();
-                let session = session.clone();
-                cx.spawn(async move |this, cx| {
-                    let balance = cx
-                        .background_executor()
-                        .spawn(async move {
-                            let resolved = filter.resolve(&session);
-                            ThreadBalance::build(&session.profile, &resolved).map(Arc::new)
-                        })
-                        .await;
-                    this.update(cx, |this, cx| match balance {
-                        Some(balance) => {
-                            if this.balance.install(key, balance) {
-                                cx.notify();
-                            }
-                        }
-                        None => this.balance.discard(key),
-                    })
-                    .ok();
-                })
-                .detach();
-            }
-        }
-
-        if self.active_view() == Some(ViewId::Flame) {
-            let key = self.flame_key();
-            if self.flame.needs(key) {
-                self.flame.begin(key);
-                let filter = self.filter.clone();
-                let inverted = self.flame_stacks == StackMode::BottomUp;
-                let weight = self.stack_weight(&session);
-                cx.spawn(async move |this, cx| {
-                    let tree = cx
-                        .background_executor()
-                        .spawn(async move {
-                            let resolved = filter.resolve(&session);
-                            Arc::new(CallTree::build_weighted(
-                                &session.profile,
-                                &resolved,
-                                inverted,
-                                weight,
-                            ))
-                        })
-                        .await;
-                    this.update(cx, |this, cx| {
-                        if this.flame.install(key, tree) {
-                            this.rebuild_flame_layout();
-                            cx.notify();
-                        }
-                    })
-                    .ok();
-                })
-                .detach();
-            }
-        }
-    }
-
-    fn stack_weight(&self, session: &ShellSession) -> StackWeight {
-        match self.flame_weight {
-            FlameWeight::Instructions => session
-                .instructions_metric
-                .map(StackWeight::Counter)
-                .unwrap_or(StackWeight::Samples),
-            FlameWeight::Cycles => StackWeight::Samples,
-        }
-    }
-
-    fn rebuild_flame_layout(&mut self) {
-        self.flame_layout = self
-            .flame
-            .latest()
-            .map(|tree| Arc::new(tree.icicle_layout(self.flame_zoom)));
     }
 
     fn zoom_flame(&mut self, node_id: usize, cx: &mut Context<Self>) {
-        self.flame_zoom = Some(node_id);
+        self.analysis.zoom_flame(Some(node_id));
         self.flame_hover = None;
-        self.rebuild_flame_layout();
         cx.notify();
     }
 
     fn reset_flame_zoom(&mut self, cx: &mut Context<Self>) {
-        self.flame_zoom = None;
+        self.analysis.zoom_flame(None);
         self.flame_hover = None;
-        self.rebuild_flame_layout();
         cx.notify();
     }
 
@@ -776,7 +568,7 @@ impl ShellView {
     }
 
     fn is_computing(&self) -> bool {
-        self.session.is_some() && self.analysis.stale(self.analysis_key())
+        self.session.is_some() && self.analysis.functions_stale()
     }
 
     pub(super) fn commit_time_filter(
@@ -1163,7 +955,7 @@ impl ShellView {
             .collect();
 
         let total = session.total_samples;
-        let coverage_text = match (self.filter.is_active(), self.analysis.latest()) {
+        let coverage_text = match (self.filter.is_active(), self.analysis.functions()) {
             (true, Some(analysis)) => format!(
                 "{}% of {} samples in scope",
                 if total == 0 {
@@ -1563,7 +1355,7 @@ impl ShellView {
         session: &Arc<ShellSession>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let Some(analysis) = self.analysis.latest().cloned() else {
+        let Some(analysis) = self.analysis.functions().cloned() else {
             return empty_state(Icon::Table2, "Analyzing samples…").into_any_element();
         };
 
@@ -1756,7 +1548,7 @@ impl ShellView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = cx.theme().clone();
-        let analysis = self.analysis.latest().cloned();
+        let analysis = self.analysis.functions().cloned();
         let scoped_samples = analysis
             .as_ref()
             .map(|analysis| analysis.total_samples)
@@ -2253,7 +2045,7 @@ impl ShellView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = cx.theme().clone();
-        let Some(layout) = self.flame_layout.clone() else {
+        let Some(layout) = self.analysis.flame_layout().cloned() else {
             return div()
                 .size_full()
                 .flex()
@@ -2308,11 +2100,9 @@ impl ShellView {
                     .min_h(px(0.0))
                     .overflow_y_scroll()
                     .bg(theme.viz.surface)
-                    .when(self.analysis.stale(self.analysis_key()), |el| {
-                        el.opacity(0.7)
-                    })
+                    .when(self.analysis.functions_stale(), |el| el.opacity(0.7))
                     .child(flame::flame_canvas(cx.entity(), theme.clone(), view))
-                    .when(self.flame_zoom.is_some(), |el| {
+                    .when(self.analysis.flame_zoomed(), |el| {
                         el.child(
                             div().absolute().top(px(8.0)).right(px(12.0)).child(
                                 button("flame-reset-zoom")
@@ -2353,7 +2143,7 @@ impl ShellView {
                                             .unwrap_or_default(),
                                         self.format_flame_value(session, value),
                                         share * 100.0,
-                                        match self.flame_stacks {
+                                        match self.analysis.flame_stacks() {
                                             StackMode::TopDown => "total",
                                             StackMode::BottomUp => "inverted total",
                                         }
@@ -2495,7 +2285,7 @@ impl ShellView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = cx.theme().clone();
-        let Some(heatmap) = self.scope.latest().cloned() else {
+        let Some(heatmap) = self.analysis.scope().cloned() else {
             return empty_state(Icon::Grid3x3, "Folding the recording…").into_any_element();
         };
 
@@ -2560,7 +2350,7 @@ impl ShellView {
     }
 
     fn format_flame_value(&self, session: &ShellSession, value: u64) -> String {
-        match self.flame_weight {
+        match self.analysis.flame_weight() {
             FlameWeight::Instructions if session.instructions_metric.is_some() => {
                 format!("{} instructions", format_count(value as f64))
             }
@@ -2590,7 +2380,7 @@ impl ShellView {
                 ui::segmented(
                     "flame-stacks",
                     vec!["Top-down".into(), "Bottom-up".into()],
-                    usize::from(self.flame_stacks == StackMode::BottomUp),
+                    usize::from(self.analysis.flame_stacks() == StackMode::BottomUp),
                 )
                 .compact()
                 .on_select(cx.processor(|this, ix: usize, _, cx| {
@@ -2599,9 +2389,7 @@ impl ShellView {
                     } else {
                         StackMode::BottomUp
                     };
-                    if this.flame_stacks != mode {
-                        this.flame_stacks = mode;
-                        this.flame_zoom = None;
+                    if this.analysis.set_flame_stacks(mode) {
                         this.flame_hover = None;
                         this.ensure_derived(cx);
                         cx.notify();
@@ -2622,7 +2410,7 @@ impl ShellView {
                     ui::segmented(
                         "flame-weight",
                         vec!["Cycles".into(), "Instructions".into()],
-                        usize::from(self.flame_weight == FlameWeight::Instructions),
+                        usize::from(self.analysis.flame_weight() == FlameWeight::Instructions),
                     )
                     .compact()
                     .on_select(cx.processor(|this, ix: usize, _, cx| {
@@ -2631,9 +2419,7 @@ impl ShellView {
                         } else {
                             FlameWeight::Instructions
                         };
-                        if this.flame_weight != weight {
-                            this.flame_weight = weight;
-                            this.flame_zoom = None;
+                        if this.analysis.set_flame_weight(weight) {
                             this.flame_hover = None;
                             this.ensure_derived(cx);
                             cx.notify();
@@ -3040,7 +2826,7 @@ impl ShellView {
 
         let details = self.selected_frame.and_then(|frame_id| {
             self.analysis
-                .latest()
+                .functions()
                 .and_then(|analysis| analysis.details(frame_id))
         });
 

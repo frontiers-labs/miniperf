@@ -1,84 +1,10 @@
 use super::{ShellView, ViewId, session::ShellSession};
 use crate::{
-    allocations::Boundary,
-    profile_analysis::SampleFilter,
     snapshot::{format_bytes, format_count},
     ui::{self, ActiveTheme},
 };
 use gpui::{Context, div, prelude::*, px};
-use std::{collections::HashMap, sync::Arc};
-
-#[derive(Default)]
-pub(super) struct Site {
-    title: String,
-    count: u64,
-    requested: u64,
-    live: u64,
-    ended_lifetime: u64,
-    ended_count: u64,
-    peak: u64,
-}
-
-fn allocation_sites(session: &ShellSession, filter: &SampleFilter) -> Vec<(u64, Site)> {
-    let data = session.allocations.as_ref().unwrap();
-    let cutoff = filter.range.map(|range| range.end_ns).unwrap_or(u64::MAX);
-    let mut sites = HashMap::<u64, (Site, Vec<(Boundary, i64)>)>::new();
-    for lifetime in &data.lifetimes {
-        let stack = data.stacks.get(&lifetime.stack);
-        if filter.range.is_some_and(|range| {
-            lifetime.start.time < range.start_ns || lifetime.start.time >= range.end_ns
-        }) || filter
-            .threads
-            .as_ref()
-            .is_some_and(|threads| !threads.contains(&lifetime.tid))
-            || filter.regions.as_ref().is_some_and(|regions| {
-                !regions.contains(lifetime.pid, lifetime.tid, lifetime.start.time)
-            })
-            || filter.frame_ids.as_ref().is_some_and(|selected| {
-                !stack.is_some_and(|frames| frames.iter().any(|id| selected.contains(id)))
-            })
-            || filter.leaf_frames.as_ref().is_some_and(|selected| {
-                !data
-                    .application_frames
-                    .get(&lifetime.stack)
-                    .is_some_and(|frame| selected.contains(frame))
-            })
-        {
-            continue;
-        }
-        let (site, changes) = sites.entry(lifetime.stack).or_default();
-        site.count += 1;
-        site.requested += lifetime.bytes;
-        changes.push((lifetime.start, lifetime.bytes as i64));
-        if let Some(end) = lifetime.end.filter(|end| end.time <= cutoff) {
-            site.ended_lifetime += end.time.saturating_sub(lifetime.start.time);
-            site.ended_count += 1;
-            changes.push((end, -(lifetime.bytes as i64)));
-        } else {
-            site.live += lifetime.bytes;
-        }
-    }
-    let mut sites = sites
-        .into_iter()
-        .map(|(stack, (mut site, mut changes))| {
-            changes.sort_unstable_by_key(|(boundary, _)| *boundary);
-            let mut live = 0i64;
-            let mut peak = 0i64;
-            for (_, delta) in changes {
-                live += delta;
-                peak = peak.max(live);
-            }
-            site.peak = peak as u64;
-            site.title = data.application_frames.get(&stack).map_or_else(
-                || "[unknown stack]".into(),
-                |frame| session.profile.frames[*frame].friendly_name.clone(),
-            );
-            (stack, site)
-        })
-        .collect::<Vec<_>>();
-    sites.sort_by_key(|(_, site)| std::cmp::Reverse(site.requested));
-    sites
-}
+use std::sync::Arc;
 
 pub fn render(
     state: &ShellView,
@@ -94,7 +20,7 @@ pub fn render(
             .into_any_element();
     }
     let selected = state.allocation_stack;
-    let sites = state.allocation_sites.latest();
+    let sites = state.analysis.allocation_sites();
     let mut content = div()
         .id("allocations")
         .size_full()
@@ -191,7 +117,7 @@ pub fn render(
                 })),
         );
     }
-    let title = if state.allocation_sites.stale(state.analysis_key()) {
+    let title = if state.analysis.allocation_sites_stale() {
         "Call sites by requested bytes, first 200 · updating"
     } else {
         "Call sites by requested bytes, first 200"
@@ -227,37 +153,6 @@ pub fn render(
     content.into_any_element()
 }
 impl ShellView {
-    pub(super) fn ensure_allocation_sites(&mut self, cx: &mut Context<Self>) {
-        if self.active_view() != Some(ViewId::Allocations) {
-            return;
-        }
-        let Some(session) = self.session.clone() else {
-            return;
-        };
-        let key = self.analysis_key();
-        if !self.allocation_sites.needs(key) {
-            return;
-        }
-        self.allocation_sites.begin(key);
-        let filter = self.filter.clone();
-        cx.spawn(async move |this, cx| {
-            let sites = cx
-                .background_executor()
-                .spawn(async move {
-                    let resolved = filter.resolve(&session);
-                    Arc::new(allocation_sites(&session, &resolved))
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                if this.allocation_sites.install(key, sites) {
-                    cx.notify();
-                }
-            })
-            .ok();
-        })
-        .detach();
-    }
-
     /// Wait for the same filtered summaries the allocation table renders.
     pub fn allocation_tour_ready(&mut self, cx: &mut Context<Self>) -> bool {
         if !self
@@ -275,7 +170,7 @@ impl ShellView {
                 .expect("allocation data offers the allocation view");
             self.set_active_tab(index, cx);
         }
-        !self.allocation_sites.stale(self.analysis_key())
+        !self.analysis.allocation_sites_stale()
     }
 
     /// Exercises the allocation data and normal source-tab path on a real recording.
@@ -304,8 +199,8 @@ impl ShellView {
             serde_json::json!({"count":data.count,"requested_bytes":data.bytes,"complete":data.complete,"stacks":data.stacks.len()})
         );
         let sites = self
-            .allocation_sites
-            .latest()
+            .analysis
+            .allocation_sites()
             .expect("tour waits for allocation summaries");
         for (stack, site) in sites.iter() {
             println!(
