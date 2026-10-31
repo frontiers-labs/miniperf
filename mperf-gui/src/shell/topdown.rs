@@ -238,26 +238,22 @@ fn render_intervals(
             let top = frame.top() + 2.0;
             let height = INTERVALS_H - AXIS_H - 4.0;
 
-            let pixels: Vec<(f32, f32, Vec<f64>)> = columns
-                .iter()
-                .filter_map(|(start, end, values)| {
-                    let x0 = frame.x_for(*start, duration);
-                    let x1 = frame.x_for(*end, duration);
-                    match values {
-                        Some(values) => Some((x0, x1 - x0, values.clone())),
-                        None => {
-                            window.paint_quad(fill(
-                                gpui::Bounds::new(
-                                    gpui::point(px(x0), px(top)),
-                                    gpui::size(px((x1 - x0).max(1.0)), px(height)),
-                                ),
-                                theme.viz.grid.opacity(0.5),
-                            ));
-                            None
-                        }
-                    }
-                })
-                .collect();
+            let mut pixels = Vec::with_capacity(columns.len());
+            for (start, end, values) in &columns {
+                let x0 = frame.x_for(*start, duration);
+                let x1 = frame.x_for(*end, duration);
+                if let Some(values) = values {
+                    pixels.push((x0, x1 - x0, values.clone()));
+                } else {
+                    window.paint_quad(fill(
+                        gpui::Bounds::new(
+                            gpui::point(px(x0), px(top)),
+                            gpui::size(px((x1 - x0).max(1.0)), px(height)),
+                        ),
+                        theme.viz.grid.opacity(0.5),
+                    ));
+                }
+            }
             paint_stacked_columns(top, height, &pixels, &colors, window);
             frame.paint_time_axis(top + height + 2.0, duration, &theme, window, cx);
             if let Some(range) = preview.or(selection) {

@@ -3,7 +3,6 @@
 use std::{collections::HashMap, sync::Arc};
 
 use super::{
-    ViewId,
     derived::Derived,
     session::{GlobalFilter, ShellSession},
 };
@@ -105,13 +104,31 @@ pub(super) enum FlameWeight {
     Instructions,
 }
 
+/// Extra analysis requested by the active view. Functions are always available.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum AnalysisDemand {
+    #[default]
+    Functions,
+    Allocations,
+    Scope,
+    Cores,
+    Flame,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct SpatialKey {
+    recording_epoch: u64,
+    selection: GlobalFilter,
+}
+
 #[derive(Default)]
 pub(super) struct AnalysisState {
     generation: u64,
+    recording_epoch: u64,
     functions: Derived<FunctionAnalysis>,
     flame: Derived<CallTree>,
-    scope: Derived<FlameScopeHeatmap>,
-    cpu_lanes: Derived<CpuUtilizationHeatmap>,
+    scope: Derived<FlameScopeHeatmap, SpatialKey>,
+    cpu_lanes: Derived<CpuUtilizationHeatmap, SpatialKey>,
     balance: Derived<ThreadBalance>,
     allocation_sites: Derived<Vec<(u64, Site)>>,
     flame_stacks: StackMode,
@@ -130,7 +147,7 @@ impl AnalysisState {
     }
 
     pub fn functions_stale(&self) -> bool {
-        self.functions.stale(self.key())
+        self.functions.stale(&self.key())
     }
 
     pub fn allocation_sites(&self) -> Option<&Arc<Vec<(u64, Site)>>> {
@@ -138,7 +155,7 @@ impl AnalysisState {
     }
 
     pub fn allocation_sites_stale(&self) -> bool {
-        self.allocation_sites.stale(self.key())
+        self.allocation_sites.stale(&self.key())
     }
 
     pub fn scope(&self) -> Option<&Arc<FlameScopeHeatmap>> {
@@ -201,6 +218,7 @@ impl AnalysisState {
     }
 
     pub fn reset(&mut self) {
+        self.recording_epoch += 1;
         self.functions.reset();
         self.flame.reset();
         self.scope.reset();
@@ -227,45 +245,51 @@ impl AnalysisState {
         &mut self,
         session: &ShellSession,
         filter: &GlobalFilter,
-        view: Option<ViewId>,
+        demand: AnalysisDemand,
     ) -> Vec<AnalysisJob> {
         let key = self.key();
         let mut jobs = Vec::new();
-        if view == Some(ViewId::Allocations) && self.allocation_sites.needs(key) {
+        if demand == AnalysisDemand::Allocations && self.allocation_sites.needs(&key) {
             self.allocation_sites.begin(key);
             jobs.push(AnalysisJob::Allocations {
                 key,
                 filter: filter.clone(),
             });
         }
-        if self.functions.needs(key) {
+        if self.functions.needs(&key) {
             self.functions.begin(key);
             jobs.push(AnalysisJob::Functions {
                 key,
                 filter: filter.clone(),
             });
         }
-        match view {
-            Some(ViewId::FlameScope) => {
-                let key = filter.spatial_key();
-                if self.scope.needs(key) {
-                    self.scope.begin(key);
+        match demand {
+            AnalysisDemand::Scope => {
+                let key = SpatialKey {
+                    recording_epoch: self.recording_epoch,
+                    selection: filter.spatial(),
+                };
+                if self.scope.needs(&key) {
+                    self.scope.begin(key.clone());
                     jobs.push(AnalysisJob::Scope {
                         key,
                         filter: filter.spatial(),
                     });
                 }
             }
-            Some(ViewId::Cores) => {
-                let spatial_key = filter.spatial_key();
-                if self.cpu_lanes.needs(spatial_key) {
-                    self.cpu_lanes.begin(spatial_key);
+            AnalysisDemand::Cores => {
+                let spatial_key = SpatialKey {
+                    recording_epoch: self.recording_epoch,
+                    selection: filter.spatial(),
+                };
+                if self.cpu_lanes.needs(&spatial_key) {
+                    self.cpu_lanes.begin(spatial_key.clone());
                     jobs.push(AnalysisJob::CpuLanes {
                         key: spatial_key,
                         filter: filter.spatial(),
                     });
                 }
-                if self.balance.needs(key) {
+                if self.balance.needs(&key) {
                     self.balance.begin(key);
                     jobs.push(AnalysisJob::Balance {
                         key,
@@ -273,11 +297,11 @@ impl AnalysisState {
                     });
                 }
             }
-            Some(ViewId::Flame) => {
+            AnalysisDemand::Flame => {
                 let inverted = self.flame_stacks == StackMode::BottomUp;
                 let instructions = self.flame_weight == FlameWeight::Instructions;
                 let key = key * 4 + u64::from(inverted) * 2 + u64::from(instructions);
-                if self.flame.needs(key) {
+                if self.flame.needs(&key) {
                     self.flame.begin(key);
                     let weight = if instructions {
                         session
@@ -331,11 +355,11 @@ pub(super) enum AnalysisJob {
         filter: GlobalFilter,
     },
     Scope {
-        key: u64,
+        key: SpatialKey,
         filter: GlobalFilter,
     },
     CpuLanes {
-        key: u64,
+        key: SpatialKey,
         filter: GlobalFilter,
     },
     Balance {
@@ -360,11 +384,11 @@ pub(super) enum AnalysisResult {
         value: Arc<Vec<(u64, Site)>>,
     },
     Scope {
-        key: u64,
+        key: SpatialKey,
         value: Option<Arc<FlameScopeHeatmap>>,
     },
     CpuLanes {
-        key: u64,
+        key: SpatialKey,
         value: Option<Arc<CpuUtilizationHeatmap>>,
     },
     Balance {

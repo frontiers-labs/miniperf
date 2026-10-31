@@ -1,59 +1,27 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use mperf_data::{RecordInfo, UnsupportedFormatVersion};
+use anyhow::{Context, Result};
+use mperf_data::RecordInfo;
 
 use crate::Session;
 
-/// A completed recording with supported metadata and its query session.
+/// A recording with supported metadata and its query session.
 pub struct Recording {
     info: RecordInfo,
     session: Session,
 }
 
-/// Failure to read recording metadata or open its query session.
-#[derive(Debug, thiserror::Error)]
-pub enum RecordingError {
-    #[error("failed to read {}", path.display())]
-    ReadInfo {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("failed to parse {}", path.display())]
-    ParseInfo {
-        path: PathBuf,
-        #[source]
-        source: serde_json::Error,
-    },
-    #[error(transparent)]
-    UnsupportedFormat(#[from] UnsupportedFormatVersion),
-    #[error("failed to open {}", path.display())]
-    OpenSession {
-        path: PathBuf,
-        #[source]
-        source: anyhow::Error,
-    },
-}
-
 impl Recording {
     /// Read and validate metadata before opening the recording's tables.
-    pub fn open(dir: &Path) -> Result<Self, RecordingError> {
+    pub fn open(dir: &Path) -> Result<Self> {
         let info_path = dir.join("info.json");
-        let data =
-            std::fs::read_to_string(&info_path).map_err(|source| RecordingError::ReadInfo {
-                path: info_path.clone(),
-                source,
-            })?;
-        let info: RecordInfo =
-            serde_json::from_str(&data).map_err(|source| RecordingError::ParseInfo {
-                path: info_path,
-                source,
-            })?;
+        let data = std::fs::read_to_string(&info_path)
+            .with_context(|| format!("failed to read {}", info_path.display()))?;
+        let info: RecordInfo = serde_json::from_str(&data)
+            .with_context(|| format!("failed to parse {}", info_path.display()))?;
         info.ensure_supported_format()?;
-        let session = Session::open(dir).map_err(|source| RecordingError::OpenSession {
-            path: dir.to_owned(),
-            source,
-        })?;
+        let session =
+            Session::open(dir).with_context(|| format!("failed to open {}", dir.display()))?;
         Ok(Self { info, session })
     }
 

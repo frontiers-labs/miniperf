@@ -1,16 +1,15 @@
 use std::sync::Arc;
 
-/// A background-computed dataset tagged with the key (filter generation plus
-/// view options) it was built for. A stale value keeps rendering until its
-/// replacement lands, so filter tweaks never blank a view, and results that
-/// arrive after a newer request are dropped.
-pub(super) struct Derived<T> {
+/// A background-computed dataset tagged with its request identity. A stale
+/// value keeps rendering until its replacement lands, and results that arrive
+/// after a newer request are dropped.
+pub(super) struct Derived<T, K = u64> {
     value: Option<Arc<T>>,
-    key: Option<u64>,
-    inflight: Option<u64>,
+    key: Option<K>,
+    inflight: Option<K>,
 }
 
-impl<T> Default for Derived<T> {
+impl<T, K> Default for Derived<T, K> {
     fn default() -> Self {
         Self {
             value: None,
@@ -20,20 +19,20 @@ impl<T> Default for Derived<T> {
     }
 }
 
-impl<T> Derived<T> {
+impl<T, K: PartialEq> Derived<T, K> {
     /// True when neither the current value nor an in-flight compute is for `key`.
-    pub fn needs(&self, key: u64) -> bool {
-        self.key != Some(key) && self.inflight != Some(key)
+    pub fn needs(&self, key: &K) -> bool {
+        self.key.as_ref() != Some(key) && self.inflight.as_ref() != Some(key)
     }
 
-    pub fn begin(&mut self, key: u64) {
+    pub fn begin(&mut self, key: K) {
         self.inflight = Some(key);
     }
 
     /// Completes the current request, retaining the old value on absent results.
     /// An absent result permits a later retry without notifying the view.
-    pub fn complete(&mut self, key: u64, value: Option<Arc<T>>) -> bool {
-        if self.inflight != Some(key) {
+    pub fn complete(&mut self, key: K, value: Option<Arc<T>>) -> bool {
+        if self.inflight.as_ref() != Some(&key) {
             return false;
         }
         self.inflight = None;
@@ -54,8 +53,8 @@ impl<T> Derived<T> {
         self.value.as_ref()
     }
 
-    pub fn stale(&self, key: u64) -> bool {
-        self.key != Some(key)
+    pub fn stale(&self, key: &K) -> bool {
+        self.key.as_ref() != Some(key)
     }
 
     pub fn reset(&mut self) {

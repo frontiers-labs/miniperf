@@ -531,8 +531,14 @@ impl ShellView {
         let Some(session) = self.session.clone() else {
             return;
         };
-        let view = self.active_view();
-        for job in self.analysis.jobs(&session, &self.filter, view) {
+        let demand = match self.active_view() {
+            Some(ViewId::Allocations) => analysis::AnalysisDemand::Allocations,
+            Some(ViewId::FlameScope) => analysis::AnalysisDemand::Scope,
+            Some(ViewId::Cores) => analysis::AnalysisDemand::Cores,
+            Some(ViewId::Flame) => analysis::AnalysisDemand::Flame,
+            _ => analysis::AnalysisDemand::Functions,
+        };
+        for job in self.analysis.jobs(&session, &self.filter, demand) {
             let session = session.clone();
             cx.spawn(async move |this, cx| {
                 let result = cx

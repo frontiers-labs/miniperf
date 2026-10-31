@@ -28,6 +28,9 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Fetch locked dependencies for analysis contracts
+        run: cargo fetch --locked
       - uses: actions/download-artifact@v4
         with:
           name: miniperf-${{ matrix.platform }}

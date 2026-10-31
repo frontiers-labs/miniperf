@@ -5,7 +5,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    hash::{DefaultHasher, Hash, Hasher},
     path::{Path, PathBuf},
 };
 
@@ -15,12 +14,11 @@ use mperf_data::{RecordInfo, Scenario};
 use crate::{
     memory::MemoryData,
     model::SummaryStats,
-    profile::{ProfileData, TimeRange},
+    profile::{ModuleKind, ProfileData, TimeRange},
     profile_analysis::{CounterTracks, SampleFilter, instructions_metric},
     regions::{RegionData, RegionSelection},
     roofline::RooflineData,
     snapshot::SnapshotData,
-    ui::ModuleKind,
 };
 
 use super::tma::TmaData;
@@ -119,17 +117,6 @@ impl GlobalFilter {
             time: None,
             ..self.clone()
         }
-    }
-
-    /// Identity of everything except the time range, so those views recompute
-    /// on thread/module/symbol changes but not while brushing.
-    pub fn spatial_key(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.disabled_threads.hash(&mut hasher);
-        self.disabled_modules.hash(&mut hasher);
-        self.symbol.hash(&mut hasher);
-        self.region.hash(&mut hasher);
-        hasher.finish()
     }
 
     pub fn resolve(&self, session: &ShellSession) -> SampleFilter {

@@ -7,6 +7,14 @@ use crate::sql::{
     Column, Connection, Value, as_f64, as_i64, as_text, as_u64, row_values, table_columns,
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModuleKind {
+    User,
+    Library,
+    Runtime,
+    Kernel,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ProfileData {
     pub(crate) frames: Vec<ProfileFrame>,

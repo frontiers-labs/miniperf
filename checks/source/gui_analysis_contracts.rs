@@ -1,5 +1,6 @@
-use super::{derived, session};
+use super::{analysis::*, session};
 use crate::profile;
+use crate::profile_analysis::{CallTree, StackWeight};
 
 fn kinds(jobs: &[AnalysisJob]) -> Vec<&'static str> {
     jobs.iter()
@@ -20,15 +21,13 @@ fn finish(state: &mut AnalysisState, s: &session::ShellSession, jobs: Vec<Analys
 }
 pub(super) fn contracts(s: &session::ShellSession) {
     use session::GlobalFilter;
-    use std::sync::Arc;
     let f = GlobalFilter::default();
     // Always-hot functions; tab-only work and duplicate suppression.
     for (view, expected) in [
-        (None, vec!["functions"]),
-        (Some(ViewId::Summary), vec!["functions"]),
-        (Some(ViewId::FlameScope), vec!["functions", "scope"]),
-        (Some(ViewId::Cores), vec!["functions", "lanes", "balance"]),
-        (Some(ViewId::Flame), vec!["functions", "flame"]),
+        (AnalysisDemand::Functions, vec!["functions"]),
+        (AnalysisDemand::Scope, vec!["functions", "scope"]),
+        (AnalysisDemand::Cores, vec!["functions", "lanes", "balance"]),
+        (AnalysisDemand::Flame, vec!["functions", "flame"]),
     ] {
         let mut state = AnalysisState::default();
         let jobs = state.jobs(s, &f, view);
@@ -38,14 +37,14 @@ pub(super) fn contracts(s: &session::ShellSession) {
     }
     if s.allocations.is_some() {
         let mut state = AnalysisState::default();
-        let jobs = state.jobs(s, &f, Some(ViewId::Allocations));
+        let jobs = state.jobs(s, &f, AnalysisDemand::Allocations);
         assert_eq!(kinds(&jobs), vec!["allocations", "functions"]);
         finish(&mut state, s, jobs);
-        assert!(state.jobs(s, &f, Some(ViewId::Allocations)).is_empty());
+        assert!(state.jobs(s, &f, AnalysisDemand::Allocations).is_empty());
     }
     // A time brush invalidates full-filter balance/functions but reuses spatial heatmaps.
     let mut state = AnalysisState::default();
-    let jobs = state.jobs(s, &f, Some(ViewId::Cores));
+    let jobs = state.jobs(s, &f, AnalysisDemand::Cores);
     finish(&mut state, s, jobs);
     let mut brushed = f.clone();
     brushed.time = s.full_range.map(|r| profile::TimeRange {
@@ -53,7 +52,7 @@ pub(super) fn contracts(s: &session::ShellSession) {
         end_ns: r.start_ns + (r.end_ns - r.start_ns) / 2,
     });
     state.invalidate();
-    let jobs = state.jobs(s, &brushed, Some(ViewId::Cores));
+    let jobs = state.jobs(s, &brushed, AnalysisDemand::Cores);
     let selected = kinds(&jobs);
     assert!(selected.contains(&"functions"));
     assert!(selected.contains(&"balance"));
@@ -69,66 +68,85 @@ pub(super) fn contracts(s: &session::ShellSession) {
             _ => panic!("unexpected job"),
         }
     }
+    for demand in [AnalysisDemand::Scope, AnalysisDemand::Cores] {
+        let mut fresh = AnalysisState::default();
+        for job in fresh.jobs(s, &brushed, demand) {
+            match job {
+                AnalysisJob::Functions { filter, .. } | AnalysisJob::Balance { filter, .. } => {
+                    assert_eq!(filter, brushed);
+                }
+                AnalysisJob::Scope { filter, .. } | AnalysisJob::CpuLanes { filter, .. } => {
+                    assert_eq!(filter, brushed.spatial());
+                }
+                _ => panic!("unexpected job"),
+            }
+        }
+    }
     let mut scope = AnalysisState::default();
-    let jobs = scope.jobs(s, &f, Some(ViewId::FlameScope));
+    let jobs = scope.jobs(s, &f, AnalysisDemand::Scope);
     finish(&mut scope, s, jobs);
     scope.invalidate();
-    let jobs = scope.jobs(s, &brushed, Some(ViewId::FlameScope));
+    let jobs = scope.jobs(s, &brushed, AnalysisDemand::Scope);
     if scope.scope().is_some() {
         assert_eq!(kinds(&jobs), vec!["functions"]);
     }
     // Existing values remain visible while a replacement computes. Superseded work is dropped.
     let mut state = AnalysisState::default();
-    let first = state.jobs(s, &f, None).pop().unwrap();
+    let first = state.jobs(s, &f, AnalysisDemand::Functions).pop().unwrap();
     assert!(state.install(first.compute(s)));
     let old = state.functions().unwrap().clone();
     state.invalidate();
-    let obsolete = state.jobs(s, &brushed, None).pop().unwrap();
+    let obsolete = state
+        .jobs(s, &brushed, AnalysisDemand::Functions)
+        .pop()
+        .unwrap();
     assert_eq!(state.functions().unwrap().as_ref(), old.as_ref());
     state.invalidate();
-    let current = state.jobs(s, &f, None).pop().unwrap();
+    let current = state.jobs(s, &f, AnalysisDemand::Functions).pop().unwrap();
     assert!(!state.install(obsolete.compute(s)));
     assert!(state.functions_stale());
-    assert!(state.jobs(s, &f, None).is_empty());
+    assert!(state.jobs(s, &f, AnalysisDemand::Functions).is_empty());
     assert!(state.install(current.compute(s)));
-    assert!(state.jobs(s, &f, None).is_empty());
+    assert!(state.jobs(s, &f, AnalysisDemand::Functions).is_empty());
     assert!(!state.functions_stale());
-    // None clears only the current request and permits retry without losing its stale value.
-    let value = Arc::new(FunctionAnalysis::build(&s.profile, &f.resolve(s)));
-    let mut d = derived::Derived::default();
-    d.begin(10);
-    assert!(d.complete(10, Some(value.clone())));
-    d.begin(11);
-    assert!(!d.complete(10, None));
-    assert!(d.is_computing());
-    assert!(!d.complete(11, None));
-    assert!(!d.is_computing());
-    assert!(d.needs(11));
-    assert_eq!(d.latest().unwrap().as_ref(), value.as_ref());
-    // Exercise production optional completion and retry for every optional cache.
-    for view in [ViewId::FlameScope, ViewId::Cores] {
+    // An absent replacement keeps the installed optional value and permits retry.
+    for view in [AnalysisDemand::Scope, AnalysisDemand::Cores] {
         let mut a = AnalysisState::default();
-        let jobs = a.jobs(s, &f, Some(view));
-        for job in jobs {
+        let jobs = a.jobs(s, &f, view);
+        finish(&mut a, s, jobs);
+        let mut changed = f.clone();
+        if let Some(thread) = s.threads.first() {
+            changed.disabled_threads.insert(thread.thread_id);
+        } else {
+            changed.symbol = "no recorded symbol".into();
+        }
+        a.invalidate();
+        for job in a.jobs(s, &changed, view) {
             match job {
                 AnalysisJob::Scope { key, .. } => {
-                    assert!(!a.install(AnalysisResult::Scope { key, value: None }))
+                    let old = a.scope().cloned();
+                    assert!(!a.install(AnalysisResult::Scope { key, value: None }));
+                    assert_eq!(a.scope(), old.as_ref());
                 }
                 AnalysisJob::CpuLanes { key, .. } => {
-                    assert!(!a.install(AnalysisResult::CpuLanes { key, value: None }))
+                    let old = a.cpu_lanes().cloned();
+                    assert!(!a.install(AnalysisResult::CpuLanes { key, value: None }));
+                    assert_eq!(a.cpu_lanes(), old.as_ref());
                 }
                 AnalysisJob::Balance { key, .. } => {
-                    assert!(!a.install(AnalysisResult::Balance { key, value: None }))
+                    let old = a.balance().cloned();
+                    assert!(!a.install(AnalysisResult::Balance { key, value: None }));
+                    assert_eq!(a.balance(), old.as_ref());
                 }
                 j => {
                     a.install(j.compute(s));
                 }
             }
         }
-        let retry = a.jobs(s, &f, Some(view));
+        let retry = a.jobs(s, &changed, view);
         assert_eq!(
             kinds(&retry),
-            if view == ViewId::Cores {
+            if view == AnalysisDemand::Cores {
                 vec!["lanes", "balance"]
             } else {
                 vec!["scope"]
@@ -147,7 +165,7 @@ pub(super) fn contracts(s: &session::ShellSession) {
             a.set_flame_stacks(stacks);
             a.set_flame_weight(weight);
             a.zoom_flame(None);
-            let jobs = a.jobs(s, &f, Some(ViewId::Flame));
+            let jobs = a.jobs(s, &f, AnalysisDemand::Flame);
             let job = jobs
                 .into_iter()
                 .find(|j| matches!(j, AnalysisJob::Flame { .. }))
@@ -155,22 +173,11 @@ pub(super) fn contracts(s: &session::ShellSession) {
             if let AnalysisJob::Flame {
                 filter,
                 inverted: actual,
-                weight,
                 ..
             } = &job
             {
                 assert_eq!(*actual, inverted);
                 assert_eq!(*filter, f);
-                assert_eq!(
-                    *weight,
-                    if instructions {
-                        s.instructions_metric
-                            .map(StackWeight::Counter)
-                            .unwrap_or(StackWeight::Samples)
-                    } else {
-                        StackWeight::Samples
-                    }
-                );
             }
             let expected_weight = if instructions {
                 s.instructions_metric
@@ -185,7 +192,7 @@ pub(super) fn contracts(s: &session::ShellSession) {
                 inverted,
                 expected_weight,
             ));
-            assert!(a.jobs(s, &f, Some(ViewId::Flame)).is_empty());
+            assert!(a.jobs(s, &f, AnalysisDemand::Flame).is_empty());
             assert!(a.install(job.compute(s)));
             assert_eq!(
                 a.flame_layout().map(|layout| layout.as_ref()),
@@ -221,7 +228,6 @@ pub(super) fn contracts(s: &session::ShellSession) {
     a.reset();
     assert_eq!(a.flame_stacks(), StackMode::BottomUp);
     assert_eq!(a.flame_weight(), FlameWeight::Instructions);
-    assert!(a.flame_zoomed());
     assert!(a.flame_layout().is_none());
     assert!(a.functions().is_none());
     assert!(a.scope().is_none());
@@ -229,8 +235,85 @@ pub(super) fn contracts(s: &session::ShellSession) {
     assert!(a.balance().is_none());
     assert!(a.allocation_sites().is_none());
     assert_eq!(
-        kinds(&a.jobs(s, &f, Some(ViewId::Flame))),
+        kinds(&a.jobs(s, &f, AnalysisDemand::Flame)),
         vec!["functions", "flame"]
     );
     eprintln!("scheduler contract passed: {}", s.name);
+}
+
+pub(super) fn recording_reset_contract(old: &session::ShellSession, new: &session::ShellSession) {
+    let filter = session::GlobalFilter::default();
+    for demand in [AnalysisDemand::Scope, AnalysisDemand::Cores] {
+        let mut state = AnalysisState::default();
+        let old_results = state
+            .jobs(old, &filter, demand)
+            .into_iter()
+            .filter(|job| {
+                matches!(
+                    job,
+                    AnalysisJob::Scope { .. } | AnalysisJob::CpuLanes { .. }
+                )
+            })
+            .map(|job| job.compute(old))
+            .collect::<Vec<_>>();
+        let had_value = old_results.iter().any(|result| match result {
+            AnalysisResult::Scope { value, .. } => value.is_some(),
+            AnalysisResult::CpuLanes { value, .. } => value.is_some(),
+            _ => false,
+        });
+        state.reset();
+        state.invalidate();
+        let current = state.jobs(new, &filter, demand);
+        for result in old_results {
+            assert!(
+                !state.install(result),
+                "old recording installed after reset: {} -> {} ({demand:?})",
+                old.name,
+                new.name
+            );
+        }
+        assert!(state.scope().is_none());
+        assert!(state.cpu_lanes().is_none());
+        for job in current {
+            let result = job.compute(new);
+            match result {
+                AnalysisResult::Scope { key, value } => {
+                    let installed = value.is_some();
+                    let expected = value.clone();
+                    assert_eq!(
+                        state.install(AnalysisResult::Scope { key, value }),
+                        installed
+                    );
+                    assert_eq!(state.scope(), expected.as_ref());
+                }
+                AnalysisResult::CpuLanes { key, value } => {
+                    let installed = value.is_some();
+                    let expected = value.clone();
+                    assert_eq!(
+                        state.install(AnalysisResult::CpuLanes { key, value }),
+                        installed
+                    );
+                    assert_eq!(state.cpu_lanes(), expected.as_ref());
+                }
+                other => {
+                    state.install(other);
+                }
+            }
+        }
+        eprintln!(
+            "delayed recording result rejected: {} -> {} ({demand:?}, old value present: {had_value})",
+            old.name, new.name
+        );
+    }
+}
+
+pub(crate) fn check(paths: &[String]) {
+    let mut previous = None;
+    for path in paths {
+        let current = session::ShellSession::load(std::path::Path::new(path))
+            .expect("load profiler recording");
+        contracts(&current);
+        recording_reset_contract(previous.as_ref().unwrap_or(&current), &current);
+        previous = Some(current);
+    }
 }

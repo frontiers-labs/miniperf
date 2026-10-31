@@ -250,12 +250,6 @@ impl TabsWidget {
         let (info, session) = match store::Recording::open(&res_dir) {
             Ok(recording) => recording.into_parts(),
             Err(error) => {
-                let error = match error {
-                    store::RecordingError::ParseInfo { source, .. } => {
-                        anyhow::Error::new(source).context("failed to parse info.json metadata")
-                    }
-                    error => error.into(),
-                };
                 *self.load_error.write() = Some(format!(
                     "Could not open results directory '{}':\n\n{error:#}",
                     res_dir.display()
