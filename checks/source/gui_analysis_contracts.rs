@@ -57,7 +57,7 @@ pub(super) fn contracts(s: &session::ShellSession) {
     let selected = kinds(&jobs);
     assert!(selected.contains(&"functions"));
     assert!(selected.contains(&"balance"));
-    if state.cpu_lanes.latest().is_some() {
+    if state.cpu_lanes().is_some() {
         assert!(!selected.contains(&"lanes"));
     }
     for job in &jobs {
@@ -74,24 +74,25 @@ pub(super) fn contracts(s: &session::ShellSession) {
     finish(&mut scope, s, jobs);
     scope.invalidate();
     let jobs = scope.jobs(s, &brushed, Some(ViewId::FlameScope));
-    if scope.scope.latest().is_some() {
+    if scope.scope().is_some() {
         assert_eq!(kinds(&jobs), vec!["functions"]);
     }
     // Existing values remain visible while a replacement computes. Superseded work is dropped.
     let mut state = AnalysisState::default();
     let first = state.jobs(s, &f, None).pop().unwrap();
     assert!(state.install(first.compute(s)));
-    let old = state.functions.latest().unwrap().clone();
+    let old = state.functions().unwrap().clone();
     state.invalidate();
     let obsolete = state.jobs(s, &brushed, None).pop().unwrap();
-    assert!(Arc::ptr_eq(state.functions.latest().unwrap(), &old));
+    assert_eq!(state.functions().unwrap().as_ref(), old.as_ref());
     state.invalidate();
     let current = state.jobs(s, &f, None).pop().unwrap();
     assert!(!state.install(obsolete.compute(s)));
-    assert!(state.functions.is_computing());
+    assert!(state.functions_stale());
+    assert!(state.jobs(s, &f, None).is_empty());
     assert!(state.install(current.compute(s)));
-    assert!(!state.functions.is_computing());
-    assert!(!state.functions.stale(state.key()));
+    assert!(state.jobs(s, &f, None).is_empty());
+    assert!(!state.functions_stale());
     // None clears only the current request and permits retry without losing its stale value.
     let value = Arc::new(FunctionAnalysis::build(&s.profile, &f.resolve(s)));
     let mut d = derived::Derived::default();
@@ -103,7 +104,7 @@ pub(super) fn contracts(s: &session::ShellSession) {
     assert!(!d.complete(11, None));
     assert!(!d.is_computing());
     assert!(d.needs(11));
-    assert!(Arc::ptr_eq(d.latest().unwrap(), &value));
+    assert_eq!(d.latest().unwrap().as_ref(), value.as_ref());
     // Exercise production optional completion and retry for every optional cache.
     for view in [ViewId::FlameScope, ViewId::Cores] {
         let mut a = AnalysisState::default();
@@ -134,30 +135,30 @@ pub(super) fn contracts(s: &session::ShellSession) {
             }
         );
     }
-    // Keys distinguish both flame settings and preserve instruction fallback.
+    // Flame options request new work and preserve instruction fallback.
     let mut a = AnalysisState::default();
     a.invalidate();
+    let mut expected_tree = None;
     for (stacks, inverted) in [(StackMode::TopDown, false), (StackMode::BottomUp, true)] {
         for (weight, instructions) in [
             (FlameWeight::Cycles, false),
             (FlameWeight::Instructions, true),
         ] {
-            a.flame_stacks = stacks;
-            a.flame_weight = weight;
-            a.flame_zoom = None;
+            a.set_flame_stacks(stacks);
+            a.set_flame_weight(weight);
+            a.zoom_flame(None);
             let jobs = a.jobs(s, &f, Some(ViewId::Flame));
             let job = jobs
                 .into_iter()
                 .find(|j| matches!(j, AnalysisJob::Flame { .. }))
                 .unwrap();
             if let AnalysisJob::Flame {
-                key,
                 filter,
                 inverted: actual,
                 weight,
+                ..
             } = &job
             {
-                assert_eq!(*key, 4 + u64::from(inverted) * 2 + u64::from(instructions));
                 assert_eq!(*actual, inverted);
                 assert_eq!(*filter, f);
                 assert_eq!(
@@ -171,50 +172,65 @@ pub(super) fn contracts(s: &session::ShellSession) {
                     }
                 );
             }
+            let expected_weight = if instructions {
+                s.instructions_metric
+                    .map(StackWeight::Counter)
+                    .unwrap_or(StackWeight::Samples)
+            } else {
+                StackWeight::Samples
+            };
+            expected_tree = Some(CallTree::build_weighted(
+                &s.profile,
+                &f.resolve(s),
+                inverted,
+                expected_weight,
+            ));
+            assert!(a.jobs(s, &f, Some(ViewId::Flame)).is_empty());
             assert!(a.install(job.compute(s)));
             assert_eq!(
-                a.flame_layout.as_deref(),
-                Some(&a.flame.latest().unwrap().icicle_layout(None))
+                a.flame_layout().map(|layout| layout.as_ref()),
+                Some(&expected_tree.as_ref().unwrap().icicle_layout(None))
             );
         }
     }
     a.zoom_flame(Some(0));
-    let current_layout = a.flame_layout.clone();
+    let current_layout = a.flame_layout().cloned();
     assert!(!a.set_flame_stacks(StackMode::BottomUp));
-    assert_eq!(a.flame_zoom, Some(0));
+    assert!(a.flame_zoomed());
     assert!(!a.set_flame_weight(FlameWeight::Instructions));
-    assert_eq!(a.flame_zoom, Some(0));
+    assert!(a.flame_zoomed());
     assert!(a.set_flame_stacks(StackMode::TopDown));
-    assert_eq!(a.flame_zoom, None);
-    assert_eq!(a.flame_layout, current_layout);
+    assert!(!a.flame_zoomed());
+    assert_eq!(a.flame_layout().cloned(), current_layout);
     a.zoom_flame(Some(0));
     assert!(a.set_flame_weight(FlameWeight::Cycles));
-    assert_eq!(a.flame_zoom, None);
-    assert_eq!(a.flame_layout, current_layout);
+    assert!(!a.flame_zoomed());
+    assert_eq!(a.flame_layout().cloned(), current_layout);
     a.set_flame_stacks(StackMode::BottomUp);
     a.set_flame_weight(FlameWeight::Instructions);
     a.zoom_flame(Some(0));
     assert_eq!(
-        a.flame_layout.as_deref(),
-        Some(&a.flame.latest().unwrap().icicle_layout(Some(0)))
+        a.flame_layout().map(|layout| layout.as_ref()),
+        Some(&expected_tree.as_ref().unwrap().icicle_layout(Some(0)))
     );
-    let layout = a.flame_layout.clone();
+    let layout = a.flame_layout().cloned();
     a.invalidate();
-    assert!(a.flame_zoom.is_none());
-    assert_eq!(a.flame_layout, layout);
-    let generation = a.key();
-    a.flame_zoom = Some(0);
+    assert!(!a.flame_zoomed());
+    assert_eq!(a.flame_layout().cloned(), layout);
+    a.zoom_flame(Some(0));
     a.reset();
-    assert_eq!(a.key(), generation);
-    assert_eq!(a.flame_stacks, StackMode::BottomUp);
-    assert_eq!(a.flame_weight, FlameWeight::Instructions);
-    assert_eq!(a.flame_zoom, Some(0));
-    assert!(a.flame_layout.is_none());
-    assert!(a.functions.latest().is_none());
-    assert!(a.flame.latest().is_none());
-    assert!(a.scope.latest().is_none());
-    assert!(a.cpu_lanes.latest().is_none());
-    assert!(a.balance.latest().is_none());
-    assert!(a.allocation_sites.latest().is_none());
+    assert_eq!(a.flame_stacks(), StackMode::BottomUp);
+    assert_eq!(a.flame_weight(), FlameWeight::Instructions);
+    assert!(a.flame_zoomed());
+    assert!(a.flame_layout().is_none());
+    assert!(a.functions().is_none());
+    assert!(a.scope().is_none());
+    assert!(a.cpu_lanes().is_none());
+    assert!(a.balance().is_none());
+    assert!(a.allocation_sites().is_none());
+    assert_eq!(
+        kinds(&a.jobs(s, &f, Some(ViewId::Flame))),
+        vec!["functions", "flame"]
+    );
     eprintln!("scheduler contract passed: {}", s.name);
 }

@@ -78,15 +78,13 @@ pub fn check(directory: &std::path::Path) {
                     for job in jobs {
                         let result = job.compute(&session);
                         match &result {
-                            AnalysisResult::Functions { key, value } => {
-                                assert_eq!(*key, 0);
+                            AnalysisResult::Functions { value, .. } => {
                                 assert_eq!(
                                     value.as_ref(),
                                     &FunctionAnalysis::build(&session.profile, &full)
                                 );
                             }
-                            AnalysisResult::Allocations { key, value } => {
-                                assert_eq!(*key, 0);
+                            AnalysisResult::Allocations { value, .. } => {
                                 assert_eq!(
                                     analysis::values(value),
                                     analysis::values(&analysis::expected_allocation_sites(
@@ -94,16 +92,14 @@ pub fn check(directory: &std::path::Path) {
                                     ))
                                 );
                             }
-                            AnalysisResult::Scope { key, value } => {
-                                assert_eq!(*key, filter.spatial_key());
+                            AnalysisResult::Scope { value, .. } => {
                                 assert_eq!(
                                     value.as_deref(),
                                     FlameScopeHeatmap::build(&session.profile, &spatial, 50)
                                         .as_ref()
                                 );
                             }
-                            AnalysisResult::CpuLanes { key, value } => {
-                                assert_eq!(*key, filter.spatial_key());
+                            AnalysisResult::CpuLanes { value, .. } => {
                                 assert_eq!(
                                     value.as_deref(),
                                     CpuUtilizationHeatmap::build_with_bucket_duration(
@@ -115,15 +111,13 @@ pub fn check(directory: &std::path::Path) {
                                     .as_ref()
                                 );
                             }
-                            AnalysisResult::Balance { key, value } => {
-                                assert_eq!(*key, 0);
+                            AnalysisResult::Balance { value, .. } => {
                                 assert_eq!(
                                     value.as_deref(),
                                     ThreadBalance::build(&session.profile, &full).as_ref()
                                 );
                             }
-                            AnalysisResult::Flame { key, value } => {
-                                assert_eq!(*key, u64::from(inverted) * 2 + u64::from(instructions));
+                            AnalysisResult::Flame { value, .. } => {
                                 let weight = if instructions {
                                     session
                                         .instructions_metric

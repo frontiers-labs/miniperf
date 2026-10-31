@@ -74,8 +74,7 @@ def main():
     source += "mod asm { use crate::sql::Connection; " + block(asm, "pub fn has_assembly") + "}\n"
     shell = (GUI / "src/shell/mod.rs").read_text()
     source += "#[derive(Clone, Copy, Debug, PartialEq, Eq)] " + block(shell, "enum ViewId") + "\n"
-    # Keeping assertions inside the included module permits checking its private
-    # state without exposing cache mutation in the application.
+    # Keep source-check helpers local without exporting test-only application API.
     analysis = (GUI / "src/shell/analysis.rs").read_text().replace("//!", "//")
     source += "mod analysis { " + analysis + "\n" + (HERE / "gui_analysis_sites.rs").read_text() + (HERE / "gui_analysis_contracts.rs").read_text() + "}\n"
     source += (HERE / "gui_analysis_oracle.rs").read_text() + "}\n"
