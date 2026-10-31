@@ -177,15 +177,7 @@ impl ShellSession {
     pub fn load(result_directory: &Path) -> Result<Self> {
         let result_directory = fs::canonicalize(result_directory)
             .with_context(|| format!("failed to resolve {}", result_directory.display()))?;
-        let info_path = result_directory.join("info.json");
-        let info_data = fs::read_to_string(&info_path)
-            .with_context(|| format!("failed to read {}", info_path.display()))?;
-        let record_info: RecordInfo = serde_json::from_str(&info_data)
-            .with_context(|| format!("failed to parse {}", info_path.display()))?;
-        record_info.ensure_supported_format()?;
-
-        let session = store::Session::open(&result_directory)
-            .with_context(|| format!("failed to open {}", result_directory.display()))?;
+        let (record_info, session) = store::Recording::open(&result_directory)?.into_parts();
         let connection = session.connection();
         let summary = SummaryStats::load(connection)?;
         let tma = TmaData::load(&record_info.scenario_info, connection);

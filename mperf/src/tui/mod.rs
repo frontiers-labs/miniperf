@@ -7,12 +7,12 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use crossterm::event::{EventStream, KeyCode, KeyEventKind};
 use flamegraph::FlamegraphTab;
 use loops::LoopsTab;
 use metrics_table::MetricsTableTab;
-use mperf_data::{RecordInfo, Scenario, scenario_ui};
+use mperf_data::{Scenario, scenario_ui};
 use parking_lot::{Mutex, RwLock};
 use ratatui::{
     DefaultTerminal, Frame,
@@ -22,7 +22,6 @@ use ratatui::{
     widgets::{Block, Cell, Clear, Paragraph, Row, Table, Tabs, Widget},
 };
 use summary::SummaryTab;
-use tokio::fs::{self};
 use tokio_stream::StreamExt;
 
 mod flamegraph;
@@ -243,13 +242,20 @@ impl TabsWidget {
             return;
         }
         let this = self.clone();
-        tokio::spawn(this.fetch_data(res_dir.to_owned()));
+        let res_dir = res_dir.to_owned();
+        tokio::task::spawn_blocking(move || this.fetch_data(res_dir));
     }
 
-    async fn fetch_data(self, res_dir: PathBuf) {
-        let (info, session) = match load_results(&res_dir).await {
-            Ok(results) => results,
+    fn fetch_data(self, res_dir: PathBuf) {
+        let (info, session) = match store::Recording::open(&res_dir) {
+            Ok(recording) => recording.into_parts(),
             Err(error) => {
+                let error = match error {
+                    store::RecordingError::ParseInfo { source, .. } => {
+                        anyhow::Error::new(source).context("failed to parse info.json metadata")
+                    }
+                    error => error.into(),
+                };
                 *self.load_error.write() = Some(format!(
                     "Could not open results directory '{}':\n\n{error:#}",
                     res_dir.display()
@@ -371,25 +377,6 @@ fn memory_table_spec() -> pmu_data::MetricsTableSpec {
         function_column: None,
         enable_assembly: false,
     }
-}
-
-async fn load_results(res_dir: &Path) -> Result<(RecordInfo, store::Session)> {
-    let info_path = res_dir.join("info.json");
-    let data = fs::read_to_string(&info_path)
-        .await
-        .with_context(|| format!("failed to read {}", info_path.display()))?;
-    let info = parse_record_info(&data)?;
-
-    let session = store::Session::open(res_dir)
-        .with_context(|| format!("failed to open {}", res_dir.display()))?;
-    Ok((info, session))
-}
-
-fn parse_record_info(data: &str) -> Result<RecordInfo> {
-    let info: RecordInfo =
-        serde_json::from_str(data).context("failed to parse info.json metadata")?;
-    info.ensure_supported_format()?;
-    Ok(info)
 }
 
 impl Widget for &Tab {
