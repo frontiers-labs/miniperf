@@ -64,22 +64,8 @@ pub(super) fn contracts(s: &session::ShellSession) {
             AnalysisJob::Balance { filter, .. } | AnalysisJob::Functions { filter, .. } => {
                 assert_eq!(*filter, brushed)
             }
-            AnalysisJob::CpuLanes { filter, .. } => assert_eq!(*filter, brushed.spatial()),
+            AnalysisJob::CpuLanes { .. } => {}
             _ => panic!("unexpected job"),
-        }
-    }
-    for demand in [AnalysisDemand::Scope, AnalysisDemand::Cores] {
-        let mut fresh = AnalysisState::default();
-        for job in fresh.jobs(s, &brushed, demand) {
-            match job {
-                AnalysisJob::Functions { filter, .. } | AnalysisJob::Balance { filter, .. } => {
-                    assert_eq!(filter, brushed);
-                }
-                AnalysisJob::Scope { filter, .. } | AnalysisJob::CpuLanes { filter, .. } => {
-                    assert_eq!(filter, brushed.spatial());
-                }
-                _ => panic!("unexpected job"),
-            }
         }
     }
     let mut scope = AnalysisState::default();
@@ -90,6 +76,14 @@ pub(super) fn contracts(s: &session::ShellSession) {
     if scope.scope().is_some() {
         assert_eq!(kinds(&jobs), vec!["functions"]);
     }
+    let mut fresh_scope = AnalysisState::default();
+    let jobs = fresh_scope.jobs(s, &brushed, AnalysisDemand::Scope);
+    finish(&mut fresh_scope, s, jobs);
+    assert_eq!(fresh_scope.scope(), scope.scope());
+    let mut fresh_lanes = AnalysisState::default();
+    let jobs = fresh_lanes.jobs(s, &brushed, AnalysisDemand::Cores);
+    finish(&mut fresh_lanes, s, jobs);
+    assert_eq!(fresh_lanes.cpu_lanes(), state.cpu_lanes());
     // Existing values remain visible while a replacement computes. Superseded work is dropped.
     let mut state = AnalysisState::default();
     let first = state.jobs(s, &f, AnalysisDemand::Functions).pop().unwrap();
@@ -241,9 +235,16 @@ pub(super) fn contracts(s: &session::ShellSession) {
     eprintln!("scheduler contract passed: {}", s.name);
 }
 
-pub(super) fn recording_reset_contract(old: &session::ShellSession, new: &session::ShellSession) {
+pub(super) fn recording_reset_contract(
+    old: &session::ShellSession,
+    new: &session::ShellSession,
+) -> [bool; 2] {
     let filter = session::GlobalFilter::default();
-    for demand in [AnalysisDemand::Scope, AnalysisDemand::Cores] {
+    let mut exercised = [false; 2];
+    for (index, demand) in [AnalysisDemand::Scope, AnalysisDemand::Cores]
+        .into_iter()
+        .enumerate()
+    {
         let mut state = AnalysisState::default();
         let old_results = state
             .jobs(old, &filter, demand)
@@ -261,6 +262,10 @@ pub(super) fn recording_reset_contract(old: &session::ShellSession, new: &sessio
             AnalysisResult::CpuLanes { value, .. } => value.is_some(),
             _ => false,
         });
+        if !had_value {
+            continue;
+        }
+        exercised[index] = true;
         state.reset();
         state.invalidate();
         let current = state.jobs(new, &filter, demand);
@@ -305,15 +310,24 @@ pub(super) fn recording_reset_contract(old: &session::ShellSession, new: &sessio
             old.name, new.name
         );
     }
+    exercised
 }
 
 pub(crate) fn check(paths: &[String]) {
     let mut previous = None;
+    let mut exercised = [false; 2];
     for path in paths {
         let current = session::ShellSession::load(std::path::Path::new(path))
             .expect("load profiler recording");
         contracts(&current);
-        recording_reset_contract(previous.as_ref().unwrap_or(&current), &current);
+        let pair = recording_reset_contract(previous.as_ref().unwrap_or(&current), &current);
+        for (covered, ran) in exercised.iter_mut().zip(pair) {
+            *covered |= ran;
+        }
         previous = Some(current);
     }
+    assert!(
+        exercised.into_iter().all(|ran| ran),
+        "recordings must exercise nonempty delayed Scope and Cores results"
+    );
 }
