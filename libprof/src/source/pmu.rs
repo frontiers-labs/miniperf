@@ -284,13 +284,11 @@ impl Source for PreciseMemorySource {
             8 * 1024,
             lbr,
         )?;
-        self.driver = Some(driver);
         self.satisfied = Some(satisfied);
-        if let Some(driver) = &mut self.driver {
-            if let Err(error) = driver.start(context.sink.clone()) {
-                self.finish();
-                return Err(error.into());
-            }
+        let driver = self.driver.insert(driver);
+        if let Err(error) = driver.start(context.sink.clone()) {
+            self.finish();
+            return Err(error.into());
         }
         Ok(())
     }
