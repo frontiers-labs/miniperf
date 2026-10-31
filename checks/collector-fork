@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Hold the production collector lock across fork and inspect its real output.
+set -euo pipefail
+case "$(uname -s)" in
+    Linux|Darwin) ;;
+    *) printf 'collector fork check requires POSIX fork\n'; exit 0 ;;
+esac
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+work="${CHECK_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/mperf-fork.XXXXXX")}/collector-fork"
+mkdir -p "${work}"
+cargo build --locked --manifest-path "${root}/Cargo.toml" \
+    -p miniperf-collector-core --message-format=json >"${work}/build.json"
+export MPERF_COLLECTOR_SOURCE="${root}/collector-core/src"
+python3 - "${root}" "${work}" <<'PY'
+import json
+import pathlib
+import subprocess
+import sys
+import tempfile
+
+root, work = map(pathlib.Path, sys.argv[1:])
+crates = {"miniperf_store_writer": "store", "libc": "libc", "shmem": "shmem"}
+artifacts = {}
+for line in (work / "build.json").read_text().splitlines():
+    event = json.loads(line)
+    name = event.get("target", {}).get("name")
+    if event.get("reason") == "compiler-artifact" and name in crates:
+        for path in event["filenames"]:
+            if path.endswith(".rlib"):
+                artifacts[crates[name]] = path
+assert len(artifacts) == len(crates), artifacts
+command = ["rustc", "--edition=2024", "-A", "dead_code",
+           str(root / "checks/fixtures/collector_fork.rs"),
+           "-L", "dependency=" + str(pathlib.Path(artifacts["store"]).parent),
+           "-o", str(work / "collector-fork")]
+for name, path in artifacts.items():
+    command += ["--extern", f"{name}={path}"]
+subprocess.run(command, check=True)
+for mode in ("trace", "trace-atexit", "shutdown", "allocation"):
+    directory = tempfile.mkdtemp(prefix=mode + "-", dir=work)
+    subprocess.run([str(work / "collector-fork"), str(directory), mode], check=True)
+PY
