@@ -38,12 +38,6 @@ impl<'a> FunctionName<'a> {
     pub fn friendly(&self) -> &str {
         &self.friendly
     }
-
-    /// Searches both the full spelling and label, ignoring case.
-    pub fn matches(&self, query: &str) -> bool {
-        let query = query.to_lowercase();
-        self.full.to_lowercase().contains(&query) || self.friendly.to_lowercase().contains(&query)
-    }
 }
 
 fn has_disambiguator(name: &str, index: usize) -> bool {
@@ -186,13 +180,6 @@ mod tests {
         ] {
             assert_eq!(FunctionName::new(input).friendly(), expected, "{input}");
         }
-    }
-
-    #[test]
-    fn searches_full_name_and_friendly_label() {
-        let name = FunctionName::new("demo::work::<alloc::vec::Vec<u64>>::h0123456789abcdef");
-        assert!(name.matches("Vec<u64>"));
-        assert!(name.matches("WORK::<…>"));
     }
 
     #[test]
