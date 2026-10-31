@@ -116,14 +116,7 @@ pub async fn record(
         anyhow::bail!("record roofline requires a command");
     }
 
-    let mut selected = select_method(options, command)?;
-    if crate::source::roofline_uncore_bandwidth() {
-        selected.info.traffic = "dram-measured".to_string();
-        selected.info.warnings.push(
-            "DRAM traffic is measured on system-wide memory-controller counters and therefore includes traffic from other processes"
-                .to_string(),
-        );
-    }
+    let selected = select_method(options, command)?;
     println!("Roofline method: {}", selected.info.reason);
     for warning in &selected.info.warnings {
         eprintln!("Warning: {warning}");
@@ -229,10 +222,7 @@ pub async fn record_memory(
         unreachable!("QEMU backend returned a non-Roofline result")
     };
     let method = info.method.as_deref();
-    let hardware_bandwidth = output_directory
-        .join("memory-bandwidth.txt")
-        .metadata()
-        .is_ok_and(|metadata| metadata.len() != 0);
+    let hardware_bandwidth = method.is_some_and(|method| method.traffic == "dram-measured");
     Ok(ScenarioInfo::Mem(mperf_data::MemoryInfo {
         perf_pid: info.perf_pid,
         accounting_pid: info.inst_pid,
@@ -532,7 +522,7 @@ impl RooflineBackend for CompilerBackend {
             ensure_process_success(&process, "compiler Roofline accounting run")?;
 
             let mut method = self.method.clone();
-            method.warnings.extend(baseline.warnings);
+            baseline.apply_to_method(&mut method);
 
             Ok(ScenarioInfo::Roofline(RooflineInfo {
                 backend: "compiler".to_string(),
@@ -552,6 +542,60 @@ struct ProfiledRun {
     end_ns: u64,
     counters: Vec<(mperf_data::EventType, String)>,
     instructions: u64,
+    measured_dram: bool,
+}
+
+impl ProfiledRun {
+    fn apply_to_method(&self, method: &mut RooflineMethodInfo) {
+        method.warnings.extend(self.warnings.iter().cloned());
+        if self.measured_dram {
+            method.traffic = "dram-measured".to_string();
+            method.warnings.push(
+                "DRAM traffic is measured on system-wide memory-controller counters and therefore includes traffic from other processes"
+                    .to_string(),
+            );
+        }
+    }
+}
+
+/// Timeline workers share a lifetime with the performance run, including setup errors.
+struct TimelineSamplers {
+    stop: Arc<AtomicBool>,
+    rss: Option<std::thread::JoinHandle<Result<()>>>,
+    bandwidth: Option<std::thread::JoinHandle<Result<bool>>>,
+}
+
+impl TimelineSamplers {
+    fn start(pid: i32, rss: Option<PathBuf>, bandwidth: Option<PathBuf>) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        Self {
+            rss: rss.map(|path| {
+                let stop = stop.clone();
+                std::thread::spawn(move || sample_memory_timeline(pid, &path, stop))
+            }),
+            bandwidth: bandwidth.and_then(|path| start_bandwidth_timeline(path, stop.clone())),
+            stop,
+        }
+    }
+
+    fn finish(&mut self) -> Result<bool> {
+        self.stop.store(true, Ordering::Relaxed);
+        let rss = self.rss.take().map(|thread| thread.join());
+        let bandwidth = self.bandwidth.take().map(|thread| thread.join());
+        if let Some(result) = rss {
+            result.map_err(|_| anyhow::anyhow!("RSS sampler panicked"))??;
+        }
+        match bandwidth {
+            Some(result) => result.map_err(|_| anyhow::anyhow!("bandwidth sampler panicked"))?,
+            None => Ok(false),
+        }
+    }
+}
+
+impl Drop for TimelineSamplers {
+    fn drop(&mut self) {
+        let _ = self.finish();
+    }
 }
 
 async fn profile_command(
@@ -595,14 +639,8 @@ async fn profile_command(
     if let Some(source) = allocation_source.as_mut() {
         libprof::Source::start(source, &allocation_context)?;
     }
-    let sampler_stop = Arc::new(AtomicBool::new(false));
-    let bandwidth_thread =
-        bandwidth_output.and_then(|path| start_bandwidth_timeline(path, sampler_stop.clone()));
-    let rss_thread = rss_output.map(|path| {
-        let stop = sampler_stop.clone();
-        let pid = process.pid();
-        std::thread::spawn(move || sample_memory_timeline(pid, &path, stop))
-    });
+    let requested_bandwidth = bandwidth_output.is_some();
+    let mut timelines = TimelineSamplers::start(process.pid(), rss_output, bandwidth_output);
     let counters = crate::source::scenario_counters(Scenario::Roofline);
     let mut driver = libprof::SamplingDriverBuilder::new()
         .counters(&counters)
@@ -643,16 +681,12 @@ async fn profile_command(
     let start_ns = monotonic_timestamp()?;
     process.cont();
     process.wait()?;
-    sampler_stop.store(true, Ordering::Relaxed);
-    if let Some(thread) = rss_thread {
-        thread
-            .join()
-            .map_err(|_| anyhow::anyhow!("RSS sampler panicked"))??;
-    }
-    if let Some(thread) = bandwidth_thread {
-        thread
-            .join()
-            .map_err(|_| anyhow::anyhow!("bandwidth sampler panicked"))??;
+    let measured_dram = timelines.finish()?;
+    if requested_bandwidth && !measured_dram {
+        warnings.push(
+            "memory-controller bandwidth was not captured; traffic uses the accounting backend"
+                .to_string(),
+        );
     }
     let end_ns = monotonic_timestamp()?;
     // A sampler that lost records still measured the run, and a second pass
@@ -693,11 +727,12 @@ async fn profile_command(
         pid: process.pid(),
         start_ns,
         end_ns,
-        counters: counters
+        counters: sampled
             .iter()
             .map(|counter| (counter_to_event_ty(counter), counter.name().to_string()))
             .collect(),
         instructions: tally.instructions.load(Ordering::Relaxed),
+        measured_dram,
     })
 }
 
@@ -792,7 +827,7 @@ fn sample_memory_timeline(pid: i32, output: &Path, stop: Arc<AtomicBool>) -> Res
 fn start_bandwidth_timeline(
     output: PathBuf,
     stop: Arc<AtomicBool>,
-) -> Option<std::thread::JoinHandle<Result<()>>> {
+) -> Option<std::thread::JoinHandle<Result<bool>>> {
     let monitor = match libprof::MemoryControllerMonitor::start() {
         Ok(Some(monitor)) => monitor,
         Ok(None) => return None,
@@ -805,23 +840,33 @@ fn start_bandwidth_timeline(
         use std::io::Write;
         let mut file = std::fs::File::create(&output)
             .with_context(|| format!("create bandwidth timeline '{}'", output.display()))?;
+        let mut samples = 0;
         loop {
             let finished = stop.load(Ordering::Relaxed);
             match monitor.sample() {
-                Ok(sample) => writeln!(
-                    file,
-                    "{} {} {}",
-                    monotonic_timestamp()?,
-                    sample.read_bytes,
-                    sample.write_bytes
-                )?,
+                Ok(sample) => {
+                    writeln!(
+                        file,
+                        "{} {} {}",
+                        monotonic_timestamp()?,
+                        sample.read_bytes,
+                        sample.write_bytes
+                    )?;
+                    samples += 1;
+                }
                 Err(error) => {
                     eprintln!("Warning: memory-controller sampling stopped: {error}");
-                    return Ok(());
+                    drop(file);
+                    std::fs::remove_file(output)?;
+                    return Ok(false);
                 }
             }
             if finished {
-                return Ok(());
+                if samples < 2 {
+                    drop(file);
+                    std::fs::remove_file(output)?;
+                }
+                return Ok(samples >= 2);
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }

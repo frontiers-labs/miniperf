@@ -909,7 +909,7 @@ impl RooflineBackend for QemuBackend {
                 );
             }
             let mut method = self.method.clone();
-            method.warnings.extend(baseline.warnings.iter().cloned());
+            baseline.apply_to_method(&mut method);
             // The replay reproduces the program's work; the timed run executes
             // that work plus whatever its threads retire while waiting for each
             // other. How much waiting that is depends on how fast the run went,
