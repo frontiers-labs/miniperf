@@ -15,9 +15,13 @@ impl ShellView {
         let mut sampled_functions = std::collections::HashSet::new();
         if session.has_assembly {
             let recording = store::Session::open(&session.result_directory)?;
-            let mut statement = recording
-                .connection()
-                .prepare("SELECT DISTINCT module_path, func_name FROM assembly_samples")?;
+            let mut statement = recording.connection().prepare(
+                "SELECT DISTINCT s.module_path, s.func_name
+                     FROM assembly_samples s
+                     JOIN assembly_lines l
+                       ON l.module_path = s.module_path AND l.runtime_address = s.address
+                     WHERE l.symbol IS NOT NULL",
+            )?;
             sampled_functions = statement
                 .query_map([], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
