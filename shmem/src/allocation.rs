@@ -1,8 +1,5 @@
 //! Versioned allocation lifecycle protocol shared by the collector and source.
 
-use crate::proc_channel::Sendable;
-use std::borrow::Cow;
-
 pub const CHANNEL_BYTES: usize = 1 << 24;
 pub const MAX_FRAMES: usize = 32;
 pub const RECORD_BYTES: usize = 104 + MAX_FRAMES * 8;
@@ -128,7 +125,7 @@ pub struct Batch {
 }
 
 impl Batch {
-    pub fn encode(&self) -> Packet {
+    pub fn encode(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(64 + self.records.len() * RECORD_BYTES);
         bytes.extend_from_slice(MAGIC);
         for word in [
@@ -145,11 +142,10 @@ impl Batch {
         for record in &self.records {
             record.encode(&mut bytes);
         }
-        Packet(bytes)
+        bytes
     }
 
-    pub fn decode(packet: &Packet) -> Option<Self> {
-        let bytes = &packet.0;
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
         if bytes.len() < 64 || &bytes[..8] != MAGIC {
             return None;
         }
@@ -176,13 +172,98 @@ impl Batch {
     }
 }
 
-/// Opaque bytes. Validation happens once, at the source boundary.
-pub struct Packet(pub Vec<u8>);
-impl Sendable for Packet {
-    fn as_raw_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Borrowed(&self.0)
+#[cfg(test)]
+mod tests {
+    use super::{Allocation, Batch, Operation, MAX_FRAMES};
+
+    fn batch() -> Batch {
+        Batch {
+            sequence: 1,
+            produced: 2,
+            producer_dropped: 3,
+            channel_dropped_operations: 4,
+            paused: 5,
+            footer: true,
+            records: vec![Allocation {
+                pid: 6,
+                process_epoch: 7,
+                sequence: 8,
+                timestamp_ns: 9,
+                tid: 10,
+                operation: Operation::ReallocEnd,
+                operation_id: 12,
+                old_address: 13,
+                address: 14,
+                requested_bytes: 15,
+                retires_old: true,
+                stack_status: 3,
+                frame_count: 2,
+                frames: [16; MAX_FRAMES],
+            }],
+        }
     }
-    fn from_raw_bytes(bytes: Vec<u8>) -> Self {
-        Self(bytes)
+
+    #[test]
+    fn batch_bytes_preserve_allocation_protocol() {
+        let bytes = batch().encode();
+        let mut expected = b"MPALLOC1".to_vec();
+        for word in [
+            1_u64, 2, 3, 4, 5, 1, 1, 6, 7, 8, 9, 10, 4, 12, 13, 14, 15, 1, 2, 3,
+        ] {
+            expected.extend_from_slice(&word.to_le_bytes());
+        }
+        for _ in 0..MAX_FRAMES {
+            expected.extend_from_slice(&16_u64.to_le_bytes());
+        }
+        assert_eq!(bytes, expected);
+        let decoded = Batch::decode(&bytes).unwrap();
+        assert_eq!(decoded.encode(), expected);
+    }
+
+    #[test]
+    fn batch_rejects_truncation_and_extra_bytes() {
+        let mut bytes = batch().encode();
+        for length in 0..bytes.len() {
+            assert!(Batch::decode(&bytes[..length]).is_none(), "length {length}");
+        }
+        bytes.push(0);
+        assert!(Batch::decode(&bytes).is_none());
+    }
+
+    #[test]
+    fn batch_rejects_invalid_header_fields() {
+        for (offset, value) in [(0, 0_u64), (48, 2), (56, u64::MAX)] {
+            let mut bytes = batch().encode();
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+            assert!(Batch::decode(&bytes).is_none(), "offset {offset}");
+        }
+    }
+
+    #[test]
+    fn batch_rejects_invalid_allocation_fields() {
+        for (word, value) in [
+            (0, u64::MAX),
+            (4, u64::MAX),
+            (5, 0),
+            (10, 2),
+            (11, 33),
+            (12, 5),
+        ] {
+            let mut bytes = batch().encode();
+            let offset = 64 + word * 8;
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+            assert!(Batch::decode(&bytes).is_none(), "record word {word}");
+        }
+    }
+
+    #[test]
+    fn empty_footer_decodes_without_records() {
+        let mut footer = batch();
+        footer.records.clear();
+        let bytes = footer.encode();
+        assert_eq!(bytes.len(), 64);
+        let decoded = Batch::decode(&bytes).unwrap();
+        assert!(decoded.footer);
+        assert!(decoded.records.is_empty());
     }
 }

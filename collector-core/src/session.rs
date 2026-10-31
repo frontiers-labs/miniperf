@@ -14,9 +14,7 @@ use store::{
 use crate::buffer::{Buffer, BufferQueue};
 use crate::control::{CollectorStats, ControlCommand, ControlPlane};
 use crate::stack::MAX_FRAMES;
-use shmem::allocation::{
-    Allocation, Batch, CHANNEL_BYTES, Packet, RECORD_BYTES as ALLOCATION_BYTES,
-};
+use shmem::allocation::{Allocation, Batch, CHANNEL_BYTES, RECORD_BYTES as ALLOCATION_BYTES};
 use shmem::proc_channel::Sender;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -500,7 +498,7 @@ fn append(buffer: &mut Buffer, record: &EventRecord, frames: &[u64]) {
 
 fn writer_loop(collector: Arc<Collector>, dir: PathBuf, queue: Arc<BufferQueue>) {
     let pid = collector.pid;
-    let control = ControlPlane::create(pid);
+    let mut control = ControlPlane::create(pid);
     let mut total_events = 0u64;
     let mut events = EventRows::default();
     let mut events_writer = SegmentWriter::new(&dir, "events", Some(pid), EventRows::schema());
@@ -529,7 +527,11 @@ fn writer_loop(collector: Arc<Collector>, dir: PathBuf, queue: Arc<BufferQueue>)
     let mut allocation_sender = allocation_root
         .then(|| std::env::var("MPERF_ALLOCATION_CHANNEL").ok())
         .flatten()
-        .and_then(|name| Sender::<Packet>::attach(&name, CHANNEL_BYTES).ok());
+        .and_then(|name| {
+            // The initialized channel belongs to the root allocation source.
+            // Only the root collector writer attaches a sender.
+            unsafe { Sender::attach(&name, CHANNEL_BYTES).ok() }
+        });
     let mut batch_sequence = 0;
     let mut channel_dropped_operations = 0;
     let mut allocation_records = Vec::new();
@@ -617,7 +619,7 @@ fn writer_loop(collector: Arc<Collector>, dir: PathBuf, queue: Arc<BufferQueue>)
         if events.len() >= 8192 {
             flush(&mut events, &mut events_writer);
         }
-        if let Some(control) = &control {
+        if let Some(control) = &mut control {
             while let Some(command) = control.poll_command() {
                 match command {
                     ControlCommand::Pause => collector.paused.store(true, Ordering::Relaxed),
