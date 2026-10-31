@@ -20,6 +20,13 @@ mod calibrate;
 mod loops;
 mod qemu;
 
+const MODELED_DRAM_WARNING: &str = "memory traffic is a deterministic host-LLC model, not a hardware memory-controller measurement";
+const CACHE_POLICY_WARNING: &str = "the cache model uses write allocation/RFO and dirty writeback; non-temporal stores are conservative";
+
+fn clear_modeled_traffic_warnings(warnings: &mut Vec<String>) {
+    warnings.retain(|warning| warning != MODELED_DRAM_WARNING && warning != CACHE_POLICY_WARNING);
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum BackendKind {
     #[default]
@@ -349,8 +356,8 @@ fn qemu_method(automatic: bool, native: bool, executable: PathBuf) -> SelectedMe
             vec![
                 "per-loop throughput is a native sampling estimate; timing_relative_error is its estimated 95% sampling error and timing_quality names the band".to_string(),
                 "native timing and QEMU accounting come from separate executions".to_string(),
-                "memory traffic is a deterministic host-LLC model, not a hardware memory-controller measurement".to_string(),
-                "the cache model uses write allocation/RFO and dirty writeback; non-temporal stores are conservative".to_string(),
+                MODELED_DRAM_WARNING.to_string(),
+                CACHE_POLICY_WARNING.to_string(),
             ],
         )
     } else {
@@ -361,7 +368,7 @@ fn qemu_method(automatic: bool, native: bool, executable: PathBuf) -> SelectedMe
             vec![
                 "throughput is based on emulator time and must not be interpreted as guest-hardware performance".to_string(),
                 "the Roofline UI point is currently whole-process; per-loop candidates and accounting are saved in qemu-roofline.loops.json".to_string(),
-                "memory traffic is a deterministic host-LLC model, not a hardware memory-controller measurement".to_string(),
+                MODELED_DRAM_WARNING.to_string(),
             ],
         )
     };
@@ -550,9 +557,7 @@ impl ProfiledRun {
         method.warnings.extend(self.warnings.iter().cloned());
         if self.measured_dram {
             method.traffic = "dram-measured".to_string();
-            method
-                .warnings
-                .retain(|warning| !warning.contains("host-LLC model"));
+            clear_modeled_traffic_warnings(&mut method.warnings);
             method.warnings.push(
                 "DRAM traffic is measured on system-wide memory-controller counters and therefore includes traffic from other processes"
                     .to_string(),
