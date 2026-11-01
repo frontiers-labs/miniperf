@@ -27,35 +27,6 @@ pub struct HostTelemetrySource {
     worker: Option<thread::JoinHandle<Vec<SourceStatus>>>,
 }
 
-impl HostTelemetrySource {
-    fn finish(&mut self) -> Vec<SourceStatus> {
-        if let Some(stop) = self.stop.take() {
-            stop.store(true, Ordering::Release);
-        }
-        self.worker
-            .take()
-            .map(|worker| {
-                worker.thread().unpark();
-                worker.join().unwrap_or_else(|_| {
-                    vec![SourceStatus::new(
-                        "host_telemetry",
-                        "error",
-                        "internal",
-                        "unavailable",
-                        "host telemetry thread did not shut down cleanly",
-                    )]
-                })
-            })
-            .unwrap_or_default()
-    }
-}
-
-impl Drop for HostTelemetrySource {
-    fn drop(&mut self) {
-        self.finish();
-    }
-}
-
 impl Source for HostTelemetrySource {
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -72,7 +43,6 @@ impl Source for HostTelemetrySource {
     }
 
     fn start(&mut self, context: &SessionContext) -> anyhow::Result<()> {
-        anyhow::ensure!(self.worker.is_none(), "host telemetry is already running");
         let clusters = host_clusters();
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
@@ -87,7 +57,26 @@ impl Source for HostTelemetrySource {
     }
 
     fn stop(&mut self, _context: &SessionContext) -> Vec<SourceStatus> {
-        self.finish()
+        if let Some(stop) = self.stop.take() {
+            stop.store(true, Ordering::Release);
+        }
+        let worker = self.worker.take();
+        if let Some(worker) = &worker {
+            worker.thread().unpark();
+        }
+        worker
+            .map(|worker| {
+                worker.join().unwrap_or_else(|_| {
+                    vec![SourceStatus::new(
+                        "host_telemetry",
+                        "error",
+                        "internal",
+                        "unavailable",
+                        "host telemetry thread did not shut down cleanly",
+                    )]
+                })
+            })
+            .unwrap_or_default()
     }
 }
 

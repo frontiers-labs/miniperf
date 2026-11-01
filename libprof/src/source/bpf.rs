@@ -24,30 +24,6 @@ pub struct BpfSource {
     status: Option<SourceStatus>,
 }
 
-impl BpfSource {
-    fn stop_child(&mut self) -> std::io::Result<()> {
-        let Some(mut child) = self.child.take() else {
-            return Ok(());
-        };
-        unsafe { libc::kill(child.id() as i32, libc::SIGINT) };
-        child.wait()?;
-        Ok(())
-    }
-
-    fn remove_output(&mut self) {
-        if let Some(output) = self.output.take() {
-            let _ = fs::remove_file(output);
-        }
-    }
-}
-
-impl Drop for BpfSource {
-    fn drop(&mut self) {
-        let _ = self.stop_child();
-        self.remove_output();
-    }
-}
-
 impl Source for BpfSource {
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -67,7 +43,6 @@ impl Source for BpfSource {
     }
 
     fn start(&mut self, context: &SessionContext) -> anyhow::Result<()> {
-        anyhow::ensure!(self.child.is_none(), "BPF collection is already running");
         // Kept out of `probe`: the pass resolver records a probe failure as a
         // plain "unavailable", and losing the difference between "this kernel
         // forbids it" and "this host does not have it" loses the fix.
@@ -84,19 +59,19 @@ impl Source for BpfSource {
             .args(["-e", program(context.root_pid()).as_str()])
             .stderr(std::process::Stdio::null())
             .spawn();
-        let child = match child {
+        let mut child = match child {
             Ok(child) => child,
             Err(error) => {
                 self.status = Some(unavailable(&format!("could not start bpftrace: {error}")));
                 return Ok(());
             }
         };
-        self.child = Some(child);
-        self.output = Some(output.clone());
 
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
             if fs::read_to_string(&output).is_ok_and(|value| value.contains("MPERF_READY")) {
+                self.child = Some(child);
+                self.output = Some(output);
                 self.status = Some(SourceStatus::new(
                     "bpf",
                     "available",
@@ -106,13 +81,7 @@ impl Source for BpfSource {
                 ));
                 return Ok(());
             }
-            if self
-                .child
-                .as_mut()
-                .is_some_and(|child| child.try_wait().ok().flatten().is_some())
-            {
-                self.child = None;
-                self.remove_output();
+            if child.try_wait().ok().flatten().is_some() {
                 self.status = Some(unavailable(
                     "BPF program failed to load; inspect kernel capabilities and tracepoint availability",
                 ));
@@ -120,26 +89,29 @@ impl Source for BpfSource {
             }
             thread::sleep(Duration::from_millis(50));
         }
-        let _ = self.stop_child();
-        self.remove_output();
+        unsafe { libc::kill(child.id() as i32, libc::SIGINT) };
+        let _ = child.wait();
         self.status = Some(unavailable("timed out while loading BPF tracepoints"));
         Ok(())
     }
 
     fn stop(&mut self, context: &SessionContext) -> Vec<SourceStatus> {
-        let Some(mut status) = self.status.take() else {
-            return Vec::new();
-        };
-        if self.child.is_none() {
+        let mut status = self
+            .status
+            .take()
+            .unwrap_or_else(|| unavailable("the BPF collector was stopped before it started"));
+        let Some(mut child) = self.child.take() else {
             return vec![status];
-        }
-        if self.stop_child().is_err() {
+        };
+        unsafe { libc::kill(child.id() as i32, libc::SIGINT) };
+        if child.wait().is_err() {
             status.status = "error".to_string();
             status.quality = "unavailable".to_string();
             status.message = "failed to stop BPF collector cleanly".to_string();
         }
-        match self.output.as_ref().map(fs::read_to_string) {
-            Some(Ok(text)) => {
+        let output = self.output.take().unwrap_or_default();
+        match fs::read_to_string(&output) {
+            Ok(text) => {
                 for (name, value) in metrics(&text) {
                     context.sink.record(Record::Metric {
                         group: GROUP,
@@ -147,13 +119,13 @@ impl Source for BpfSource {
                         value,
                     });
                 }
+                let _ = fs::remove_file(&output);
             }
-            _ => {
+            Err(_) => {
                 status.status = "error".to_string();
                 status.message = "failed to read BPF metrics".to_string();
             }
         }
-        self.remove_output();
         vec![status]
     }
 }

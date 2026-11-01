@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use std::sync::atomic::AtomicI64;
 
@@ -14,7 +14,9 @@ use store::{
 use crate::buffer::{Buffer, BufferQueue};
 use crate::control::{CollectorStats, ControlCommand, ControlPlane};
 use crate::stack::MAX_FRAMES;
-use shmem::allocation::{Allocation, Batch, CHANNEL_BYTES, RECORD_BYTES as ALLOCATION_BYTES};
+use shmem::allocation::{
+    Allocation, Batch, CHANNEL_BYTES, Packet, RECORD_BYTES as ALLOCATION_BYTES,
+};
 use shmem::proc_channel::Sender;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -83,20 +85,16 @@ pub struct Collector {
     device_clock: Mutex<DeviceClockRows>,
 }
 
-struct ProcessCollector {
-    collector: RwLock<Option<Arc<Collector>>>,
-}
-
-static COLLECTOR: AtomicPtr<ProcessCollector> = AtomicPtr::new(std::ptr::null_mut());
+static COLLECTOR: RwLock<Option<Arc<Collector>>> = RwLock::new(None);
 static CLOSED: AtomicBool = AtomicBool::new(false);
 static ALLOCATION_SESSION: AtomicBool = AtomicBool::new(false);
 static FORKED: AtomicBool = AtomicBool::new(false);
+static INIT_HOOKS: OnceLock<()> = OnceLock::new();
 
 thread_local! {
     static SLOT: RefCell<Option<Arc<ThreadSlot>>> = const { RefCell::new(None) };
     static INSTANCE_COUNTER: RefCell<u64> = const { RefCell::new(0) };
     static CACHED_COLLECTOR: RefCell<Option<Arc<Collector>>> = const { RefCell::new(None) };
-    static CACHED_PROCESS: std::cell::Cell<*const ProcessCollector> = const { std::cell::Cell::new(std::ptr::null()) };
     static CACHED_TID: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     static INTERNAL_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -137,16 +135,10 @@ pub fn collector() -> Option<Arc<Collector>> {
     {
         return None;
     }
-    let process = process_collector();
-    let _ = CACHED_PROCESS.try_with(|cached| {
-        if cached.replace(process) != process {
-            // The old graph may contain locks held by vanished parent threads.
-            let _ = CACHED_COLLECTOR.try_with(|slot| std::mem::forget(slot.borrow_mut().take()));
-            let _ = SLOT.try_with(|slot| std::mem::forget(slot.borrow_mut().take()));
-            let _ = CACHED_TID.try_with(|tid| tid.set(0));
-            let _ = INSTANCE_COUNTER.try_with(|counter| *counter.borrow_mut() = 0);
-        }
-    });
+    if FORKED.load(Ordering::Acquire) {
+        let _ = CACHED_COLLECTOR.try_with(|slot| slot.borrow_mut().take());
+        let _ = CACHED_TID.try_with(|tid| tid.set(0));
+    }
     if let Some(cached) = CACHED_COLLECTOR
         .try_with(|slot| slot.borrow().clone())
         .ok()
@@ -154,56 +146,32 @@ pub fn collector() -> Option<Arc<Collector>> {
     {
         return cached.accepting.load(Ordering::Relaxed).then_some(cached);
     }
-    let value = initialize_collector(process);
+    let value = initialize_collector();
     if let Some(value) = &value {
         let _ = CACHED_COLLECTOR.try_with(|slot| *slot.borrow_mut() = Some(value.clone()));
     }
     value
 }
 
-fn process_collector() -> &'static ProcessCollector {
-    let mut process = COLLECTOR.load(Ordering::Acquire);
-    if process.is_null() {
-        if !FORKED.load(Ordering::Acquire) {
-            // Register before publishing any locks. Concurrent first callers may
-            // register these idempotent hooks more than once.
-            unsafe {
-                libc::atexit(atexit_shutdown);
-                libc::pthread_atfork(None, None, Some(atfork_child));
-            }
-        }
-        let new = Box::into_raw(Box::new(ProcessCollector {
-            collector: RwLock::new(None),
-        }));
-        process = match COLLECTOR.compare_exchange(
-            std::ptr::null_mut(),
-            new,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => new,
-            Err(current) => {
-                unsafe { drop(Box::from_raw(new)) };
-                current
-            }
-        };
+fn initialize_collector() -> Option<Arc<Collector>> {
+    if FORKED.swap(false, Ordering::AcqRel) {
+        *COLLECTOR.write().unwrap() = None;
+        let _ = SLOT.try_with(|slot| slot.borrow_mut().take());
     }
-    // Published states live until exit. A fork child abandons its inherited
-    // state without invalidating references or destroying inherited locks.
-    unsafe { &*process }
-}
-
-fn initialize_collector(process: &ProcessCollector) -> Option<Arc<Collector>> {
-    if let Some(collector) = process.collector.read().unwrap().as_ref() {
+    if let Some(collector) = COLLECTOR.read().unwrap().as_ref() {
         return Some(collector.clone());
     }
     let dir = std::env::var_os(crate::SESSION_DIR_ENV)?;
-    let mut guard = process.collector.write().unwrap();
+    let mut guard = COLLECTOR.write().unwrap();
     if CLOSED.load(Ordering::Acquire) {
         return None;
     }
     if guard.is_none() {
         *guard = Some(Collector::start(PathBuf::from(dir)));
+        INIT_HOOKS.get_or_init(|| unsafe {
+            libc::atexit(atexit_shutdown);
+            libc::pthread_atfork(None, None, Some(atfork_child));
+        });
     }
     guard.clone()
 }
@@ -213,19 +181,18 @@ extern "C" fn atexit_shutdown() {
 }
 
 extern "C" fn atfork_child() {
-    COLLECTOR.store(std::ptr::null_mut(), Ordering::Release);
     FORKED.store(true, Ordering::Release);
 }
 
 /// Flush every thread's buffer, drain the writer, and close all segments.
 /// Records arriving afterwards are dropped.
 pub fn shutdown() {
-    CLOSED.store(true, Ordering::Release);
     // A fork child owns neither the parent's locks nor its writer thread.
-    if FORKED.load(Ordering::Acquire) && COLLECTOR.load(Ordering::Acquire).is_null() {
+    if FORKED.load(Ordering::Acquire) {
         return;
     }
-    let collector = process_collector().collector.write().unwrap().take();
+    CLOSED.store(true, Ordering::Release);
+    let collector = COLLECTOR.write().unwrap().take();
     if let Some(collector) = collector {
         collector.finish();
     }
@@ -533,7 +500,7 @@ fn append(buffer: &mut Buffer, record: &EventRecord, frames: &[u64]) {
 
 fn writer_loop(collector: Arc<Collector>, dir: PathBuf, queue: Arc<BufferQueue>) {
     let pid = collector.pid;
-    let mut control = ControlPlane::create(pid);
+    let control = ControlPlane::create(pid);
     let mut total_events = 0u64;
     let mut events = EventRows::default();
     let mut events_writer = SegmentWriter::new(&dir, "events", Some(pid), EventRows::schema());
@@ -562,11 +529,7 @@ fn writer_loop(collector: Arc<Collector>, dir: PathBuf, queue: Arc<BufferQueue>)
     let mut allocation_sender = allocation_root
         .then(|| std::env::var("MPERF_ALLOCATION_CHANNEL").ok())
         .flatten()
-        .and_then(|name| {
-            // The initialized channel belongs to the root allocation source.
-            // Only the root collector writer attaches a sender.
-            unsafe { Sender::attach(&name, CHANNEL_BYTES).ok() }
-        });
+        .and_then(|name| Sender::<Packet>::attach(&name, CHANNEL_BYTES).ok());
     let mut batch_sequence = 0;
     let mut channel_dropped_operations = 0;
     let mut allocation_records = Vec::new();
@@ -654,7 +617,7 @@ fn writer_loop(collector: Arc<Collector>, dir: PathBuf, queue: Arc<BufferQueue>)
         if events.len() >= 8192 {
             flush(&mut events, &mut events_writer);
         }
-        if let Some(control) = &mut control {
+        if let Some(control) = &control {
             while let Some(command) = control.poll_command() {
                 match command {
                     ControlCommand::Pause => collector.paused.store(true, Ordering::Relaxed),

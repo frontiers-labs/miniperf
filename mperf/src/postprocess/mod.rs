@@ -12,7 +12,7 @@ mod trace;
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use mperf_data::{EventType, RecordInfo, Scenario};
 use tokio::fs;
 
@@ -25,8 +25,8 @@ pub async fn perform_postprocessing(res_dir: &Path, pb: kdam::Bar) -> Result<()>
 
     let data = fs::read_to_string(res_dir.join("info.json"))
         .await
-        .context("failed to read info.json")?;
-    let info: RecordInfo = serde_json::from_str(&data).context("failed to parse info.json")?;
+        .expect("failed to read info.json");
+    let info: RecordInfo = serde_json::from_str(&data).expect("failed to parse info.json");
 
     let tables = Tables::open(res_dir)?;
     samples::process(&tables, &info, res_dir, &mut pb).await?;
@@ -177,32 +177,20 @@ fn write_metric_definitions(tables: &Tables, metrics: &[libprof::Metric]) -> Res
         let mut values = HashMap::new();
         let mut applicable = true;
         for event_name in event_names {
-            let alias = match event_name.to_ascii_lowercase().as_str() {
-                "branches" => "branch_instructions",
-                "cache_references" => "llc_references",
-                "cache_misses" => "llc_misses",
-                _ => &event_name,
-            };
-            let column = event_column_name_for(alias);
-            let Some(column) = available
-                .iter()
-                .find(|name| name.eq_ignore_ascii_case(&column))
-            else {
+            let Some(column) = metric_event_column(&event_name) else {
                 applicable = false;
                 break;
             };
-            let value: Option<f64> = tables.connection().query_row(
-                &format!(
+            if !available.iter().any(|name| name == column) {
+                applicable = false;
+                break;
+            }
+            let value = tables
+                .scalar_f64(&format!(
                     "SELECT CAST(SUM({}) AS DOUBLE) FROM pmu_counters",
                     quote_identifier(column)
-                ),
-                [],
-                |row| row.get(0),
-            )?;
-            let Some(value) = value else {
-                applicable = false;
-                break;
-            };
+                ))
+                .unwrap_or(0.0);
             values.insert(event_name, value);
         }
         if !applicable {
@@ -226,4 +214,28 @@ fn write_metric_definitions(tables: &Tables, metrics: &[libprof::Metric]) -> Res
     columns.text_opt("unit", rows.iter().map(|row| row.2.clone()).collect());
     columns.text("expression", rows.iter().map(|row| row.3.clone()).collect());
     tables.write("derived_metrics", columns.finish()?)
+}
+
+fn metric_event_column(name: &str) -> Option<&'static str> {
+    if name.eq_ignore_ascii_case("cycles") {
+        Some("pmu_cycles")
+    } else if name.eq_ignore_ascii_case("instructions") {
+        Some("pmu_instructions")
+    } else if name.eq_ignore_ascii_case("branches") {
+        Some("pmu_branch_instructions")
+    } else if name.eq_ignore_ascii_case("branch_misses") {
+        Some("pmu_branch_misses")
+    } else if name.eq_ignore_ascii_case("llc_references")
+        || name.eq_ignore_ascii_case("cache_references")
+    {
+        Some("pmu_llc_references")
+    } else if name.eq_ignore_ascii_case("llc_misses") || name.eq_ignore_ascii_case("cache_misses") {
+        Some("pmu_llc_misses")
+    } else if name.eq_ignore_ascii_case("stalled_cycles_frontend") {
+        Some("pmu_stalled_cycles_frontend")
+    } else if name.eq_ignore_ascii_case("stalled_cycles_backend") {
+        Some("pmu_stalled_cycles_backend")
+    } else {
+        None
+    }
 }
