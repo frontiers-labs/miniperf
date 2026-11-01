@@ -526,7 +526,7 @@ impl ShellView {
         self.ensure_derived(cx);
     }
 
-    /// Runs the closed analysis jobs requested by the active view.
+    /// Spawns the analysis work requested by the active view.
     fn ensure_derived(&mut self, cx: &mut Context<Self>) {
         let Some(session) = self.session.clone() else {
             return;
@@ -543,7 +543,7 @@ impl ShellView {
             cx.spawn(async move |this, cx| {
                 let result = cx
                     .background_executor()
-                    .spawn(async move { job.compute(&session) })
+                    .spawn(async move { job(&session) })
                     .await;
                 this.update(cx, |this, cx| {
                     if this.analysis.install(result) {

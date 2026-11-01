@@ -200,20 +200,25 @@ impl AnalysisState {
         demand: AnalysisDemand,
     ) -> Vec<AnalysisJob> {
         let key = self.generation;
-        let mut jobs = Vec::new();
+        let mut jobs: Vec<AnalysisJob> = Vec::new();
         if demand == AnalysisDemand::Allocations && self.allocation_sites.needs(&key) {
             self.allocation_sites.begin(key);
-            jobs.push(AnalysisJob::Allocations {
+            let filter = filter.clone();
+            jobs.push(Box::new(move |session| AnalysisResult::Allocations {
                 key,
-                filter: filter.clone(),
-            });
+                value: Arc::new(allocation_sites(session, &filter.resolve(session))),
+            }));
         }
         if self.functions.needs(&key) {
             self.functions.begin(key);
-            jobs.push(AnalysisJob::Functions {
+            let filter = filter.clone();
+            jobs.push(Box::new(move |session| AnalysisResult::Functions {
                 key,
-                filter: filter.clone(),
-            });
+                value: Arc::new(FunctionAnalysis::build(
+                    &session.profile,
+                    &filter.resolve(session),
+                )),
+            }));
         }
         let spatial_key = SpatialKey {
             recording_epoch: self.recording_epoch,
@@ -223,20 +228,39 @@ impl AnalysisState {
             AnalysisDemand::Scope => {
                 if self.scope.needs(&spatial_key) {
                     self.scope.begin(spatial_key.clone());
-                    jobs.push(AnalysisJob::Scope { key: spatial_key });
+                    jobs.push(Box::new(move |session| AnalysisResult::Scope {
+                        value: FlameScopeHeatmap::build(
+                            &session.profile,
+                            &spatial_key.selection.resolve(session),
+                            SCOPE_MAX_BINS,
+                        )
+                        .map(Arc::new),
+                        key: spatial_key,
+                    }));
                 }
             }
             AnalysisDemand::Cores => {
                 if self.cpu_lanes.needs(&spatial_key) {
                     self.cpu_lanes.begin(spatial_key.clone());
-                    jobs.push(AnalysisJob::CpuLanes { key: spatial_key });
+                    jobs.push(Box::new(move |session| AnalysisResult::CpuLanes {
+                        value: CpuUtilizationHeatmap::build_with_bucket_duration(
+                            &session.profile,
+                            &spatial_key.selection.resolve(session),
+                            CORE_LANE_BUCKETS,
+                            None,
+                        )
+                        .map(Arc::new),
+                        key: spatial_key,
+                    }));
                 }
                 if self.balance.needs(&key) {
                     self.balance.begin(key);
-                    jobs.push(AnalysisJob::Balance {
+                    let filter = filter.clone();
+                    jobs.push(Box::new(move |session| AnalysisResult::Balance {
                         key,
-                        filter: filter.clone(),
-                    });
+                        value: ThreadBalance::build(&session.profile, &filter.resolve(session))
+                            .map(Arc::new),
+                    }));
                 }
             }
             AnalysisDemand::Flame => {
@@ -253,12 +277,16 @@ impl AnalysisState {
                     } else {
                         StackWeight::Samples
                     };
-                    jobs.push(AnalysisJob::Flame {
+                    let filter = filter.clone();
+                    jobs.push(Box::new(move |session| AnalysisResult::Flame {
                         key,
-                        filter: filter.clone(),
-                        inverted,
-                        weight,
-                    });
+                        value: Arc::new(CallTree::build_weighted(
+                            &session.profile,
+                            &filter.resolve(session),
+                            inverted,
+                            weight,
+                        )),
+                    }));
                 }
             }
             _ => {}
@@ -287,32 +315,7 @@ impl AnalysisState {
     }
 }
 
-pub(super) enum AnalysisJob {
-    Functions {
-        key: u64,
-        filter: GlobalFilter,
-    },
-    Allocations {
-        key: u64,
-        filter: GlobalFilter,
-    },
-    Scope {
-        key: SpatialKey,
-    },
-    CpuLanes {
-        key: SpatialKey,
-    },
-    Balance {
-        key: u64,
-        filter: GlobalFilter,
-    },
-    Flame {
-        key: u64,
-        filter: GlobalFilter,
-        inverted: bool,
-        weight: StackWeight,
-    },
-}
+pub(super) type AnalysisJob = Box<dyn FnOnce(&ShellSession) -> AnalysisResult + Send>;
 
 pub(super) enum AnalysisResult {
     Functions {
@@ -339,60 +342,4 @@ pub(super) enum AnalysisResult {
         key: u64,
         value: Arc<CallTree>,
     },
-}
-
-impl AnalysisJob {
-    pub fn compute(self, session: &ShellSession) -> AnalysisResult {
-        match self {
-            Self::Functions { key, filter } => AnalysisResult::Functions {
-                key,
-                value: Arc::new(FunctionAnalysis::build(
-                    &session.profile,
-                    &filter.resolve(session),
-                )),
-            },
-            Self::Allocations { key, filter } => AnalysisResult::Allocations {
-                key,
-                value: Arc::new(allocation_sites(session, &filter.resolve(session))),
-            },
-            Self::Scope { key } => {
-                let value = FlameScopeHeatmap::build(
-                    &session.profile,
-                    &key.selection.resolve(session),
-                    SCOPE_MAX_BINS,
-                )
-                .map(Arc::new);
-                AnalysisResult::Scope { key, value }
-            }
-            Self::CpuLanes { key } => {
-                let value = CpuUtilizationHeatmap::build_with_bucket_duration(
-                    &session.profile,
-                    &key.selection.resolve(session),
-                    CORE_LANE_BUCKETS,
-                    None,
-                )
-                .map(Arc::new);
-                AnalysisResult::CpuLanes { key, value }
-            }
-            Self::Balance { key, filter } => AnalysisResult::Balance {
-                key,
-                value: ThreadBalance::build(&session.profile, &filter.resolve(session))
-                    .map(Arc::new),
-            },
-            Self::Flame {
-                key,
-                filter,
-                inverted,
-                weight,
-            } => AnalysisResult::Flame {
-                key,
-                value: Arc::new(CallTree::build_weighted(
-                    &session.profile,
-                    &filter.resolve(session),
-                    inverted,
-                    weight,
-                )),
-            },
-        }
-    }
 }
