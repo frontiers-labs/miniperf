@@ -78,9 +78,6 @@ pub trait Source {
     /// What this source is and what it writes.
     fn declare(&self) -> SourceDecl;
 
-    /// Downcast hook, for callers that need a concrete source back after a run.
-    fn as_any(&self) -> &dyn std::any::Any;
-
     /// Whether this host can run the source, and why not when it cannot.
     fn probe(&self, directory: &Path) -> Availability;
 

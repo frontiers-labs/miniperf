@@ -59,7 +59,9 @@ pub fn event_type_from_name(name: &str) -> Option<EventType> {
         EventType::RooflineLoopStart,
         EventType::RooflineLoopEnd,
     ];
-    TYPES.into_iter().find(|ty| ty.to_string() == name)
+    TYPES
+        .into_iter()
+        .find(|ty| ty.to_string().eq_ignore_ascii_case(name))
 }
 
 /// Executable mappings recorded in the session's `modules` table.
