@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex, mpsc};
 
-use mperf_data::{CallFrame, Event, EventType, MemSample, ProcMapEntry};
+use mperf_data::{Event, EventType, ProcMapEntry};
 use store::{
     ClockAnchorRows, EventKind, EventRows, MemSampleRawRows, ModuleRows, PayloadRows,
     SampleRawRows, SegmentWriter, StringInterner, xxh3,
@@ -24,9 +24,10 @@ pub struct EventDispatcher {
 
 enum Msg {
     Event(Box<Event>),
+    Sample(Box<libprof::Sample>),
     Allocation(libprof::Allocation),
     AllocationCoverage(libprof::AllocationCoverage),
-    MemSample(MemSample),
+    MemSample(Box<libprof::MemSample>),
     Module(ProcMapEntry),
     Resource(libprof::ResourceSample),
     Process(libprof::ProcessInfo),
@@ -130,66 +131,59 @@ impl Worker {
         self.interner.lock().unwrap().intern(value)
     }
 
-    fn consume(&mut self, event: Event) {
-        if event.ty.is_roofline() {
-            self.consume_trace(event);
-        } else {
-            self.consume_sample(event);
-        }
-    }
-
-    fn consume_sample(&mut self, event: Event) {
-        let event_id = if event.ty == EventType::PmuCustom && event.name != 0 {
-            event.name
-        } else {
-            self.intern(&event.ty.to_string())
+    fn consume_sample(&mut self, sample: libprof::Sample) {
+        let ty = counter_to_event_ty(&sample.counter);
+        let event_id = match &sample.counter {
+            libprof::Counter::Custom(name) => self.intern(name),
+            _ => self.intern(&ty.to_string()),
         };
         let rows = &mut self.samples;
-        rows.timestamp.push(event.timestamp as i64);
-        rows.pid.push(event.process_id);
-        rows.tid.push(event.thread_id);
-        rows.cpu.push(event.cpu);
-        rows.group_id.push(event.correlation_id);
+        rows.timestamp.push(sample.time as i64);
+        rows.pid.push(sample.pid);
+        rows.tid.push(sample.tid);
+        rows.cpu.push(sample.cpu);
+        rows.group_id.push(sample.event_id as u64);
         rows.event_id.push(event_id);
-        rows.value.push(event.value as i64);
-        rows.time_enabled.push(event.time_enabled);
-        rows.time_running.push(event.time_running);
-        rows.ip.push(
-            event
-                .callstack
-                .first()
-                .map(|frame| frame.as_ip())
-                .unwrap_or(0),
+        rows.value.push(sample.value as i64);
+        rows.time_enabled.push(sample.time_enabled);
+        rows.time_running.push(sample.time_running);
+        rows.ip.push(sample.ip);
+        rows.callchain.push(
+            std::iter::once(sample.ip)
+                .chain(sample.callstack.into_iter().filter(|ip| *ip != sample.ip))
+                .collect(),
         );
-        rows.callchain
-            .push(event.callstack.iter().map(|frame| frame.as_ip()).collect());
-        rows.lbr_callchain.push(event.lbr_callstack);
-        let (abi, mask, regs) = match event.user_regs {
+        rows.lbr_callchain.push(sample.lbr_callstack.into_vec());
+        let (abi, mask, regs) = match sample.user_regs {
             Some(regs) => (regs.abi, regs.mask, regs.values),
             None => (0, 0, Vec::new()),
         };
         rows.regs_abi.push(abi);
         rows.regs_mask.push(mask);
         rows.regs.push(regs);
-        self.sample_bytes += event.user_stack.len();
-        rows.user_stack.push(event.user_stack);
+        self.sample_bytes += sample.user_stack.len();
+        rows.user_stack.push(sample.user_stack);
         if rows.len() >= BATCH_ROWS || self.sample_bytes >= BATCH_STACK_BYTES {
             self.flush_samples();
         }
     }
 
-    fn consume_mem_sample(&mut self, sample: MemSample) {
+    fn consume_mem_sample(&mut self, sample: libprof::MemSample) {
         let rows = &mut self.mem_samples;
-        rows.timestamp.push(sample.timestamp as i64);
-        rows.pid.push(sample.process_id);
-        rows.tid.push(sample.thread_id);
+        rows.timestamp.push(sample.time as i64);
+        rows.pid.push(sample.pid);
+        rows.tid.push(sample.tid);
         rows.cpu.push(sample.cpu);
-        rows.ip.push(sample.callstack.first().copied().unwrap_or(0));
+        rows.ip.push(sample.ip);
         rows.data_addr.push(sample.data_addr);
         rows.latency.push(sample.latency);
         rows.data_src.push(sample.data_src);
-        rows.callchain.push(sample.callstack);
-        rows.lbr_callchain.push(sample.lbr_callstack);
+        rows.callchain.push(
+            std::iter::once(sample.ip)
+                .chain(sample.callstack.into_iter().filter(|ip| *ip != sample.ip))
+                .collect(),
+        );
+        rows.lbr_callchain.push(sample.lbr_callstack.into_vec());
         let (abi, mask, regs) = match sample.user_regs {
             Some(regs) => (regs.abi, regs.mask, regs.values),
             None => (0, 0, Vec::new()),
@@ -414,12 +408,13 @@ impl EventDispatcher {
         let worker = std::thread::spawn(move || {
             while let Ok(message) = rx.recv() {
                 match message {
-                    Msg::Event(event) => worker.consume(*event),
+                    Msg::Event(event) => worker.consume_trace(*event),
+                    Msg::Sample(sample) => worker.consume_sample(*sample),
                     Msg::Allocation(record) => worker.allocations.as_mut().unwrap().push(record),
                     Msg::AllocationCoverage(coverage) => {
                         worker.allocations.as_mut().unwrap().coverage(coverage)
                     }
-                    Msg::MemSample(sample) => worker.consume_mem_sample(sample),
+                    Msg::MemSample(sample) => worker.consume_mem_sample(*sample),
                     Msg::Module(entry) => {
                         worker.modules.insert(entry);
                     }
@@ -465,12 +460,6 @@ impl EventDispatcher {
         }
     }
 
-    pub fn publish_mem_sample_sync(&self, sample: MemSample) {
-        if self.tx.send(Msg::MemSample(sample)).is_err() {
-            eprintln!("lost memory sample: writer stopped");
-        }
-    }
-
     pub fn publish_proc_map_sync(&self, map: ProcMapEntry) {
         if self.tx.try_send(Msg::Module(map)).is_err() {
             eprintln!("lost proc map entry: channel full or writer stopped");
@@ -504,59 +493,14 @@ impl libprof::Sink for EventDispatcher {
                 let _ = self.tx.send(Msg::AllocationCoverage(coverage));
             }
             libprof::Record::Sample(sample) => {
-                let unique_id = self.unique_id();
-                let mut callstack = smallvec::smallvec![CallFrame::IP(sample.ip)];
-                callstack.extend(
-                    sample
-                        .callstack
-                        .into_iter()
-                        .filter(|address| *address != sample.ip)
-                        .map(CallFrame::IP),
-                );
-                let name = match &sample.counter {
-                    libprof::Counter::Custom(name) => self.string_id(name),
-                    _ => 0,
-                };
-                self.publish_event_sync(Event {
-                    unique_id,
-                    correlation_id: sample.event_id as u64,
-                    parent_id: 0,
-                    ty: counter_to_event_ty(&sample.counter),
-                    thread_id: sample.tid,
-                    process_id: sample.pid,
-                    cpu: sample.cpu,
-                    time_enabled: sample.time_enabled,
-                    time_running: sample.time_running,
-                    value: sample.value,
-                    timestamp: sample.time,
-                    name,
-                    callstack,
-                    lbr_callstack: sample.lbr_callstack.into_vec(),
-                    user_regs: sample.user_regs.map(user_regs),
-                    user_stack: sample.user_stack,
-                });
+                if self.tx.send(Msg::Sample(Box::new(sample))).is_err() {
+                    eprintln!("lost sample: writer stopped");
+                }
             }
             libprof::Record::MemSample(sample) => {
-                let mut callstack = vec![sample.ip];
-                callstack.extend(
-                    sample
-                        .callstack
-                        .into_iter()
-                        .filter(|address| *address != sample.ip),
-                );
-                self.publish_mem_sample_sync(MemSample {
-                    timestamp: sample.time,
-                    process_id: sample.pid,
-                    thread_id: sample.tid,
-                    cpu: sample.cpu,
-                    data_addr: sample.data_addr,
-                    latency: sample.latency,
-                    data_src: sample.data_src,
-                    callstack,
-                    lbr_callstack: sample.lbr_callstack.into_vec(),
-                    user_regs: sample.user_regs.map(user_regs),
-                    user_stack: sample.user_stack,
-                });
+                if self.tx.send(Msg::MemSample(Box::new(sample))).is_err() {
+                    eprintln!("lost memory sample: writer stopped");
+                }
             }
             libprof::Record::ProcAddr(map) => self.publish_proc_map_sync(ProcMapEntry {
                 filename: map.filename,
@@ -581,14 +525,6 @@ impl libprof::Sink for EventDispatcher {
                 }
             }
         }
-    }
-}
-
-fn user_regs(regs: libprof::UserRegs) -> mperf_data::UserRegs {
-    mperf_data::UserRegs {
-        abi: regs.abi,
-        mask: regs.mask,
-        values: regs.values,
     }
 }
 
