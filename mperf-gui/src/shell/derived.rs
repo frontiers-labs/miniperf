@@ -21,31 +21,26 @@ impl<T> Default for Derived<T> {
 }
 
 impl<T> Derived<T> {
-    /// True when neither the current value nor an in-flight compute is for `key`.
-    pub fn needs(&self, key: u64) -> bool {
-        self.key != Some(key) && self.inflight != Some(key)
-    }
-
-    pub fn begin(&mut self, key: u64) {
-        self.inflight = Some(key);
-    }
-
-    pub fn install(&mut self, key: u64, value: Arc<T>) -> bool {
-        if self.inflight != Some(key) {
+    /// Register a request unless its value is current or already computing.
+    pub fn request(&mut self, key: u64) -> bool {
+        if self.key == Some(key) || self.inflight == Some(key) {
             return false;
         }
-        self.value = Some(value);
-        self.key = Some(key);
-        self.inflight = None;
+        self.inflight = Some(key);
         true
     }
 
-    /// Marks an in-flight compute as finished with no value, so a view can
-    /// tell "still computing" from "nothing to show".
-    pub fn discard(&mut self, key: u64) {
-        if self.inflight == Some(key) {
-            self.inflight = None;
+    pub fn install(&mut self, key: u64, value: Option<Arc<T>>) -> bool {
+        if self.inflight != Some(key) {
+            return false;
         }
+        self.inflight = None;
+        let Some(value) = value else {
+            return false;
+        };
+        self.value = Some(value);
+        self.key = Some(key);
+        true
     }
 
     pub fn is_computing(&self) -> bool {

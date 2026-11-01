@@ -19,7 +19,7 @@ pub(super) struct Site {
     peak: u64,
 }
 
-fn allocation_sites(session: &ShellSession, filter: &SampleFilter) -> Vec<(u64, Site)> {
+pub(super) fn allocation_sites(session: &ShellSession, filter: &SampleFilter) -> Vec<(u64, Site)> {
     let data = session.allocations.as_ref().unwrap();
     let cutoff = filter.range.map(|range| range.end_ns).unwrap_or(u64::MAX);
     let mut sites = HashMap::<u64, (Site, Vec<(Boundary, i64)>)>::new();
@@ -227,37 +227,6 @@ pub fn render(
     content.into_any_element()
 }
 impl ShellView {
-    pub(super) fn ensure_allocation_sites(&mut self, cx: &mut Context<Self>) {
-        if self.active_view() != Some(ViewId::Allocations) {
-            return;
-        }
-        let Some(session) = self.session.clone() else {
-            return;
-        };
-        let key = self.analysis_key();
-        if !self.allocation_sites.needs(key) {
-            return;
-        }
-        self.allocation_sites.begin(key);
-        let filter = self.filter.clone();
-        cx.spawn(async move |this, cx| {
-            let sites = cx
-                .background_executor()
-                .spawn(async move {
-                    let resolved = filter.resolve(&session);
-                    Arc::new(allocation_sites(&session, &resolved))
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                if this.allocation_sites.install(key, sites) {
-                    cx.notify();
-                }
-            })
-            .ok();
-        })
-        .detach();
-    }
-
     /// Wait for the same filtered summaries the allocation table renders.
     pub fn allocation_tour_ready(&mut self, cx: &mut Context<Self>) -> bool {
         if !self
