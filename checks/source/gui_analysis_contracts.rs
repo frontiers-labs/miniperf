@@ -56,7 +56,7 @@ pub(super) fn contracts(s: &session::ShellSession) {
     let selected = kinds(&jobs);
     assert!(selected.contains(&"functions"));
     assert!(selected.contains(&"balance"));
-    if state.cpu_lanes().is_some() {
+    if state.cpu_lanes.latest().is_some() {
         assert!(!selected.contains(&"lanes"));
     }
     for job in &jobs {
@@ -73,28 +73,28 @@ pub(super) fn contracts(s: &session::ShellSession) {
     finish(&mut scope, s, jobs);
     scope.invalidate();
     let jobs = scope.jobs(s, &brushed, AnalysisDemand::Scope);
-    if scope.scope().is_some() {
+    if scope.scope.latest().is_some() {
         assert_eq!(kinds(&jobs), vec!["functions"]);
     }
     let mut fresh_scope = AnalysisState::default();
     let jobs = fresh_scope.jobs(s, &brushed, AnalysisDemand::Scope);
     finish(&mut fresh_scope, s, jobs);
-    assert_eq!(fresh_scope.scope(), scope.scope());
+    assert_eq!(fresh_scope.scope.latest(), scope.scope.latest());
     let mut fresh_lanes = AnalysisState::default();
     let jobs = fresh_lanes.jobs(s, &brushed, AnalysisDemand::Cores);
     finish(&mut fresh_lanes, s, jobs);
-    assert_eq!(fresh_lanes.cpu_lanes(), state.cpu_lanes());
+    assert_eq!(fresh_lanes.cpu_lanes.latest(), state.cpu_lanes.latest());
     // Existing values remain visible while a replacement computes. Superseded work is dropped.
     let mut state = AnalysisState::default();
     let first = state.jobs(s, &f, AnalysisDemand::Functions).pop().unwrap();
     assert!(state.install(first.compute(s)));
-    let old = state.functions().unwrap().clone();
+    let old = state.functions.latest().unwrap().clone();
     state.invalidate();
     let obsolete = state
         .jobs(s, &brushed, AnalysisDemand::Functions)
         .pop()
         .unwrap();
-    assert_eq!(state.functions().unwrap().as_ref(), old.as_ref());
+    assert_eq!(state.functions.latest().unwrap().as_ref(), old.as_ref());
     state.invalidate();
     let current = state.jobs(s, &f, AnalysisDemand::Functions).pop().unwrap();
     assert!(!state.install(obsolete.compute(s)));
@@ -118,19 +118,19 @@ pub(super) fn contracts(s: &session::ShellSession) {
         for job in a.jobs(s, &changed, view) {
             match job {
                 AnalysisJob::Scope { key, .. } => {
-                    let old = a.scope().cloned();
+                    let old = a.scope.latest().cloned();
                     assert!(!a.install(AnalysisResult::Scope { key, value: None }));
-                    assert_eq!(a.scope(), old.as_ref());
+                    assert_eq!(a.scope.latest(), old.as_ref());
                 }
                 AnalysisJob::CpuLanes { key, .. } => {
-                    let old = a.cpu_lanes().cloned();
+                    let old = a.cpu_lanes.latest().cloned();
                     assert!(!a.install(AnalysisResult::CpuLanes { key, value: None }));
-                    assert_eq!(a.cpu_lanes(), old.as_ref());
+                    assert_eq!(a.cpu_lanes.latest(), old.as_ref());
                 }
                 AnalysisJob::Balance { key, .. } => {
-                    let old = a.balance().cloned();
+                    let old = a.balance.latest().cloned();
                     assert!(!a.install(AnalysisResult::Balance { key, value: None }));
-                    assert_eq!(a.balance(), old.as_ref());
+                    assert_eq!(a.balance.latest(), old.as_ref());
                 }
                 j => {
                     a.install(j.compute(s));
@@ -189,45 +189,45 @@ pub(super) fn contracts(s: &session::ShellSession) {
             assert!(a.jobs(s, &f, AnalysisDemand::Flame).is_empty());
             assert!(a.install(job.compute(s)));
             assert_eq!(
-                a.flame_layout().map(|layout| layout.as_ref()),
+                a.flame_layout.as_ref().map(|layout| layout.as_ref()),
                 Some(&expected_tree.as_ref().unwrap().icicle_layout(None))
             );
         }
     }
     a.zoom_flame(Some(0));
-    let current_layout = a.flame_layout().cloned();
+    let current_layout = a.flame_layout.as_ref().cloned();
     assert!(!a.set_flame_stacks(StackMode::BottomUp));
-    assert!(a.flame_zoomed());
+    assert!(a.flame_zoom.is_some());
     assert!(!a.set_flame_weight(FlameWeight::Instructions));
-    assert!(a.flame_zoomed());
+    assert!(a.flame_zoom.is_some());
     assert!(a.set_flame_stacks(StackMode::TopDown));
-    assert!(!a.flame_zoomed());
-    assert_eq!(a.flame_layout().cloned(), current_layout);
+    assert!(!a.flame_zoom.is_some());
+    assert_eq!(a.flame_layout.as_ref().cloned(), current_layout);
     a.zoom_flame(Some(0));
     assert!(a.set_flame_weight(FlameWeight::Cycles));
-    assert!(!a.flame_zoomed());
-    assert_eq!(a.flame_layout().cloned(), current_layout);
+    assert!(!a.flame_zoom.is_some());
+    assert_eq!(a.flame_layout.as_ref().cloned(), current_layout);
     a.set_flame_stacks(StackMode::BottomUp);
     a.set_flame_weight(FlameWeight::Instructions);
     a.zoom_flame(Some(0));
     assert_eq!(
-        a.flame_layout().map(|layout| layout.as_ref()),
+        a.flame_layout.as_ref().map(|layout| layout.as_ref()),
         Some(&expected_tree.as_ref().unwrap().icicle_layout(Some(0)))
     );
-    let layout = a.flame_layout().cloned();
+    let layout = a.flame_layout.as_ref().cloned();
     a.invalidate();
-    assert!(!a.flame_zoomed());
-    assert_eq!(a.flame_layout().cloned(), layout);
+    assert!(!a.flame_zoom.is_some());
+    assert_eq!(a.flame_layout.as_ref().cloned(), layout);
     a.zoom_flame(Some(0));
     a.reset();
-    assert_eq!(a.flame_stacks(), StackMode::BottomUp);
-    assert_eq!(a.flame_weight(), FlameWeight::Instructions);
-    assert!(a.flame_layout().is_none());
-    assert!(a.functions().is_none());
-    assert!(a.scope().is_none());
-    assert!(a.cpu_lanes().is_none());
-    assert!(a.balance().is_none());
-    assert!(a.allocation_sites().is_none());
+    assert_eq!(a.flame_stacks, StackMode::BottomUp);
+    assert_eq!(a.flame_weight, FlameWeight::Instructions);
+    assert!(a.flame_layout.as_ref().is_none());
+    assert!(a.functions.latest().is_none());
+    assert!(a.scope.latest().is_none());
+    assert!(a.cpu_lanes.latest().is_none());
+    assert!(a.balance.latest().is_none());
+    assert!(a.allocation_sites.latest().is_none());
     assert_eq!(
         kinds(&a.jobs(s, &f, AnalysisDemand::Flame)),
         vec!["functions", "flame"]
@@ -277,8 +277,8 @@ pub(super) fn recording_reset_contract(
                 new.name
             );
         }
-        assert!(state.scope().is_none());
-        assert!(state.cpu_lanes().is_none());
+        assert!(state.scope.latest().is_none());
+        assert!(state.cpu_lanes.latest().is_none());
         for job in current {
             let result = job.compute(new);
             match result {
@@ -289,7 +289,7 @@ pub(super) fn recording_reset_contract(
                         state.install(AnalysisResult::Scope { key, value }),
                         installed
                     );
-                    assert_eq!(state.scope(), expected.as_ref());
+                    assert_eq!(state.scope.latest(), expected.as_ref());
                 }
                 AnalysisResult::CpuLanes { key, value } => {
                     let installed = value.is_some();
@@ -298,7 +298,7 @@ pub(super) fn recording_reset_contract(
                         state.install(AnalysisResult::CpuLanes { key, value }),
                         installed
                     );
-                    assert_eq!(state.cpu_lanes(), expected.as_ref());
+                    assert_eq!(state.cpu_lanes.latest(), expected.as_ref());
                 }
                 other => {
                     state.install(other);

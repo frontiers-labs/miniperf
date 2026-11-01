@@ -125,69 +125,25 @@ pub(super) struct SpatialKey {
 pub(super) struct AnalysisState {
     generation: u64,
     recording_epoch: u64,
-    functions: Derived<FunctionAnalysis>,
+    pub(super) functions: Derived<FunctionAnalysis>,
     flame: Derived<CallTree>,
-    scope: Derived<FlameScopeHeatmap, SpatialKey>,
-    cpu_lanes: Derived<CpuUtilizationHeatmap, SpatialKey>,
-    balance: Derived<ThreadBalance>,
-    allocation_sites: Derived<Vec<(u64, Site)>>,
-    flame_stacks: StackMode,
-    flame_weight: FlameWeight,
-    flame_zoom: Option<usize>,
-    flame_layout: Option<Arc<IcicleLayout>>,
+    pub(super) scope: Derived<FlameScopeHeatmap, SpatialKey>,
+    pub(super) cpu_lanes: Derived<CpuUtilizationHeatmap, SpatialKey>,
+    pub(super) balance: Derived<ThreadBalance>,
+    pub(super) allocation_sites: Derived<Vec<(u64, Site)>>,
+    pub(super) flame_stacks: StackMode,
+    pub(super) flame_weight: FlameWeight,
+    pub(super) flame_zoom: Option<usize>,
+    pub(super) flame_layout: Option<Arc<IcicleLayout>>,
 }
 
 impl AnalysisState {
-    fn key(&self) -> u64 {
-        self.generation
-    }
-
-    pub fn functions(&self) -> Option<&Arc<FunctionAnalysis>> {
-        self.functions.latest()
-    }
-
     pub fn functions_stale(&self) -> bool {
-        self.functions.stale(&self.key())
-    }
-
-    pub fn allocation_sites(&self) -> Option<&Arc<Vec<(u64, Site)>>> {
-        self.allocation_sites.latest()
+        self.functions.stale(&self.generation)
     }
 
     pub fn allocation_sites_stale(&self) -> bool {
-        self.allocation_sites.stale(&self.key())
-    }
-
-    pub fn scope(&self) -> Option<&Arc<FlameScopeHeatmap>> {
-        self.scope.latest()
-    }
-
-    pub fn cpu_lanes(&self) -> Option<&Arc<CpuUtilizationHeatmap>> {
-        self.cpu_lanes.latest()
-    }
-
-    pub fn cpu_lanes_computing(&self) -> bool {
-        self.cpu_lanes.is_computing()
-    }
-
-    pub fn balance(&self) -> Option<&Arc<ThreadBalance>> {
-        self.balance.latest()
-    }
-
-    pub fn balance_computing(&self) -> bool {
-        self.balance.is_computing()
-    }
-
-    pub fn flame_layout(&self) -> Option<&Arc<IcicleLayout>> {
-        self.flame_layout.as_ref()
-    }
-
-    pub fn flame_zoomed(&self) -> bool {
-        self.flame_zoom.is_some()
-    }
-
-    pub fn flame_stacks(&self) -> StackMode {
-        self.flame_stacks
+        self.allocation_sites.stale(&self.generation)
     }
 
     pub fn set_flame_stacks(&mut self, stacks: StackMode) -> bool {
@@ -197,10 +153,6 @@ impl AnalysisState {
         self.flame_stacks = stacks;
         self.flame_zoom = None;
         true
-    }
-
-    pub fn flame_weight(&self) -> FlameWeight {
-        self.flame_weight
     }
 
     pub fn set_flame_weight(&mut self, weight: FlameWeight) -> bool {
@@ -247,7 +199,7 @@ impl AnalysisState {
         filter: &GlobalFilter,
         demand: AnalysisDemand,
     ) -> Vec<AnalysisJob> {
-        let key = self.key();
+        let key = self.generation;
         let mut jobs = Vec::new();
         if demand == AnalysisDemand::Allocations && self.allocation_sites.needs(&key) {
             self.allocation_sites.begin(key);

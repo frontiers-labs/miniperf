@@ -961,7 +961,7 @@ impl ShellView {
             .collect();
 
         let total = session.total_samples;
-        let coverage_text = match (self.filter.is_active(), self.analysis.functions()) {
+        let coverage_text = match (self.filter.is_active(), self.analysis.functions.latest()) {
             (true, Some(analysis)) => format!(
                 "{}% of {} samples in scope",
                 if total == 0 {
@@ -1361,7 +1361,7 @@ impl ShellView {
         session: &Arc<ShellSession>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let Some(analysis) = self.analysis.functions().cloned() else {
+        let Some(analysis) = self.analysis.functions.latest().cloned() else {
             return empty_state(Icon::Table2, "Analyzing samples…").into_any_element();
         };
 
@@ -1554,7 +1554,7 @@ impl ShellView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = cx.theme().clone();
-        let analysis = self.analysis.functions().cloned();
+        let analysis = self.analysis.functions.latest().cloned();
         let scoped_samples = analysis
             .as_ref()
             .map(|analysis| analysis.total_samples)
@@ -2051,7 +2051,7 @@ impl ShellView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = cx.theme().clone();
-        let Some(layout) = self.analysis.flame_layout().cloned() else {
+        let Some(layout) = self.analysis.flame_layout.as_ref().cloned() else {
             return div()
                 .size_full()
                 .flex()
@@ -2108,7 +2108,7 @@ impl ShellView {
                     .bg(theme.viz.surface)
                     .when(self.analysis.functions_stale(), |el| el.opacity(0.7))
                     .child(flame::flame_canvas(cx.entity(), theme.clone(), view))
-                    .when(self.analysis.flame_zoomed(), |el| {
+                    .when(self.analysis.flame_zoom.is_some(), |el| {
                         el.child(
                             div().absolute().top(px(8.0)).right(px(12.0)).child(
                                 button("flame-reset-zoom")
@@ -2149,7 +2149,7 @@ impl ShellView {
                                             .unwrap_or_default(),
                                         self.format_flame_value(session, value),
                                         share * 100.0,
-                                        match self.analysis.flame_stacks() {
+                                        match self.analysis.flame_stacks {
                                             StackMode::TopDown => "total",
                                             StackMode::BottomUp => "inverted total",
                                         }
@@ -2291,7 +2291,7 @@ impl ShellView {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = cx.theme().clone();
-        let Some(heatmap) = self.analysis.scope().cloned() else {
+        let Some(heatmap) = self.analysis.scope.latest().cloned() else {
             return empty_state(Icon::Grid3x3, "Folding the recording…").into_any_element();
         };
 
@@ -2356,7 +2356,7 @@ impl ShellView {
     }
 
     fn format_flame_value(&self, session: &ShellSession, value: u64) -> String {
-        match self.analysis.flame_weight() {
+        match self.analysis.flame_weight {
             FlameWeight::Instructions if session.instructions_metric.is_some() => {
                 format!("{} instructions", format_count(value as f64))
             }
@@ -2386,7 +2386,7 @@ impl ShellView {
                 ui::segmented(
                     "flame-stacks",
                     vec!["Top-down".into(), "Bottom-up".into()],
-                    usize::from(self.analysis.flame_stacks() == StackMode::BottomUp),
+                    usize::from(self.analysis.flame_stacks == StackMode::BottomUp),
                 )
                 .compact()
                 .on_select(cx.processor(|this, ix: usize, _, cx| {
@@ -2416,7 +2416,7 @@ impl ShellView {
                     ui::segmented(
                         "flame-weight",
                         vec!["Cycles".into(), "Instructions".into()],
-                        usize::from(self.analysis.flame_weight() == FlameWeight::Instructions),
+                        usize::from(self.analysis.flame_weight == FlameWeight::Instructions),
                     )
                     .compact()
                     .on_select(cx.processor(|this, ix: usize, _, cx| {
@@ -2832,7 +2832,8 @@ impl ShellView {
 
         let details = self.selected_frame.and_then(|frame_id| {
             self.analysis
-                .functions()
+                .functions
+                .latest()
                 .and_then(|analysis| analysis.details(frame_id))
         });
 

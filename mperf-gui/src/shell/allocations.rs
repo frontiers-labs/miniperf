@@ -20,7 +20,7 @@ pub fn render(
             .into_any_element();
     }
     let selected = state.allocation_stack;
-    let sites = state.analysis.allocation_sites();
+    let sites = state.analysis.allocation_sites.latest();
     let mut content = div()
         .id("allocations")
         .size_full()
@@ -200,7 +200,8 @@ impl ShellView {
         );
         let sites = self
             .analysis
-            .allocation_sites()
+            .allocation_sites
+            .latest()
             .expect("tour waits for allocation summaries");
         for (stack, site) in sites.iter() {
             println!(
