@@ -1246,7 +1246,7 @@ fn base_counter_attr() -> perf_event_attr {
 
 /// Map a resolved counter to its `(type_, config)` pair using the legacy
 /// generic encodings (`PERF_TYPE_HARDWARE`/`SOFTWARE`/`RAW`).
-fn counter_type_config(cntr: &Counter) -> Result<(u32, u64), Error> {
+pub(crate) fn counter_type_config(cntr: &Counter) -> Result<(u32, u64), Error> {
     Ok(match cntr {
         Counter::Cycles => (
             sys::bindings::PERF_TYPE_HARDWARE,

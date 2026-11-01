@@ -68,10 +68,6 @@ impl PmuSamplingSource {
 }
 
 impl Source for PmuSamplingSource {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn declare(&self) -> SourceDecl {
         SourceDecl {
             name: "pmu_sampling",
@@ -175,10 +171,6 @@ pub struct PreciseMemorySource {
 }
 
 impl Source for PreciseMemorySource {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn declare(&self) -> SourceDecl {
         SourceDecl {
             name: "precise_memory",

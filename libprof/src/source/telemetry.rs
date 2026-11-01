@@ -28,10 +28,6 @@ pub struct HostTelemetrySource {
 }
 
 impl Source for HostTelemetrySource {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn declare(&self) -> SourceDecl {
         SourceDecl {
             name: "host_telemetry",

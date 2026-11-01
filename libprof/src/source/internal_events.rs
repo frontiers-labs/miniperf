@@ -13,10 +13,6 @@ pub struct InternalEventsSource {
 }
 
 impl Source for InternalEventsSource {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn declare(&self) -> SourceDecl {
         SourceDecl {
             name: "internal_events",

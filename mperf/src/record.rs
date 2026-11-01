@@ -261,9 +261,7 @@ fn snapshot(
 
     let pass = Pass {
         name: "snapshot",
-        required: vec![Box::new(crate::source::pmu_sampling_source(
-            Scenario::Snapshot,
-        ))],
+        pmu: crate::source::pmu_sampling_source(Scenario::Snapshot),
         optional: vec![
             Box::new(libprof::InternalEventsSource {
                 roofline_instrumented: false,
@@ -482,7 +480,7 @@ fn topdown(
     // instruction-level memory attribution for free where the host has it.
     let pass = Pass {
         name: "tma",
-        required: vec![Box::new(crate::source::pmu_sampling_source(Scenario::TMA))],
+        pmu: crate::source::pmu_sampling_source(Scenario::TMA),
         optional: vec![
             Box::new(libprof::InternalEventsSource {
                 roofline_instrumented: false,

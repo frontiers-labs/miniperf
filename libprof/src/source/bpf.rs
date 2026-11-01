@@ -25,10 +25,6 @@ pub struct BpfSource {
 }
 
 impl Source for BpfSource {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn declare(&self) -> SourceDecl {
         SourceDecl { name: "bpf" }
     }
