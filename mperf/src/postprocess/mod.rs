@@ -15,14 +15,14 @@ use anyhow::Result;
 use mperf_data::{EventType, RecordInfo, Scenario};
 
 use store::query::quote_identifier;
-use store::{Columns, Session};
+use store::{Columns, Session as Tables};
 
 /// Turn a recording into the derived tables every consumer reads: one Parquet
 /// file per table in the session directory.
 pub async fn perform_postprocessing(res_dir: &Path, pb: kdam::Bar) -> Result<()> {
     let mut pb = pb;
 
-    let (info, tables) = store::Recording::open(res_dir)?.into_parts();
+    let (info, tables) = store::open_recording(res_dir)?;
     samples::process(&tables, &info, res_dir, &mut pb).await?;
     allocations::process(&tables)?;
     snapshot::write_host_telemetry(&tables, res_dir)?;
@@ -82,7 +82,7 @@ pub(crate) fn event_column_name_for(name: &str) -> String {
 
 /// One row per rung considered for this recording: the chosen capture strategy
 /// and every better one, with the reason it was unavailable.
-fn write_capture_fidelity(tables: &Session, info: &RecordInfo) -> Result<()> {
+fn write_capture_fidelity(tables: &Tables, info: &RecordInfo) -> Result<()> {
     let mut scenario = Vec::new();
     let mut rung = Vec::new();
     let mut status = Vec::new();
@@ -108,7 +108,7 @@ fn write_capture_fidelity(tables: &Session, info: &RecordInfo) -> Result<()> {
     tables.write("capture_fidelity", columns.finish()?)
 }
 
-fn write_hotspots(tables: &Session) -> Result<()> {
+fn write_hotspots(tables: &Tables) -> Result<()> {
     let available = tables.columns("pmu_counters");
     let counter = |name: &str| {
         if available.iter().any(|column| column == name) {
@@ -157,11 +157,11 @@ fn write_hotspots(tables: &Session) -> Result<()> {
     )
 }
 
-fn write_derived_metrics(tables: &Session) -> Result<()> {
+fn write_derived_metrics(tables: &Tables) -> Result<()> {
     write_metric_definitions(tables, &libprof::host_metrics())
 }
 
-fn write_metric_definitions(tables: &Session, metrics: &[libprof::Metric]) -> Result<()> {
+fn write_metric_definitions(tables: &Tables, metrics: &[libprof::Metric]) -> Result<()> {
     let available = tables.columns("pmu_counters");
     let mut rows = Vec::<(String, f64, Option<String>, String)>::new();
     for metric in metrics {
@@ -171,32 +171,20 @@ fn write_metric_definitions(tables: &Session, metrics: &[libprof::Metric]) -> Re
         let mut values = HashMap::new();
         let mut applicable = true;
         for event_name in event_names {
-            let alias = match event_name.to_ascii_lowercase().as_str() {
-                "branches" => "branch_instructions",
-                "cache_references" => "llc_references",
-                "cache_misses" => "llc_misses",
-                _ => &event_name,
-            };
-            let column = event_column_name_for(alias);
-            let Some(column) = available
-                .iter()
-                .find(|name| name.eq_ignore_ascii_case(&column))
-            else {
+            let Some(column) = metric_event_column(&event_name) else {
                 applicable = false;
                 break;
             };
-            let value: Option<f64> = tables.connection().query_row(
-                &format!(
+            if !available.iter().any(|name| name == column) {
+                applicable = false;
+                break;
+            }
+            let value = tables
+                .scalar_f64(&format!(
                     "SELECT CAST(SUM({}) AS DOUBLE) FROM pmu_counters",
                     quote_identifier(column)
-                ),
-                [],
-                |row| row.get(0),
-            )?;
-            let Some(value) = value else {
-                applicable = false;
-                break;
-            };
+                ))
+                .unwrap_or(0.0);
             values.insert(event_name, value);
         }
         if !applicable {
@@ -220,4 +208,28 @@ fn write_metric_definitions(tables: &Session, metrics: &[libprof::Metric]) -> Re
     columns.text_opt("unit", rows.iter().map(|row| row.2.clone()).collect());
     columns.text("expression", rows.iter().map(|row| row.3.clone()).collect());
     tables.write("derived_metrics", columns.finish()?)
+}
+
+fn metric_event_column(name: &str) -> Option<&'static str> {
+    if name.eq_ignore_ascii_case("cycles") {
+        Some("pmu_cycles")
+    } else if name.eq_ignore_ascii_case("instructions") {
+        Some("pmu_instructions")
+    } else if name.eq_ignore_ascii_case("branches") {
+        Some("pmu_branch_instructions")
+    } else if name.eq_ignore_ascii_case("branch_misses") {
+        Some("pmu_branch_misses")
+    } else if name.eq_ignore_ascii_case("llc_references")
+        || name.eq_ignore_ascii_case("cache_references")
+    {
+        Some("pmu_llc_references")
+    } else if name.eq_ignore_ascii_case("llc_misses") || name.eq_ignore_ascii_case("cache_misses") {
+        Some("pmu_llc_misses")
+    } else if name.eq_ignore_ascii_case("stalled_cycles_frontend") {
+        Some("pmu_stalled_cycles_frontend")
+    } else if name.eq_ignore_ascii_case("stalled_cycles_backend") {
+        Some("pmu_stalled_cycles_backend")
+    } else {
+        None
+    }
 }

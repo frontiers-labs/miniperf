@@ -32,19 +32,10 @@ pub fn render(
     cx: &mut Context<ShellView>,
 ) -> gpui::AnyElement {
     let theme = cx.theme().clone();
-    let Some(tma) = session.tma.as_ref() else {
+    let Some(tma) = session.tma.as_ref().filter(|tma| tma.has_hierarchy()) else {
         return empty_state(Icon::Layers, "No Top-Down metrics in this recording")
             .into_any_element();
     };
-    if !tma.has_hierarchy() {
-        return empty_state(
-            Icon::Layers,
-            tma.error
-                .clone()
-                .unwrap_or_else(|| "No Top-Down metrics in this recording".to_owned()),
-        )
-        .into_any_element();
-    }
 
     div()
         .size_full()
@@ -211,7 +202,7 @@ fn render_intervals(
         .collect();
     let start_ns = session.full_range.map(|range| range.start_ns).unwrap_or(0);
     let duration = session.duration_seconds().max(1e-9);
-    let mut columns: Vec<(f64, f64, Option<Vec<f64>>)> = Vec::with_capacity(tma.intervals.len());
+    let mut columns: Vec<(f64, f64, Vec<f64>)> = Vec::with_capacity(tma.intervals.len());
     for (index, interval) in tma.intervals.iter().enumerate() {
         let start = interval.start_ns.saturating_sub(start_ns) as f64 / 1e9;
         let end = tma
@@ -219,11 +210,7 @@ fn render_intervals(
             .get(index + 1)
             .map(|next| next.start_ns.saturating_sub(start_ns) as f64 / 1e9)
             .unwrap_or(duration);
-        columns.push((
-            start,
-            end.max(start),
-            interval.values.iter().copied().collect(),
-        ));
+        columns.push((start, end.max(start), interval.values.clone()));
     }
 
     let entity = cx.entity();
@@ -238,22 +225,14 @@ fn render_intervals(
             let top = frame.top() + 2.0;
             let height = INTERVALS_H - AXIS_H - 4.0;
 
-            let mut pixels = Vec::with_capacity(columns.len());
-            for (start, end, values) in &columns {
-                let x0 = frame.x_for(*start, duration);
-                let x1 = frame.x_for(*end, duration);
-                if let Some(values) = values {
-                    pixels.push((x0, x1 - x0, values.clone()));
-                } else {
-                    window.paint_quad(fill(
-                        gpui::Bounds::new(
-                            gpui::point(px(x0), px(top)),
-                            gpui::size(px((x1 - x0).max(1.0)), px(height)),
-                        ),
-                        theme.viz.grid.opacity(0.5),
-                    ));
-                }
-            }
+            let pixels: Vec<(f32, f32, Vec<f64>)> = columns
+                .iter()
+                .map(|(start, end, values)| {
+                    let x0 = frame.x_for(*start, duration);
+                    let x1 = frame.x_for(*end, duration);
+                    (x0, x1 - x0, values.clone())
+                })
+                .collect();
             paint_stacked_columns(top, height, &pixels, &colors, window);
             frame.paint_time_axis(top + height + 2.0, duration, &theme, window, cx);
             if let Some(range) = preview.or(selection) {
@@ -281,20 +260,6 @@ fn render_intervals(
                 .child(ui::section_caption("pipeline slots over time", cx))
                 .child(tma_legend(&legend, cx)),
         )
-        .when(
-            tma.intervals
-                .iter()
-                .any(|interval| interval.values.contains(&None)),
-            |el| {
-                el.child(
-                    div()
-                        .px(px(8.0))
-                        .text_size(px(11.0))
-                        .text_color(cx.theme().muted_foreground)
-                        .child("shaded intervals have unavailable TMA metrics"),
-                )
-            },
-        )
         .child(chart)
         .into_any_element()
 }
@@ -315,7 +280,7 @@ fn render_functions(
         .map(|row| (row.name.clone(), 0.0, tma_category(&row.name)))
         .collect();
 
-    let rows: Vec<(usize, String, f64, Vec<Option<f64>>)> = view
+    let rows: Vec<(usize, String, f64, Vec<f64>)> = view
         .analysis
         .latest()
         .map(|analysis| {
@@ -375,15 +340,8 @@ fn render_functions(
                     let segments = shares
                         .iter()
                         .zip(&colors)
-                        .map(|(share, color)| Some(((*share)? as f32, *color)))
-                        .collect::<Option<Vec<_>>>();
-                    let breakdown = match segments {
-                        Some(segments) => ui::segment_bar(segments).into_any_element(),
-                        None => div()
-                            .text_color(theme.muted_foreground)
-                            .child("unavailable")
-                            .into_any_element(),
-                    };
+                        .map(|(share, color)| (*share as f32, *color))
+                        .collect();
                     div()
                         .id(("tma-function", frame_id))
                         .flex()
@@ -416,7 +374,12 @@ fn render_functions(
                                 .text_color(theme.muted_foreground)
                                 .child(format!("{:.1}%", self_share * 100.0)),
                         )
-                        .child(div().w(px(110.0)).flex_none().child(breakdown))
+                        .child(
+                            div()
+                                .w(px(110.0))
+                                .flex_none()
+                                .child(ui::segment_bar(segments)),
+                        )
                 }),
         )
         .child(div().px(px(8.0)).py(px(8.0)).child(tma_legend(&legend, cx)))

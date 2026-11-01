@@ -1,9 +1,10 @@
 use std::ffi::{c_void, CString};
+#[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use libc::{
-    close, ftruncate, mmap, munmap, shm_open, shm_unlink, MAP_FAILED, MAP_SHARED, O_CREAT, O_EXCL,
-    O_RDWR, PROT_WRITE, S_IRUSR, S_IWUSR,
+    close, ftruncate, mmap, munmap, shm_open, shm_unlink, MAP_FAILED, MAP_SHARED, O_CREAT, O_RDWR,
+    PROT_WRITE, S_IRUSR, S_IWUSR,
 };
 
 pub struct Shmem {
@@ -16,13 +17,17 @@ pub struct Shmem {
 
 pub struct Semaphore {
     sem: *mut libc::sem_t,
+    #[cfg(not(target_os = "macos"))]
+    is_owning: bool,
+    #[cfg(target_os = "macos")]
     name: Option<CString>,
+    #[cfg(target_os = "macos")]
     counter: *mut AtomicUsize,
 }
 
 impl Shmem {
     pub fn create(name: &str, size: usize) -> Result<Self, std::io::Error> {
-        let (fd, ptr) = unsafe { Self::raw_parts(name, size, O_RDWR | O_CREAT | O_EXCL)? };
+        let (fd, ptr) = unsafe { Self::raw_parts(name, size, O_RDWR | O_CREAT)? };
 
         Ok(Self {
             ptr,
@@ -70,39 +75,16 @@ impl Shmem {
             return Err(std::io::Error::last_os_error());
         }
 
-        let initialized = if flags & O_CREAT != 0 {
-            ftruncate(fd, size as i64) == 0
-        } else {
-            let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-            if libc::fstat(fd, stat.as_mut_ptr()) != 0 {
-                false
-            } else if stat.assume_init().st_size < size as i64 {
-                close(fd);
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "shared-memory backing is too small",
-                ));
-            } else {
-                true
-            }
-        };
-        if !initialized {
-            let error = std::io::Error::last_os_error();
-            close(fd);
-            if flags & O_CREAT != 0 {
-                shm_unlink(name.as_ptr());
-            }
-            return Err(error);
+        if flags & O_CREAT != 0 && ftruncate(fd, size as i64) == -1 {
+            eprintln!("ftruncate fail\n");
+            return Err(std::io::Error::last_os_error());
         }
 
         let addr = mmap(std::ptr::null_mut(), size, PROT_WRITE, MAP_SHARED, fd, 0);
+
         if addr == MAP_FAILED {
-            let error = std::io::Error::last_os_error();
-            close(fd);
-            if flags & O_CREAT != 0 {
-                shm_unlink(name.as_ptr());
-            }
-            return Err(error);
+            eprintln!("mmap failed");
+            return Err(std::io::Error::last_os_error());
         }
 
         Ok((fd, addr))
@@ -126,12 +108,20 @@ impl Drop for Shmem {
 }
 
 impl Semaphore {
-    /// Create a named semaphore and initialize its shared counter.
-    ///
-    /// # Safety
-    /// `ptr` must be aligned, writable shared storage of `required_size()` bytes,
-    /// unused by another semaphore, and remain valid until this semaphore drops.
-    pub unsafe fn create(ptr: *mut (), name: &str) -> Result<Self, std::io::Error> {
+    #[cfg(not(target_os = "macos"))]
+    pub fn create(ptr: *mut (), _name: &str) -> Result<Self, std::io::Error> {
+        if unsafe { libc::sem_init(ptr as *mut libc::sem_t, 1, 0) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        Ok(Self {
+            sem: ptr as *mut libc::sem_t,
+            is_owning: true,
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn create(ptr: *mut (), name: &str) -> Result<Self, std::io::Error> {
         let name = CString::new(name)?;
         let sem = unsafe {
             libc::sem_open(
@@ -155,13 +145,16 @@ impl Semaphore {
         })
     }
 
-    /// Open an initialized shared semaphore.
-    ///
-    /// # Safety
-    /// `ptr` must point to the live counter for the named semaphore created
-    /// with this protocol.
-    /// The shared storage must remain valid until this handle drops.
-    pub unsafe fn open(ptr: *mut (), name: &str) -> Result<Self, std::io::Error> {
+    #[cfg(not(target_os = "macos"))]
+    pub fn open(ptr: *mut (), _name: &str) -> Result<Self, std::io::Error> {
+        Ok(Self {
+            sem: ptr as *mut libc::sem_t,
+            is_owning: false,
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn open(ptr: *mut (), name: &str) -> Result<Self, std::io::Error> {
         let name = CString::new(name)?;
         let sem = unsafe { libc::sem_open(name.as_ptr(), 0) };
         if sem == libc::SEM_FAILED {
@@ -175,6 +168,12 @@ impl Semaphore {
         })
     }
 
+    #[cfg(not(target_os = "macos"))]
+    pub fn required_size() -> usize {
+        std::mem::size_of::<libc::sem_t>()
+    }
+
+    #[cfg(target_os = "macos")]
     pub fn required_size() -> usize {
         std::mem::size_of::<AtomicUsize>()
     }
@@ -186,6 +185,7 @@ impl Semaphore {
             }
         }
 
+        #[cfg(target_os = "macos")]
         unsafe {
             (&*self.counter).fetch_sub(1, Ordering::Acquire);
         }
@@ -200,6 +200,7 @@ impl Semaphore {
             }
         }
 
+        #[cfg(target_os = "macos")]
         unsafe {
             (&*self.counter).fetch_sub(1, Ordering::Acquire);
         }
@@ -208,12 +209,14 @@ impl Semaphore {
     }
 
     pub fn post(&self) -> Result<(), std::io::Error> {
+        #[cfg(target_os = "macos")]
         unsafe {
             (&*self.counter).fetch_add(1, Ordering::Release);
         }
 
         unsafe {
             if libc::sem_post(self.sem) != 0 {
+                #[cfg(target_os = "macos")]
                 (&*self.counter).fetch_sub(1, Ordering::Relaxed);
                 return Err(std::io::Error::last_os_error());
             }
@@ -223,12 +226,33 @@ impl Semaphore {
     }
 
     pub fn counter(&self) -> Result<i32, std::io::Error> {
-        Ok(unsafe { &*self.counter }.load(Ordering::Acquire) as i32)
+        #[cfg(target_os = "macos")]
+        return unsafe { Ok((&*self.counter).load(Ordering::Acquire) as i32) };
+
+        #[cfg(not(target_os = "macos"))]
+        let mut res = 0;
+        #[cfg(not(target_os = "macos"))]
+        unsafe {
+            if libc::sem_getvalue(self.sem, &mut res as *mut i32) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        Ok(res)
     }
 }
 
 impl Drop for Semaphore {
     fn drop(&mut self) {
+        #[cfg(not(target_os = "macos"))]
+        if self.is_owning {
+            unsafe {
+                libc::sem_destroy(self.sem);
+            }
+        }
+
+        #[cfg(target_os = "macos")]
         unsafe {
             libc::sem_close(self.sem);
             if let Some(name) = &self.name {
@@ -244,20 +268,6 @@ unsafe impl Send for Semaphore {}
 #[cfg(test)]
 mod tests {
     use super::{Semaphore, Shmem};
-
-    #[test]
-    fn opening_rejects_undersized_backing_without_removing_it() {
-        let name = format!("/small_backing_{}", std::process::id());
-        let _owner = Shmem::create(&name, 32).unwrap();
-        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-        assert!(page_size > 0);
-        let error = match Shmem::open(&name, page_size as usize * 2) {
-            Ok(_) => panic!("undersized backing was accepted"),
-            Err(error) => error,
-        };
-        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-        assert!(Shmem::open(&name, 32).is_ok());
-    }
 
     #[test]
     fn shmem_updates() {
@@ -281,15 +291,15 @@ mod tests {
         let shmem1 = Shmem::create(&name, 32).expect("failed to create shmem");
         let shmem2 = Shmem::open(&name, 32).expect("failed to open shmem");
 
-        let semaphore1 = unsafe { Semaphore::create(shmem1.as_mut_ptr(), &sem_name) }
+        let semaphore1 = Semaphore::create(shmem1.as_mut_ptr(), &sem_name)
             .expect("failed to create a semaphore");
 
         semaphore1.post().expect("failed to post a semaphore");
 
         assert_eq!(semaphore1.counter().unwrap(), 1);
 
-        let semaphore2 = unsafe { Semaphore::open(shmem2.as_mut_ptr(), &sem_name) }
-            .expect("failed to open a semaphore");
+        let semaphore2 =
+            Semaphore::open(shmem2.as_mut_ptr(), &sem_name).expect("failed to open a semaphore");
 
         assert_eq!(semaphore2.counter().unwrap(), 1);
 

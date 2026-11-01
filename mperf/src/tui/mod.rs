@@ -247,8 +247,8 @@ impl TabsWidget {
     }
 
     fn fetch_data(self, res_dir: PathBuf) {
-        let (info, session) = match store::Recording::open(&res_dir) {
-            Ok(recording) => recording.into_parts(),
+        let (info, session) = match store::open_recording(&res_dir) {
+            Ok(parts) => parts,
             Err(error) => {
                 *self.load_error.write() = Some(format!(
                     "Could not open results directory '{}':\n\n{error:#}",

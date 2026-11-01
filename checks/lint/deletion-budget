@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -eq 2 ]]; then
+    base="$1"
+    head="$2"
+else
+    [[ -n "${GITHUB_EVENT_PATH:-}" ]] || exit 0
+    read -r base head < <(python3 -c '
+import json, sys
+pr = json.load(open(sys.argv[1])).get("pull_request", {})
+if "Deletion gate: enabled" in (pr.get("body") or ""):
+    print(pr["base"]["sha"], pr["head"]["sha"])
+' "${GITHUB_EVENT_PATH}") || exit 0
+    git fetch --quiet --no-tags --depth=1 origin "${base}" "${head}"
+fi
+
+git diff --no-ext-diff --no-color --no-renames --unified=0 \
+    --src-prefix=a/ --dst-prefix=b/ "${base}" "${head}" -- | awk '
+function finish(    changed) {
+    changed = inserted < deleted ? inserted : deleted
+    added += inserted - changed
+    modified += changed
+    removed += deleted - changed
+    inserted = deleted = 0
+}
+function source(line) {
+    return line !~ /^[[:space:]]*($|\/\/|\/\*|\* |\*\/)/
+}
+/^diff --git / {
+    finish()
+    code = $4 !~ /\.(md|txt|json|lock|svg|png)$/ && $4 !~ /^b\/(docs|third_party|deps\/cache)\//
+    next
+}
+/^@@/ { finish(); next }
+code && /^\+/ && !/^\+\+\+/ { inserted += source(substr($0, 2)) }
+code && /^-/ && !/^---/ { deleted += source(substr($0, 2)) }
+END {
+    finish()
+    printf "deletion budget: removed=%d added=%d modified=%d\n", removed, added, modified
+    exit !(removed > added + modified)
+}'

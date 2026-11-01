@@ -1,11 +1,26 @@
 pub(crate) use store::duckdb::types::Value;
 pub(crate) use store::duckdb::{Connection, Result as SqlResult, Row};
 
-pub(crate) use store::query::Column;
+pub(crate) struct Column {
+    pub(crate) name: String,
+    pub(crate) declared_type: String,
+}
 
-/// Columns of `table`, empty when schema information is unavailable.
+/// Columns of `table`, empty when the table or view does not exist.
 pub(crate) fn table_columns(connection: &Connection, table: &str) -> Vec<Column> {
-    store::query::table_columns(connection, table).unwrap_or_default()
+    let escaped = table.replace('\'', "''");
+    let Ok(mut statement) = connection.prepare(&format!("PRAGMA table_info('{escaped}')")) else {
+        return Vec::new();
+    };
+    let Ok(rows) = statement.query_map([], |row| {
+        Ok(Column {
+            name: row.get("name")?,
+            declared_type: row.get("type")?,
+        })
+    }) else {
+        return Vec::new();
+    };
+    rows.filter_map(|row| row.ok()).collect()
 }
 
 /// The first `count` columns of `row` as dynamically typed values.

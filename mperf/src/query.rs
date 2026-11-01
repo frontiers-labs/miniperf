@@ -139,7 +139,7 @@ pub fn do_query(
     };
 
     let result_directory = Path::new(result_directory);
-    let (info, session) = store::Recording::open(result_directory)?.into_parts();
+    let (info, session) = store::open_recording(result_directory)?;
 
     let result = execute(session.connection(), &sql, max_rows)?;
     match format {

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use store::query::quote_identifier;
+use store::query::quote_identifier as quoted;
 
 use anyhow::{Context, Result, bail};
 
@@ -205,31 +205,27 @@ fn load_profile(connection: &Connection) -> Result<ProfileData> {
     let mut frame_ids = HashMap::<FrameKey, usize>::new();
 
     let mut selected_columns = vec![
-        quote_identifier(timestamp_column),
-        quote_identifier(process_column),
-        quote_identifier(thread_column),
-        quote_identifier(call_stack_column),
+        quoted(timestamp_column),
+        quoted(process_column),
+        quoted(thread_column),
+        quoted(call_stack_column),
     ];
     selected_columns.push(
         cpu_column
-            .map(quote_identifier)
+            .map(quoted)
             .unwrap_or_else(|| "NULL AS cpu".to_string()),
     );
     selected_columns.push(
         confidence_column
-            .map(quote_identifier)
+            .map(quoted)
             .unwrap_or_else(|| "1.0 AS confidence".to_string()),
     );
-    selected_columns.extend(
-        dynamic_columns
-            .iter()
-            .map(|column| quote_identifier(&column.name)),
-    );
+    selected_columns.extend(dynamic_columns.iter().map(|column| quoted(&column.name)));
 
     let query = format!(
         "SELECT {} FROM pmu_counters ORDER BY {} ASC;",
         selected_columns.join(", "),
-        quote_identifier(timestamp_column)
+        quoted(timestamp_column)
     );
     let mut statement = connection
         .prepare(&query)
@@ -312,21 +308,21 @@ fn load_cpu_observations(
     let source_column = required_column(&columns, "source")?;
     let call_stack_column = required_column(&columns, "call_stack")?;
     let selected_columns = [
-        quote_identifier(timestamp_column),
-        quote_identifier(process_column),
-        quote_identifier(thread_column),
-        quote_identifier(cpu_column),
+        quoted(timestamp_column),
+        quoted(process_column),
+        quoted(thread_column),
+        quoted(cpu_column),
         interval_start_column
-            .map(quote_identifier)
+            .map(quoted)
             .unwrap_or_else(|| "NULL AS interval_start_ns".to_string()),
-        quote_identifier(weight_column),
-        quote_identifier(source_column),
-        quote_identifier(call_stack_column),
+        quoted(weight_column),
+        quoted(source_column),
+        quoted(call_stack_column),
     ];
     let query = format!(
         "SELECT {} FROM cpu_observations ORDER BY {} ASC;",
         selected_columns.join(", "),
-        quote_identifier(timestamp_column)
+        quoted(timestamp_column)
     );
     let mut statement = connection
         .prepare(&query)
@@ -433,19 +429,19 @@ fn load_proc_map(connection: &Connection) -> Result<HashMap<u64, ResolvedFrame>>
     let symbol_column = find_column(&columns, "symbol_name");
 
     let selected_columns = [
-        quote_identifier(ip_column),
-        quote_identifier(function_column),
+        quoted(ip_column),
+        quoted(function_column),
         module_column
-            .map(quote_identifier)
+            .map(quoted)
             .unwrap_or_else(|| "NULL AS module_path".to_string()),
         file_column
-            .map(quote_identifier)
+            .map(quoted)
             .unwrap_or_else(|| "NULL AS file_name".to_string()),
         line_column
-            .map(quote_identifier)
+            .map(quoted)
             .unwrap_or_else(|| "NULL AS line".to_string()),
         symbol_column
-            .map(quote_identifier)
+            .map(quoted)
             .unwrap_or_else(|| "NULL AS symbol_name".to_string()),
     ];
     let query = format!("SELECT {} FROM proc_map;", selected_columns.join(", "));
