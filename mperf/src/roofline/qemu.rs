@@ -262,16 +262,22 @@ impl QemuBackend {
             method.quality = "hybrid-binary-exact-addresses".to_string();
             method.reason =
                 "native timing with DynamoRIO exact-address and shared-LLC analysis".to_string();
-            method.warnings.extend([
-                super::MODELED_DRAM_WARNING.to_string(),
-                super::CACHE_POLICY_WARNING.to_string(),
-            ]);
+            method.warnings.push(
+                "memory traffic is a deterministic host-LLC model, not a hardware memory-controller measurement"
+                    .to_string(),
+            );
+            method.warnings.push(
+                "the cache model uses write allocation/RFO and dirty writeback; non-temporal stores are conservative"
+                    .to_string(),
+            );
         } else {
             method.traffic = "architectural".to_string();
             method.quality = "hybrid-binary-aggregate-blocks".to_string();
             method.reason = "native timing with low-overhead DynamoRIO operation and architectural-traffic accounting"
                 .to_string();
-            super::clear_modeled_traffic_warnings(&mut method.warnings);
+            method.warnings.retain(|warning| {
+                !warning.contains("host-LLC model") && !warning.contains("write allocation/RFO")
+            });
             method.warnings.push(
                 "the low-overhead Roofline pass does not collect dynamic addresses or modeled DRAM traffic; use the mem scenario for exact address and shared-LLC analysis"
                     .to_string(),
@@ -903,7 +909,7 @@ impl RooflineBackend for QemuBackend {
                 );
             }
             let mut method = self.method.clone();
-            baseline.apply_to_method(&mut method);
+            method.warnings.extend(baseline.warnings.iter().cloned());
             // The replay reproduces the program's work; the timed run executes
             // that work plus whatever its threads retire while waiting for each
             // other. How much waiting that is depends on how fast the run went,

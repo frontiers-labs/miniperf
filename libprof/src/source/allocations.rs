@@ -6,14 +6,14 @@ use std::sync::{
 
 use super::{Availability, SessionContext, Source, SourceDecl};
 use crate::{Record, SourceStatus};
-use shmem::allocation::{Batch, CHANNEL_BYTES};
+use shmem::allocation::{Batch, Packet, CHANNEL_BYTES};
 use shmem::proc_channel::Receiver;
 
 /// Root-process libc allocation lifetimes. Attribution sampling never samples lifetimes.
 pub struct AllocationSource {
     channel: String,
     stack_every: u64,
-    receiver: Option<Receiver>,
+    receiver: Option<Receiver<Packet>>,
     error: Option<String>,
     stop: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<Outcome>>,
@@ -106,7 +106,7 @@ impl Source for AllocationSource {
         if !context.launched() {
             return Ok(());
         }
-        let mut receiver = self
+        let receiver = self
             .receiver
             .take()
             .ok_or_else(|| anyhow::anyhow!("allocation channel is missing"))?;

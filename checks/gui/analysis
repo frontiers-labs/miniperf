@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-# Run the analysis scheduler contracts on this run's real recordings.
-set -euo pipefail
-: "${MPERF_RECORDINGS:?set MPERF_RECORDINGS to a directory of recordings}"
-exec python3 "$(dirname "${BASH_SOURCE[0]}")/../source/gui-analysis" "${MPERF_RECORDINGS}"

@@ -35,10 +35,10 @@ pub fn render(
     cx: &mut Context<ShellView>,
 ) -> gpui::AnyElement {
     let theme = cx.theme().clone();
-    let Some(heatmap) = view.analysis.cpu_lanes.latest().cloned() else {
+    let Some(heatmap) = view.cpu_lanes.latest().cloned() else {
         return empty_state(
             Icon::Cpu,
-            if view.analysis.cpu_lanes.is_computing() {
+            if view.cpu_lanes.is_computing() {
                 "Measuring CPU occupancy…"
             } else {
                 "No CPU occupancy in the current scope"
@@ -297,13 +297,13 @@ fn concurrency_card(histogram: &ConcurrencyHistogram, theme: &Theme) -> gpui::An
 }
 
 fn balance_card(view: &ShellView, session: &Arc<ShellSession>, theme: &Theme) -> gpui::AnyElement {
-    let Some(balance) = view.analysis.balance.latest() else {
+    let Some(balance) = view.balance.latest() else {
         return ui::viz_card("thread balance")
             .child(
                 div()
                     .text_size(px(11.0))
                     .text_color(theme.muted_foreground)
-                    .child(if view.analysis.balance.is_computing() {
+                    .child(if view.balance.is_computing() {
                         "measuring…"
                     } else {
                         "no threads in the current scope"

@@ -61,13 +61,6 @@ Two rules follow. A new data source is one `Source` implementation in
 that wants it. A new hardware facility is a new `Mechanism` behind an existing
 `Feature`, never a new user-facing knob.
 
-`store/writer` owns Parquet schemas and column construction without depending
-on DuckDB. `store::Session` owns table discovery, registration, and
-materialization; `store::open_recording` also validates completed-recording metadata.
-The CLI, terminal viewer, and GUI share that reader. In the GUI,
-`shell::analysis::AnalysisState` owns derived caches and jobs, while `ShellView`
-owns navigation, shared filters, and rendering.
-
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the quality gates, the platform
 code policy, the truth-fixture policy, and external dependency pins.
 

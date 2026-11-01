@@ -12,7 +12,7 @@ use store::{SampleRows, SegmentWriter, StackRows};
 use tokio::{fs::File, io::AsyncWriteExt};
 
 use crate::utils;
-use store::{Columns, Session};
+use store::{Columns, Session as Tables};
 
 /// A core cluster resolved for post-processing: `(family_id, display name,
 /// inclusive CPU ranges)`.
@@ -355,7 +355,7 @@ fn raw_segments(res_dir: &Path) -> Result<Vec<PathBuf>> {
 }
 
 /// Delete the record-time sample intermediate once the derived tables exist.
-pub(crate) fn remove_raw_segments(tables: &Session, res_dir: &Path) -> Result<()> {
+pub(crate) fn remove_raw_segments(tables: &Tables, res_dir: &Path) -> Result<()> {
     tables
         .connection()
         .execute_batch("DROP VIEW IF EXISTS samples_raw;")?;
@@ -368,7 +368,7 @@ pub(crate) fn remove_raw_segments(tables: &Session, res_dir: &Path) -> Result<()
 /// Symbolize the recorded samples and materialize `proc_map`, `pmu_counters`,
 /// `cpu_observations`, `samples`, `stacks` and the folded flamegraphs.
 pub(crate) async fn process(
-    tables: &Session,
+    tables: &Tables,
     record_info: &RecordInfo,
     res_dir: &Path,
     pb: &mut kdam::Bar,

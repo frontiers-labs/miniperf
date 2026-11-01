@@ -57,17 +57,6 @@ cargo xtask check gui       # the viewer, over MPERF_RECORDINGS
 A check that needs hardware counters calls `require_pmu` and exits 3 where
 there are none, which reports as a visible skip rather than a silent pass.
 
-The GUI pipeline runs scheduler contracts and the shipped viewer tour over
-`MPERF_RECORDINGS`. To run only the scheduler check without opening a window:
-
-```sh
-MPERF_RECORDINGS=out-snapshot cargo xtask check analysis
-```
-
-The check uses real recordings and rejects delayed results from a previous
-recording. TMA table validation also runs when `libprof` builds, against the
-shipped definitions for every architecture.
-
 ## External binary dependencies
 
 DuckDB, DynamoRIO and qemu-user are not built by the main CI gate. The

@@ -1,5 +1,3 @@
-use crate::profile::ModuleKind;
-
 use gpui::{App, Global, Hsla, Pixels, SharedString, WindowAppearance, px, rgb, rgba};
 
 /// Semantic + visualization color tokens ported verbatim from the approved
@@ -165,6 +163,14 @@ impl Theme {
             TmaCategory::BackendBound => self.viz.series[1],
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModuleKind {
+    User,
+    Library,
+    Runtime,
+    Kernel,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

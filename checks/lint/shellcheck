@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Lint shell entry points and sourced shell helpers.
+# The check tree is shell, so it gets a linter.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 if ! command -v shellcheck >/dev/null; then
@@ -10,15 +10,6 @@ if ! command -v shellcheck >/dev/null; then
 fi
 targets=()
 while IFS= read -r target; do
-    case "${target}" in
-        *.sh) targets+=("${target}") ;;
-        *)
-            IFS= read -r first_line < "${target}"
-            case "${first_line}" in
-                '#!/usr/bin/env bash'|'#!/usr/bin/env sh'|'#!/bin/bash'|'#!/bin/sh')
-                    targets+=("${target}") ;;
-            esac
-            ;;
-    esac
+    targets+=("${target}")
 done < <(git ls-files 'checks/*' 'utils/*.sh' | grep -v '^checks/fixtures/')
 shellcheck --shell=bash --external-sources "${targets[@]}"
