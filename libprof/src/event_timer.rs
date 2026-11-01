@@ -662,62 +662,7 @@ mod backend {
     }
 
     fn attr_for(counter: &Counter, kernel: bool) -> Result<perf_event_attr, Error> {
-        let (type_, config) = match counter {
-            Counter::Cycles => (
-                sys::bindings::PERF_TYPE_HARDWARE,
-                sys::bindings::PERF_COUNT_HW_CPU_CYCLES as u64,
-            ),
-            Counter::Instructions => (
-                sys::bindings::PERF_TYPE_HARDWARE,
-                sys::bindings::PERF_COUNT_HW_INSTRUCTIONS as u64,
-            ),
-            Counter::LLCReferences => (
-                sys::bindings::PERF_TYPE_HARDWARE,
-                sys::bindings::PERF_COUNT_HW_CACHE_REFERENCES as u64,
-            ),
-            Counter::LLCMisses => (
-                sys::bindings::PERF_TYPE_HARDWARE,
-                sys::bindings::PERF_COUNT_HW_CACHE_MISSES as u64,
-            ),
-            Counter::BranchInstructions => (
-                sys::bindings::PERF_TYPE_HARDWARE,
-                sys::bindings::PERF_COUNT_HW_BRANCH_INSTRUCTIONS as u64,
-            ),
-            Counter::BranchMisses => (
-                sys::bindings::PERF_TYPE_HARDWARE,
-                sys::bindings::PERF_COUNT_HW_BRANCH_MISSES as u64,
-            ),
-            Counter::StalledCyclesFrontend => (
-                sys::bindings::PERF_TYPE_HARDWARE,
-                sys::bindings::PERF_COUNT_HW_STALLED_CYCLES_FRONTEND as u64,
-            ),
-            Counter::StalledCyclesBackend => (
-                sys::bindings::PERF_TYPE_HARDWARE,
-                sys::bindings::PERF_COUNT_HW_STALLED_CYCLES_BACKEND as u64,
-            ),
-            Counter::CpuClock => (
-                sys::bindings::PERF_TYPE_SOFTWARE,
-                sys::bindings::PERF_COUNT_SW_CPU_CLOCK as u64,
-            ),
-            Counter::PageFaults => (
-                sys::bindings::PERF_TYPE_SOFTWARE,
-                sys::bindings::PERF_COUNT_SW_PAGE_FAULTS as u64,
-            ),
-            Counter::ContextSwitches => (
-                sys::bindings::PERF_TYPE_SOFTWARE,
-                sys::bindings::PERF_COUNT_SW_CONTEXT_SWITCHES as u64,
-            ),
-            Counter::CpuMigrations => (
-                sys::bindings::PERF_TYPE_SOFTWARE,
-                sys::bindings::PERF_COUNT_SW_CPU_MIGRATIONS as u64,
-            ),
-            Counter::Internal { code, .. } => (sys::bindings::PERF_TYPE_RAW, *code),
-            Counter::Custom(name) => {
-                return Err(Error::InvalidConfiguration(format!(
-                    "custom counter '{name}' must be resolved before use with EventTimer"
-                )))
-            }
-        };
+        let (type_, config) = crate::driver::perf::counter_type_config(counter)?;
         let mut attr = perf_event_attr::default();
         attr.size = std::mem::size_of::<perf_event_attr>() as u32;
         attr.type_ = type_;
