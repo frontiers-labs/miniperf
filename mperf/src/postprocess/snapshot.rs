@@ -4,7 +4,8 @@ use std::path::Path;
 use anyhow::Result;
 use mperf_data::{RecordInfo, ScenarioInfo};
 
-use super::tables::{Columns, Tables, quote_identifier};
+use store::query::quote_identifier;
+use store::{Columns, Session as Tables};
 
 /// Materialize the host-scoped resource tables. Clocks, temperatures and the
 /// procfs telemetry are host state, so every scenario gets them.

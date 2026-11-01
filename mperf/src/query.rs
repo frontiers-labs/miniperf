@@ -139,9 +139,7 @@ pub fn do_query(
     };
 
     let result_directory = Path::new(result_directory);
-    let info = load_record_info(result_directory)?;
-    let session = store::Session::open(result_directory)
-        .with_context(|| format!("failed to open {}", result_directory.display()))?;
+    let (info, session) = store::open_recording(result_directory)?;
 
     let result = execute(session.connection(), &sql, max_rows)?;
     match format {
@@ -155,16 +153,6 @@ pub fn do_query(
         }
     }
     Ok(())
-}
-
-fn load_record_info(result_directory: &Path) -> Result<RecordInfo> {
-    let info_path = result_directory.join("info.json");
-    let data = fs::read_to_string(&info_path)
-        .with_context(|| format!("failed to read {}", info_path.display()))?;
-    let info: RecordInfo = serde_json::from_str(&data)
-        .with_context(|| format!("failed to parse {}", info_path.display()))?;
-    info.ensure_supported_format()?;
-    Ok(info)
 }
 
 fn execute(connection: &Connection, sql: &str, max_rows: usize) -> Result<QueryResult> {

@@ -7,8 +7,8 @@ use object::{Object, ObjectSegment};
 use serde::Deserialize;
 use store::EventKind;
 
-use super::tables::{Columns, Tables};
 use crate::utils;
+use store::{Columns, Session as Tables};
 
 #[derive(Default)]
 struct RooflineLoopInfo {

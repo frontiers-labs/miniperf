@@ -5,9 +5,10 @@ use anyhow::Result;
 use kdam::BarExt;
 use object::{Object, ObjectSymbol, SymbolKind};
 
-use super::tables::{Columns, Tables, quote_identifier};
 use crate::disassembly::{DisassembleRequest, DisassembleTarget, default_disassembler};
 use crate::utils;
+use store::query::quote_identifier;
+use store::{Columns, Session as Tables};
 
 /// Aggregate per-address sample counts and disassemble every sampled function.
 pub(crate) fn process(tables: &Tables, pb: &mut kdam::Bar) -> Result<()> {

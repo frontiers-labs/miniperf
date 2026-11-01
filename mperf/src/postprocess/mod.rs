@@ -5,7 +5,6 @@ mod memory;
 mod roofline;
 mod samples;
 mod snapshot;
-pub(crate) mod tables;
 mod tma;
 mod trace;
 
@@ -14,21 +13,16 @@ use std::path::Path;
 
 use anyhow::Result;
 use mperf_data::{EventType, RecordInfo, Scenario};
-use tokio::fs;
 
-use tables::{Columns, Tables, quote_identifier};
+use store::query::quote_identifier;
+use store::{Columns, Session as Tables};
 
 /// Turn a recording into the derived tables every consumer reads: one Parquet
 /// file per table in the session directory.
 pub async fn perform_postprocessing(res_dir: &Path, pb: kdam::Bar) -> Result<()> {
     let mut pb = pb;
 
-    let data = fs::read_to_string(res_dir.join("info.json"))
-        .await
-        .expect("failed to read info.json");
-    let info: RecordInfo = serde_json::from_str(&data).expect("failed to parse info.json");
-
-    let tables = Tables::open(res_dir)?;
+    let (info, tables) = store::open_recording(res_dir)?;
     samples::process(&tables, &info, res_dir, &mut pb).await?;
     allocations::process(&tables)?;
     snapshot::write_host_telemetry(&tables, res_dir)?;

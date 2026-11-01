@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use super::tables::Tables;
+use store::Session as Tables;
 
 /// Materialize the defined default view over user/runtime trace events: one
 /// row per trace point and kind, grouped by name/function — what renders as

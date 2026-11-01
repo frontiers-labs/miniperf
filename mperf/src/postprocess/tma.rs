@@ -2,7 +2,7 @@ use anyhow::Result;
 use mperf_data::{EventType, ScenarioInfo};
 
 use super::event_column_name;
-use super::tables::Tables;
+use store::Session as Tables;
 
 /// Materialize the per-function `tma` table plus the interval and summary
 /// tables the UI reads without re-expanding formulas.

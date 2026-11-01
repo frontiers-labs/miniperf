@@ -8,8 +8,8 @@ use store::arrow::array::{Array, BinaryArray, Int64Array, ListArray, UInt32Array
 use store::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use super::samples::{RawSample, ResolvedIp, merge_lbr_stack, resolve_folded_stack};
-use super::tables::{Columns, Tables};
 use crate::utils;
+use store::{Columns, Session as Tables};
 
 const BATCH_ROWS: usize = 8192;
 

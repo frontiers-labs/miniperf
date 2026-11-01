@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use store::query::quote_identifier as quoted;
 
 use anyhow::{Context, Result, bail};
 
@@ -609,10 +610,6 @@ fn counter_label(key: &str) -> String {
     } else {
         words.join(" ")
     }
-}
-
-fn quoted(identifier: &str) -> String {
-    format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
 fn parse_call_stack(value: &Value, field: &str) -> Result<Vec<u64>> {
