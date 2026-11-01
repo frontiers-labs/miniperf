@@ -74,10 +74,16 @@ pub(crate) fn event_column_name(event: &(EventType, String)) -> String {
 
 /// The `pmu_counters` column a recorded sample's interned event name maps to.
 pub(crate) fn event_column_name_for(name: &str) -> String {
-    match crate::utils::event_type_from_name(name) {
-        Some(ty) => ty.to_string(),
-        None => format!("pmu_{}", name.replace('.', "_")),
-    }
+    let name = match name.to_ascii_lowercase().as_str() {
+        "branches" => "pmu_branch_instructions",
+        "cache_references" => "pmu_llc_references",
+        "cache_misses" => "pmu_llc_misses",
+        _ => name,
+    };
+    let column = format!("pmu_{}", name.replace('.', "_"));
+    crate::utils::event_type_from_name(name)
+        .or_else(|| crate::utils::event_type_from_name(&column))
+        .map_or(column, |ty| ty.to_string())
 }
 
 /// One row per rung considered for this recording: the chosen capture strategy
@@ -171,20 +177,23 @@ fn write_metric_definitions(tables: &Tables, metrics: &[libprof::Metric]) -> Res
         let mut values = HashMap::new();
         let mut applicable = true;
         for event_name in event_names {
-            let Some(column) = metric_event_column(&event_name) else {
-                applicable = false;
-                break;
-            };
-            if !available.iter().any(|name| name == column) {
+            let column = event_column_name_for(&event_name);
+            if !available.iter().any(|name| name == &column) {
                 applicable = false;
                 break;
             }
-            let value = tables
-                .scalar_f64(&format!(
+            let value: Option<f64> = tables.connection().query_row(
+                &format!(
                     "SELECT CAST(SUM({}) AS DOUBLE) FROM pmu_counters",
-                    quote_identifier(column)
-                ))
-                .unwrap_or(0.0);
+                    quote_identifier(&column)
+                ),
+                [],
+                |row| row.get(0),
+            )?;
+            let Some(value) = value else {
+                applicable = false;
+                break;
+            };
             values.insert(event_name, value);
         }
         if !applicable {
@@ -208,28 +217,4 @@ fn write_metric_definitions(tables: &Tables, metrics: &[libprof::Metric]) -> Res
     columns.text_opt("unit", rows.iter().map(|row| row.2.clone()).collect());
     columns.text("expression", rows.iter().map(|row| row.3.clone()).collect());
     tables.write("derived_metrics", columns.finish()?)
-}
-
-fn metric_event_column(name: &str) -> Option<&'static str> {
-    if name.eq_ignore_ascii_case("cycles") {
-        Some("pmu_cycles")
-    } else if name.eq_ignore_ascii_case("instructions") {
-        Some("pmu_instructions")
-    } else if name.eq_ignore_ascii_case("branches") {
-        Some("pmu_branch_instructions")
-    } else if name.eq_ignore_ascii_case("branch_misses") {
-        Some("pmu_branch_misses")
-    } else if name.eq_ignore_ascii_case("llc_references")
-        || name.eq_ignore_ascii_case("cache_references")
-    {
-        Some("pmu_llc_references")
-    } else if name.eq_ignore_ascii_case("llc_misses") || name.eq_ignore_ascii_case("cache_misses") {
-        Some("pmu_llc_misses")
-    } else if name.eq_ignore_ascii_case("stalled_cycles_frontend") {
-        Some("pmu_stalled_cycles_frontend")
-    } else if name.eq_ignore_ascii_case("stalled_cycles_backend") {
-        Some("pmu_stalled_cycles_backend")
-    } else {
-        None
-    }
 }

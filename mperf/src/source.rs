@@ -21,7 +21,8 @@ pub const SNAPSHOT_SAMPLE_FREQUENCY_HZ: u64 = 99;
 /// and hash-based identities give cross-pass correlation for free.
 pub struct Pass {
     pub name: &'static str,
-    pub required: Vec<Box<dyn Source>>,
+    /// The required sampling source for this pass.
+    pub pmu: PmuSamplingSource,
     pub optional: Vec<Box<dyn Source>>,
 }
 
@@ -29,28 +30,25 @@ pub struct Pass {
 /// not running.
 pub struct ResolvedPass {
     pub name: &'static str,
-    pub sources: Vec<Box<dyn Source>>,
+    pmu: PmuSamplingSource,
+    optional: Vec<Box<dyn Source>>,
     pub statuses: Vec<SnapshotCollectorStatus>,
 }
 
 impl Pass {
-    /// Resolve declarations against probed availability: every required
-    /// source must be available; optional sources degrade to a status entry.
+    /// Require the PMU; optional sources degrade to a status entry when unavailable.
     pub fn resolve(self, directory: &Path) -> Result<ResolvedPass> {
-        let mut sources = Vec::new();
+        let mut optional = Vec::new();
         let mut statuses = Vec::new();
-        for source in self.required {
-            match source.probe(directory) {
-                Availability::Available => sources.push(source),
-                Availability::Unavailable { reason } => anyhow::bail!(
-                    "required source '{}' is unavailable: {reason}",
-                    source.declare().name
-                ),
-            }
+        if let Availability::Unavailable { reason } = self.pmu.probe(directory) {
+            anyhow::bail!(
+                "required source '{}' is unavailable: {reason}",
+                self.pmu.declare().name
+            );
         }
         for source in self.optional {
             match source.probe(directory) {
-                Availability::Available => sources.push(source),
+                Availability::Available => optional.push(source),
                 Availability::Unavailable { reason } => statuses.push(SnapshotCollectorStatus {
                     name: source.declare().name.to_string(),
                     status: "unavailable".to_string(),
@@ -62,7 +60,8 @@ impl Pass {
         }
         Ok(ResolvedPass {
             name: self.name,
-            sources,
+            pmu: self.pmu,
+            optional,
             statuses,
         })
     }
@@ -70,14 +69,16 @@ impl Pass {
 
 impl ResolvedPass {
     pub fn child_environment(&self, directory: &Path) -> Vec<(String, String)> {
-        self.sources
-            .iter()
+        std::iter::once(&self.pmu as &dyn Source)
+            .chain(self.optional.iter().map(Box::as_ref))
             .flat_map(|source| source.child_environment(directory))
             .collect()
     }
 
     pub fn start(&mut self, context: &SessionContext) -> Result<()> {
-        for source in &mut self.sources {
+        for source in std::iter::once(&mut self.pmu as &mut dyn Source)
+            .chain(self.optional.iter_mut().map(Box::as_mut))
+        {
             source.start(context).map_err(|error| {
                 error.context(format!(
                     "failed to start source '{}' in pass '{}'",
@@ -91,7 +92,9 @@ impl ResolvedPass {
 
     pub fn stop(&mut self, context: &SessionContext) -> Vec<SnapshotCollectorStatus> {
         let mut statuses = std::mem::take(&mut self.statuses);
-        for source in &mut self.sources {
+        for source in std::iter::once(&mut self.pmu as &mut dyn Source)
+            .chain(self.optional.iter_mut().map(Box::as_mut))
+        {
             statuses.extend(source.stop(context).into_iter().map(collector_status));
         }
         statuses
@@ -100,30 +103,21 @@ impl ResolvedPass {
     /// The sampling rate the host ceiling forced the pass down to, and the one
     /// it asked for. `None` when the pass sampled at the rate it wanted.
     pub fn lowered_sample_rate(&self) -> Option<(u64, u64)> {
-        self.sources
-            .iter()
-            .find_map(|source| source.as_any().downcast_ref::<PmuSamplingSource>())
-            .and_then(|source| source.lowered_sample_rate())
+        self.pmu.lowered_sample_rate()
     }
 
     /// Counters the pass's PMU sampling source actually opened.
     pub fn recorded_counters(&self) -> Vec<(mperf_data::EventType, String)> {
-        self.sources
+        self.pmu
+            .recorded_counters()
             .iter()
-            .find_map(|source| source.as_any().downcast_ref::<PmuSamplingSource>())
-            .map(|source| {
-                source
-                    .recorded_counters()
-                    .iter()
-                    .map(|counter| {
-                        (
-                            crate::utils::counter_to_event_ty(counter),
-                            counter.name().to_string(),
-                        )
-                    })
-                    .collect()
+            .map(|counter| {
+                (
+                    crate::utils::counter_to_event_ty(counter),
+                    counter.name().to_string(),
+                )
             })
-            .unwrap_or_default()
+            .collect()
     }
 }
 

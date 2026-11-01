@@ -21,13 +21,13 @@ impl<T> Default for Derived<T> {
 }
 
 impl<T> Derived<T> {
-    /// True when neither the current value nor an in-flight compute is for `key`.
-    pub fn needs(&self, key: u64) -> bool {
-        self.key != Some(key) && self.inflight != Some(key)
-    }
-
-    pub fn begin(&mut self, key: u64) {
+    /// Register a request unless its value is current or already computing.
+    pub fn request(&mut self, key: u64) -> bool {
+        if self.key == Some(key) || self.inflight == Some(key) {
+            return false;
+        }
         self.inflight = Some(key);
+        true
     }
 
     pub fn install(&mut self, key: u64, value: Option<Arc<T>>) -> bool {

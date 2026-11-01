@@ -26,7 +26,7 @@ use crate::charts;
 use crate::profile::TimeRange;
 use crate::profile_analysis::{
     CallTree, CpuUtilizationHeatmap, FlameScopeHeatmap, FunctionAnalysis, FunctionMetrics,
-    FunctionStat, IcicleLayout, StackWeight, ThreadBalance,
+    FunctionStat, IcicleLayout, SampleFilter, StackWeight, ThreadBalance,
 };
 use crate::recent;
 use crate::regions::RegionNodeId;
@@ -585,148 +585,115 @@ impl ShellView {
         self.filter_generation * 4 + stacks * 2 + weight
     }
 
-    /// Spawns whatever the active tab needs and is not already computing.
-    /// Hotspots feed the selection panel and the status bar, so the function
-    /// analysis is always kept fresh; heavier per-view datasets are lazy.
-    fn ensure_derived(&mut self, cx: &mut Context<Self>) {
+    fn request<T: Send + Sync + 'static>(
+        &mut self,
+        cx: &mut Context<Self>,
+        key: u64,
+        filter: fn(&GlobalFilter) -> GlobalFilter,
+        cache: fn(&mut Self) -> &mut Derived<T>,
+        build: impl FnOnce(&ShellSession, &SampleFilter) -> Option<T> + Send + 'static,
+        installed: fn(&mut Self),
+    ) {
         let Some(session) = self.session.clone() else {
             return;
         };
-        self.ensure_allocation_sites(cx);
-
-        let key = self.analysis_key();
-        if self.analysis.needs(key) {
-            self.analysis.begin(key);
-            let filter = self.filter.clone();
-            let session = session.clone();
-            cx.spawn(async move |this, cx| {
-                let analysis = cx
-                    .background_executor()
-                    .spawn(async move {
-                        let resolved = filter.resolve(&session);
-                        Arc::new(FunctionAnalysis::build(&session.profile, &resolved))
-                    })
-                    .await;
-                this.update(cx, |this, cx| {
-                    if this.analysis.install(key, Some(analysis)) {
-                        cx.notify();
-                    }
-                })
-                .ok();
+        if !cache(self).request(key) {
+            return;
+        }
+        let filter = filter(&self.filter);
+        cx.spawn(async move |this, cx| {
+            let value = cx
+                .background_executor()
+                .spawn(async move { build(&session, &filter.resolve(&session)).map(Arc::new) })
+                .await;
+            this.update(cx, |this, cx| {
+                if cache(this).install(key, value) {
+                    installed(this);
+                    cx.notify();
+                }
             })
-            .detach();
-        }
+            .ok();
+        })
+        .detach();
+    }
 
-        if self.active_view() == Some(ViewId::FlameScope) {
-            let key = self.filter.spatial_key();
-            if self.scope.needs(key) {
-                self.scope.begin(key);
-                let filter = self.filter.spatial();
-                let session = session.clone();
-                cx.spawn(async move |this, cx| {
-                    let heatmap = cx
-                        .background_executor()
-                        .spawn(async move {
-                            let resolved = filter.resolve(&session);
-                            FlameScopeHeatmap::build(&session.profile, &resolved, SCOPE_MAX_BINS)
-                                .map(Arc::new)
-                        })
-                        .await;
-                    this.update(cx, |this, cx| {
-                        if this.scope.install(key, heatmap) {
-                            cx.notify();
-                        }
-                    })
-                    .ok();
-                })
-                .detach();
+    /// Hotspots feed selection and status; heavier datasets follow the active tab.
+    fn ensure_derived(&mut self, cx: &mut Context<Self>) {
+        self.request(
+            cx,
+            self.analysis_key(),
+            GlobalFilter::clone,
+            |this| &mut this.analysis,
+            |session, filter| Some(FunctionAnalysis::build(&session.profile, filter)),
+            |_| {},
+        );
+        match self.active_view() {
+            Some(ViewId::FlameScope) => self.request(
+                cx,
+                self.filter.spatial_key(),
+                GlobalFilter::spatial,
+                |this| &mut this.scope,
+                |session, filter| {
+                    FlameScopeHeatmap::build(&session.profile, filter, SCOPE_MAX_BINS)
+                },
+                |_| {},
+            ),
+            Some(ViewId::Cores) => {
+                self.request(
+                    cx,
+                    self.filter.spatial_key(),
+                    GlobalFilter::spatial,
+                    |this| &mut this.cpu_lanes,
+                    |session, filter| {
+                        CpuUtilizationHeatmap::build_with_bucket_duration(
+                            &session.profile,
+                            filter,
+                            CORE_LANE_BUCKETS,
+                            None,
+                        )
+                    },
+                    |_| {},
+                );
+                self.request(
+                    cx,
+                    self.analysis_key(),
+                    GlobalFilter::clone,
+                    |this| &mut this.balance,
+                    |session, filter| ThreadBalance::build(&session.profile, filter),
+                    |_| {},
+                );
             }
-        }
-
-        if self.active_view() == Some(ViewId::Cores) {
-            let key = self.filter.spatial_key();
-            if self.cpu_lanes.needs(key) {
-                self.cpu_lanes.begin(key);
-                let filter = self.filter.spatial();
-                let session = session.clone();
-                cx.spawn(async move |this, cx| {
-                    let heatmap = cx
-                        .background_executor()
-                        .spawn(async move {
-                            let resolved = filter.resolve(&session);
-                            CpuUtilizationHeatmap::build_with_bucket_duration(
-                                &session.profile,
-                                &resolved,
-                                CORE_LANE_BUCKETS,
-                                None,
-                            )
-                            .map(Arc::new)
-                        })
-                        .await;
-                    this.update(cx, |this, cx| {
-                        if this.cpu_lanes.install(key, heatmap) {
-                            cx.notify();
-                        }
-                    })
-                    .ok();
-                })
-                .detach();
-            }
-
-            let key = self.analysis_key();
-            if self.balance.needs(key) {
-                self.balance.begin(key);
-                let filter = self.filter.clone();
-                let session = session.clone();
-                cx.spawn(async move |this, cx| {
-                    let balance = cx
-                        .background_executor()
-                        .spawn(async move {
-                            let resolved = filter.resolve(&session);
-                            ThreadBalance::build(&session.profile, &resolved).map(Arc::new)
-                        })
-                        .await;
-                    this.update(cx, |this, cx| {
-                        if this.balance.install(key, balance) {
-                            cx.notify();
-                        }
-                    })
-                    .ok();
-                })
-                .detach();
-            }
-        }
-
-        if self.active_view() == Some(ViewId::Flame) {
-            let key = self.flame_key();
-            if self.flame.needs(key) {
-                self.flame.begin(key);
-                let filter = self.filter.clone();
+            Some(ViewId::Flame) => {
+                let Some(session) = self.session.as_ref() else {
+                    return;
+                };
                 let inverted = self.flame_stacks == StackMode::BottomUp;
-                let weight = self.stack_weight(&session);
-                cx.spawn(async move |this, cx| {
-                    let tree = cx
-                        .background_executor()
-                        .spawn(async move {
-                            let resolved = filter.resolve(&session);
-                            Arc::new(CallTree::build_weighted(
-                                &session.profile,
-                                &resolved,
-                                inverted,
-                                weight,
-                            ))
-                        })
-                        .await;
-                    this.update(cx, |this, cx| {
-                        if this.flame.install(key, Some(tree)) {
-                            this.rebuild_flame_layout();
-                            cx.notify();
-                        }
-                    })
-                    .ok();
-                })
-                .detach();
+                let weight = self.stack_weight(session);
+                self.request(
+                    cx,
+                    self.flame_key(),
+                    GlobalFilter::clone,
+                    |this| &mut this.flame,
+                    move |session, filter| {
+                        Some(CallTree::build_weighted(
+                            &session.profile,
+                            filter,
+                            inverted,
+                            weight,
+                        ))
+                    },
+                    Self::rebuild_flame_layout,
+                );
             }
+            Some(ViewId::Allocations) => self.request(
+                cx,
+                self.analysis_key(),
+                GlobalFilter::clone,
+                |this| &mut this.allocation_sites,
+                |session, filter| Some(allocations::allocation_sites(session, filter)),
+                |_| {},
+            ),
+            _ => {}
         }
     }
 
