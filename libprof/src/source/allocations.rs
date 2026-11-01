@@ -61,9 +61,6 @@ impl Source for AllocationSource {
             name: "allocations",
         }
     }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
     fn probe(&self, _directory: &Path) -> Availability {
         let reason = if !cfg!(all(target_os = "linux", target_env = "gnu")) {
             Some("libc allocation preload is currently supported on Linux/glibc".to_string())
