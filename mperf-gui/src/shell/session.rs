@@ -164,7 +164,7 @@ impl ShellSession {
     pub fn load(result_directory: &Path) -> Result<Self> {
         let result_directory = fs::canonicalize(result_directory)
             .with_context(|| format!("failed to resolve {}", result_directory.display()))?;
-        let (record_info, session) = store::Recording::open(&result_directory)?.into_parts();
+        let (record_info, session) = store::open_recording(&result_directory)?;
         let connection = session.connection();
         let summary = SummaryStats::load(connection)?;
         let tma = TmaData::load(&record_info.scenario_info, connection);

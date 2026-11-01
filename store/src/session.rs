@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use duckdb::Connection;
+use mperf_data::RecordInfo;
 
 use crate::arrow::record_batch::RecordBatch;
 use crate::query::{quote_identifier, table_columns};
@@ -19,6 +20,19 @@ pub fn table_base_name(file_stem: &str) -> &str {
         }
     }
     base
+}
+
+/// Read and validate metadata before opening the recording's tables.
+pub fn open_recording(dir: &Path) -> Result<(RecordInfo, Session)> {
+    let info_path = dir.join("info.json");
+    let data = std::fs::read_to_string(&info_path)
+        .with_context(|| format!("failed to read {}", info_path.display()))?;
+    let info: RecordInfo = serde_json::from_str(&data)
+        .with_context(|| format!("failed to parse {}", info_path.display()))?;
+    info.ensure_supported_format()?;
+    let session =
+        Session::open(dir).with_context(|| format!("failed to open {}", dir.display()))?;
+    Ok((info, session))
 }
 
 /// A session directory opened for querying: an in-memory DuckDB with one view
@@ -93,7 +107,19 @@ impl Session {
 
     /// Expose existing Parquet files as one logical table view.
     pub fn register(&self, name: &str, files: &[PathBuf]) -> Result<()> {
-        register_view(&self.connection, name, files)
+        if files.is_empty() {
+            return Ok(());
+        }
+        let files = files
+            .iter()
+            .map(|file| format!("'{}'", escape(file)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.connection
+            .execute_batch(&format!(
+                "CREATE OR REPLACE VIEW {} AS SELECT * FROM read_parquet([{files}]);",
+                quote_identifier(name),
+            ))
             .with_context(|| format!("failed to expose table '{name}'"))
     }
 
@@ -119,21 +145,6 @@ impl Session {
             .ok()
             .flatten()
     }
-}
-
-fn register_view(connection: &Connection, name: &str, files: &[PathBuf]) -> duckdb::Result<()> {
-    if files.is_empty() {
-        return Ok(());
-    }
-    let files = files
-        .iter()
-        .map(|file| format!("'{}'", escape(file)))
-        .collect::<Vec<_>>()
-        .join(", ");
-    connection.execute_batch(&format!(
-        "CREATE OR REPLACE VIEW {} AS SELECT * FROM read_parquet([{files}]);",
-        quote_identifier(name),
-    ))
 }
 
 fn escape(path: &Path) -> String {

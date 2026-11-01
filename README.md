@@ -63,7 +63,7 @@ that wants it. A new hardware facility is a new `Mechanism` behind an existing
 
 `store/writer` owns Parquet schemas and column construction without depending
 on DuckDB. `store::Session` owns table discovery, registration, and
-materialization; `store::Recording` also validates completed-recording metadata.
+materialization; `store::open_recording` also validates completed-recording metadata.
 The CLI, terminal viewer, and GUI share that reader. In the GUI,
 `shell::analysis::AnalysisState` owns derived caches and jobs, while `ShellView`
 owns navigation, shared filters, and rendering.

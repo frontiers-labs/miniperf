@@ -22,7 +22,7 @@ use store::{Columns, Session};
 pub async fn perform_postprocessing(res_dir: &Path, pb: kdam::Bar) -> Result<()> {
     let mut pb = pb;
 
-    let (info, tables) = store::Recording::open(res_dir)?.into_parts();
+    let (info, tables) = store::open_recording(res_dir)?;
     samples::process(&tables, &info, res_dir, &mut pb).await?;
     allocations::process(&tables)?;
     snapshot::write_host_telemetry(&tables, res_dir)?;
