@@ -37,11 +37,77 @@ struct Cli {
     /// showed and fails if it could not show it.
     #[arg(long)]
     tour: bool,
+
+    /// Wait for a newline after each rendered view so a capture driver can
+    /// inspect the real window before the tour advances.
+    #[arg(long, requires = "tour", hide = true)]
+    tour_step: bool,
+
+    /// Print physical DWARF type layouts from a local object as JSON.
+    #[arg(long, conflicts_with_all = ["result_directory", "gallery", "tour"])]
+    inspect_types: Option<PathBuf>,
 }
 
 struct MperfAssets;
 
 static STATIC_ASSETS: &[(&str, &[u8])] = &[
+    (
+        "icons/arrow-down.svg",
+        include_bytes!("../assets/icons/arrow-down.svg"),
+    ),
+    (
+        "icons/arrow-up.svg",
+        include_bytes!("../assets/icons/arrow-up.svg"),
+    ),
+    (
+        "icons/arrow-up-down.svg",
+        include_bytes!("../assets/icons/arrow-up-down.svg"),
+    ),
+    (
+        "icons/boxes.svg",
+        include_bytes!("../assets/icons/boxes.svg"),
+    ),
+    (
+        "icons/chart-no-axes-column-increasing.svg",
+        include_bytes!("../assets/icons/chart-no-axes-column-increasing.svg"),
+    ),
+    (
+        "icons/chart-line.svg",
+        include_bytes!("../assets/icons/chart-line.svg"),
+    ),
+    ("icons/file.svg", include_bytes!("../assets/icons/file.svg")),
+    (
+        "icons/folder.svg",
+        include_bytes!("../assets/icons/folder.svg"),
+    ),
+    (
+        "icons/panel-left.svg",
+        include_bytes!("../assets/icons/panel-left.svg"),
+    ),
+    (
+        "icons/rotate-ccw.svg",
+        include_bytes!("../assets/icons/rotate-ccw.svg"),
+    ),
+    (
+        "icons/zoom-in.svg",
+        include_bytes!("../assets/icons/zoom-in.svg"),
+    ),
+    (
+        "icons/zoom-out.svg",
+        include_bytes!("../assets/icons/zoom-out.svg"),
+    ),
+    (
+        "icons/move-left.svg",
+        include_bytes!("../assets/icons/move-left.svg"),
+    ),
+    (
+        "icons/move-right.svg",
+        include_bytes!("../assets/icons/move-right.svg"),
+    ),
+    (
+        "icons/file-code.svg",
+        include_bytes!("../assets/icons/file-code.svg"),
+    ),
     (
         "fonts/geist-variable.ttf",
         include_bytes!("../assets/fonts/geist-variable.ttf"),
@@ -208,7 +274,7 @@ const TOUR_TAB_DWELL: std::time::Duration = std::time::Duration::from_millis(250
 /// the same `ShellView` a user gets, loading through the same code, switching
 /// tabs through the same function the click handler calls. Nothing here can
 /// pass while the window itself is broken.
-fn run_tour(handle: gpui::WindowHandle<shell::ShellView>, cx: &mut App) {
+fn run_tour(handle: gpui::WindowHandle<shell::ShellView>, step: bool, cx: &mut App) {
     cx.spawn(async move |cx: &mut gpui::AsyncApp| {
         let deadline = std::time::Instant::now() + TOUR_LOAD_TIMEOUT;
         loop {
@@ -244,6 +310,20 @@ fn run_tour(handle: gpui::WindowHandle<shell::ShellView>, cx: &mut App) {
                             std::process::exit(1);
                         }
                         println!("tour: rendered {name}");
+                        if step {
+                            let acknowledgement = cx
+                                .background_executor()
+                                .spawn(async {
+                                    use std::io::Read;
+                                    let mut byte = [0];
+                                    std::io::stdin().read_exact(&mut byte)
+                                })
+                                .await;
+                            if let Err(error) = acknowledgement {
+                                eprintln!("tour: capture driver disconnected: {error}");
+                                std::process::exit(1);
+                            }
+                        }
                     }
                     let name_frames =
                         match handle.update(cx, |view, _, _| view.function_name_tour_frames()) {
@@ -341,8 +421,41 @@ fn run_tour(handle: gpui::WindowHandle<shell::ShellView>, cx: &mut App) {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(path) = cli.inspect_types {
+        let object = symbolize::type_layout::load(&path)?;
+        let types: Vec<_> = object
+            .types
+            .iter()
+            .map(|layout| {
+                let fields: Vec<_> = layout
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        serde_json::json!({
+                            "name": field.name, "type": field.type_name, "offset": field.offset,
+                            "size": field.size, "bit_size": field.bit_size,
+                        })
+                    })
+                    .collect();
+                serde_json::json!({
+                    "name": layout.name, "source": layout.source, "language": layout.language,
+                    "size": layout.size, "alignment": layout.alignment,
+                    "padding": layout.padding(), "fields": fields,
+                })
+            })
+            .collect();
+        serde_json::to_writer_pretty(
+            std::io::stdout(),
+            &serde_json::json!({
+                "path": object.path, "architecture": object.architecture,
+                "build_id": object.build_id, "types": types,
+            }),
+        )?;
+        return Ok(());
+    }
     let gallery = cli.gallery;
     let tour = cli.tour;
+    let tour_step = cli.tour_step;
     let initial_directory = cli.result_directory;
 
     if tour && initial_directory.is_none() {
@@ -376,8 +489,11 @@ fn main() -> Result<()> {
                 titlebar: Some(TitlebarOptions {
                     title: Some(if gallery { "mperf gallery" } else { "miniperf" }.into()),
                     appears_transparent: !gallery,
-                    traffic_light_position: Some(point(px(10.0), px(11.0))),
+                    traffic_light_position: cfg!(target_os = "macos")
+                        .then(|| point(px(-100.0), px(11.0))),
                 }),
+                window_decorations: (cfg!(target_os = "linux") && !gallery)
+                    .then_some(gpui::WindowDecorations::Client),
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(900.0), px(600.0))),
                 ..Default::default()
@@ -397,7 +513,7 @@ fn main() -> Result<()> {
                     })
                     .expect("failed to open shell window");
                 if tour {
-                    run_tour(handle, cx);
+                    run_tour(handle, tour_step, cx);
                 }
             }
             cx.activate(true);

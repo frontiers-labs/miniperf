@@ -1267,14 +1267,30 @@ pub(crate) struct CounterTracks {
     pub tracks: Vec<CounterTrack>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum CounterBinning {
+    Adaptive(usize),
+    Fixed(usize),
+}
+
 impl CounterTracks {
-    pub fn build(profile: &ProfileData, filter: &SampleFilter, max_bins: usize) -> Option<Self> {
+    pub fn build(
+        profile: &ProfileData,
+        filter: &SampleFilter,
+        binning: CounterBinning,
+    ) -> Option<Self> {
         let range = analysis_range(profile, filter)?;
         let duration = range.end_ns.saturating_sub(range.start_ns);
         if duration == 0 {
             return None;
         }
-        let bin_width_ns = nice_bin_width(div_ceil(duration, max_bins.max(1) as u64)).max(1);
+        let bin_width_ns = match binning {
+            CounterBinning::Adaptive(max_bins) => {
+                nice_bin_width(div_ceil(duration, max_bins.max(1) as u64))
+            }
+            CounterBinning::Fixed(bins) => div_ceil(duration, bins.max(1) as u64),
+        }
+        .max(1);
         let bins = usize::try_from(div_ceil(duration, bin_width_ns))
             .unwrap_or(usize::MAX)
             .max(1);

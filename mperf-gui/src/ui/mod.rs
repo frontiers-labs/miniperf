@@ -40,7 +40,7 @@ pub use separator::separator;
 pub use splitter::Splitter;
 pub use stat_tile::stat_tile;
 pub use tab_bar::{TabItem, tab_bar};
-pub use table::{Column, table_cell, table_header, table_header_sortable, table_row};
+pub use table::{Column, table_cell, table_header, table_label, table_row};
 pub use text_input::{InputEvent, TextInput};
 pub use theme::{ActiveTheme, ModuleKind, Theme, TmaCategory};
 pub use tooltip::info_tooltip;

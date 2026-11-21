@@ -2,6 +2,25 @@ use gpui::{App, Div, FontWeight, SharedString, Stateful, Window, div, prelude::*
 
 use super::theme::ActiveTheme;
 
+/// Renders a table label with an ellipsis at its measured column width.
+pub fn table_label(text: impl Into<SharedString>) -> impl IntoElement {
+    let text = text.into();
+    gpui::canvas(
+        |_, _, _| (),
+        move |bounds, _, window, cx| {
+            let mut runs = vec![window.text_style().to_run(text.len())];
+            let text = window
+                .text_system()
+                .line_wrapper(runs[0].font.clone(), px(12.0))
+                .truncate_line(text.clone(), bounds.size.width, "…", &mut runs);
+            let line = window.text_system().shape_line(text, px(12.0), &runs, None);
+            let _ = line.paint(bounds.origin, px(16.0), window, cx);
+        },
+    )
+    .w_full()
+    .h(px(16.0))
+}
+
 #[derive(Clone)]
 pub struct Column {
     pub label: SharedString,
@@ -36,7 +55,7 @@ impl Column {
     }
 }
 
-/// Header row for a virtual table: h-28, 10.5px medium muted labels, sticky
+/// Header row for a virtual table: 36px, 12px medium muted labels, sticky
 /// by construction (rendered as a sibling above the `uniform_list`).
 /// `sort` is `(column_index, descending)`.
 pub fn table_header(columns: &[Column], sort: Option<(usize, bool)>, cx: &App) -> Div {
@@ -45,12 +64,12 @@ pub fn table_header(columns: &[Column], sort: Option<(usize, bool)>, cx: &App) -
         .flex()
         .flex_none()
         .items_center()
-        .h(px(28.0))
+        .h(px(36.0))
         .w_full()
         .border_b_1()
         .border_color(theme.border)
-        .bg(theme.background)
-        .text_size(px(10.5))
+        .bg(theme.muted.opacity(0.35))
+        .text_size(px(12.0))
         .font_weight(FontWeight::MEDIUM)
         .text_color(theme.muted_foreground)
         .children(columns.iter().enumerate().map(|(ix, column)| {
@@ -93,12 +112,12 @@ pub fn table_header_sortable(
         .flex()
         .flex_none()
         .items_center()
-        .h(px(28.0))
+        .h(px(36.0))
         .w_full()
         .border_b_1()
         .border_color(theme.border)
-        .bg(theme.background)
-        .text_size(px(10.5))
+        .bg(theme.muted.opacity(0.35))
+        .text_size(px(12.0))
         .font_weight(FontWeight::MEDIUM)
         .text_color(theme.muted_foreground)
         .children(columns.iter().enumerate().map(|(ix, column)| {
@@ -133,20 +152,20 @@ pub fn table_header_sortable(
         }))
 }
 
-/// Row container: 24px, hairline separator, hover wash, `bg-accent` when
+/// Row container: 28px, hairline separator, hover wash, `bg-accent` when
 /// selected. Compose cells with `table_cell`.
 pub fn table_row(selected: bool, cx: &App) -> Div {
     let theme = cx.theme().clone();
     div()
         .flex()
         .items_center()
-        .h(px(24.0))
+        .h(px(28.0))
         .w_full()
         .border_b_1()
-        .border_color(theme.border.opacity(0.4))
+        .border_color(theme.border.opacity(0.6))
         .cursor_pointer()
-        .when(selected, |el| el.bg(theme.accent))
-        .when(!selected, |el| el.hover(|s| s.bg(theme.muted.opacity(0.5))))
+        .when(selected, |el| el.bg(theme.accent.opacity(0.6)))
+        .when(!selected, |el| el.hover(|s| s.bg(theme.muted.opacity(0.4))))
 }
 
 pub fn table_cell(column: &Column) -> Div {

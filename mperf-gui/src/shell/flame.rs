@@ -11,7 +11,7 @@ use gpui::{
 
 use super::ShellView;
 use super::session::ShellSession;
-use crate::charts::{shape_label, truncate_label};
+use crate::charts::truncate_label;
 use crate::profile_analysis::IcicleLayout;
 use crate::ui::Theme;
 
@@ -24,7 +24,6 @@ pub struct FlameView {
     pub layout: Arc<IcicleLayout>,
     pub symbol_query: String,
     pub selected_frame: Option<usize>,
-    pub hovered_node: Option<usize>,
 }
 
 /// Where the tooltip sits and which node it describes.
@@ -66,7 +65,7 @@ pub fn flame_canvas(entity: Entity<ShellView>, theme: Theme, view: FlameView) ->
         |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
         move |bounds, hitbox, window, cx| {
             window.set_cursor_style(CursorStyle::PointingHand, &hitbox);
-            window.paint_quad(fill(bounds, theme.viz.surface));
+            window.paint_quad(fill(bounds, theme.background));
 
             let width = f32::from(bounds.size.width);
             let left = f32::from(bounds.left());
@@ -84,27 +83,26 @@ pub fn flame_canvas(entity: Entity<ShellView>, theme: Theme, view: FlameView) ->
                 let matches = query.is_empty()
                     || profile_frame.map_or_else(
                         || frame.label.to_lowercase().contains(&query),
-                        |frame| frame.matches_symbol(&query),
+                        |frame| {
+                            frame.matches_symbol(&query)
+                                || frame
+                                    .module
+                                    .as_ref()
+                                    .is_some_and(|module| module.to_lowercase().contains(&query))
+                        },
                     );
                 let base = match frame.frame_id {
                     Some(frame_id) => match view.session.module_label(frame_id) {
                         Some((_, kind)) => theme.module_kind_color(kind),
                         None => theme.viz.series[0],
                     },
-                    None => theme.viz.muted,
+                    None => theme.muted_foreground,
                 };
                 let selected = frame
                     .frame_id
                     .is_some_and(|frame_id| view.selected_frame == Some(frame_id));
-                let hovered = view.hovered_node == Some(frame.node_id);
-                let color = if matches { base } else { theme.viz.grid };
-                let alpha = if selected || hovered {
-                    1.0
-                } else if matches {
-                    0.82
-                } else {
-                    0.6
-                };
+                let color = if matches { base } else { theme.muted };
+                let alpha = if matches { 0.85 } else { 1.0 };
 
                 let rect = Bounds::new(point(px(x), px(y)), size(px(w), px(ROW_H - 1.0)));
                 window.paint_quad(fill(rect, color.opacity(alpha)));
@@ -113,23 +111,24 @@ pub fn flame_canvas(entity: Entity<ShellView>, theme: Theme, view: FlameView) ->
                 }
 
                 if w > 28.0 {
-                    let max_chars = ((w - 8.0) / 5.6) as usize;
+                    let max_chars = ((w - 8.0) / 6.6) as usize;
                     let label_color = if matches {
                         gpui::white()
                     } else {
-                        theme.viz.muted
+                        theme.muted_foreground
                     };
-                    let line = shape_label(
-                        &truncate_label(
-                            profile_frame
-                                .map_or(frame.label.as_str(), |frame| &frame.friendly_name),
-                            max_chars,
-                        ),
-                        11.0,
-                        label_color,
-                        window,
+                    let label = truncate_label(
+                        profile_frame.map_or(frame.label.as_str(), |frame| &frame.friendly_name),
+                        max_chars,
                     );
-                    let _ = line.paint(point(px(x + 4.0), px(y + 2.5)), px(ROW_H), window, cx);
+                    let mut run = window.text_style().to_run(label.len());
+                    run.font.family = theme.font_mono.clone();
+                    run.color = label_color;
+                    let line =
+                        window
+                            .text_system()
+                            .shape_line(label.into(), px(11.0), &[run], None);
+                    let _ = line.paint(point(px(x + 4.0), px(y)), px(16.0), window, cx);
                 }
             }
 

@@ -29,6 +29,7 @@ pub enum ButtonSize {
     Icon,
     IconSm,
     IconXs,
+    IconXxs,
 }
 
 impl ButtonSize {
@@ -37,12 +38,16 @@ impl ButtonSize {
             Self::Default | Self::Icon => 32.0,
             Self::Sm | Self::IconSm => 28.0,
             Self::Xs | Self::IconXs => 24.0,
+            Self::IconXxs => 20.0,
             Self::Lg => 36.0,
         }
     }
 
     fn is_icon(self) -> bool {
-        matches!(self, Self::Icon | Self::IconSm | Self::IconXs)
+        matches!(
+            self,
+            Self::Icon | Self::IconSm | Self::IconXs | Self::IconXxs
+        )
     }
 
     fn padding_x(self) -> f32 {
@@ -62,14 +67,14 @@ impl ButtonSize {
 
     fn radius(self, theme: &Theme) -> gpui::Pixels {
         match self {
-            Self::Default | Self::Lg | Self::Icon => theme.radius_lg(),
+            Self::Default | Self::Lg | Self::Icon => theme.radius_md(),
             _ => theme.radius_md(),
         }
     }
 
     fn text_size(self) -> f32 {
         match self {
-            Self::Xs | Self::IconXs => 12.0,
+            Self::Xs | Self::IconXs | Self::IconXxs => 12.0,
             Self::Sm | Self::IconSm => 12.8,
             _ => 14.0,
         }
@@ -77,7 +82,7 @@ impl ButtonSize {
 
     fn icon_size(self) -> f32 {
         match self {
-            Self::Xs | Self::IconXs => 12.0,
+            Self::Xs | Self::IconXs | Self::IconXxs => 12.0,
             Self::Sm => 14.0,
             _ => 16.0,
         }
@@ -89,8 +94,10 @@ pub struct Button {
     id: ElementId,
     label: Option<SharedString>,
     leading_icon: Option<Icon>,
+    icon_size: Option<f32>,
     variant: ButtonVariant,
     size: ButtonSize,
+    radius: Option<f32>,
     disabled: bool,
     active: bool,
     on_click: Option<ClickHandler>,
@@ -101,8 +108,10 @@ pub fn button(id: impl Into<ElementId>) -> Button {
         id: id.into(),
         label: None,
         leading_icon: None,
+        icon_size: None,
         variant: ButtonVariant::default(),
         size: ButtonSize::default(),
+        radius: None,
         disabled: false,
         active: false,
         on_click: None,
@@ -120,6 +129,11 @@ impl Button {
         self
     }
 
+    pub fn icon_size(mut self, size: f32) -> Self {
+        self.icon_size = Some(size);
+        self
+    }
+
     pub fn variant(mut self, variant: ButtonVariant) -> Self {
         self.variant = variant;
         self
@@ -127,6 +141,11 @@ impl Button {
 
     pub fn size(mut self, size: ButtonSize) -> Self {
         self.size = size;
+        self
+    }
+
+    pub fn radius(mut self, radius: f32) -> Self {
+        self.radius = Some(radius);
         self
     }
 
@@ -163,10 +182,11 @@ impl RenderOnce for Button {
             .justify_center()
             .h(px(size.height()))
             .gap(px(size.gap()))
-            .rounded(size.radius(&theme))
+            .rounded(self.radius.map(px).unwrap_or_else(|| size.radius(&theme)))
             .border_1()
             .border_color(gpui::transparent_black())
             .text_size(px(size.text_size()))
+            .line_height(px(if size.text_size() == 12.0 { 16.0 } else { 20.0 }))
             .font_weight(FontWeight::MEDIUM)
             .whitespace_nowrap();
 
@@ -181,7 +201,23 @@ impl RenderOnce for Button {
         if self.disabled {
             base = base.opacity(0.5);
         } else {
-            base = base.cursor_pointer().active(|s| s.top(px(1.0)));
+            base = base
+                .focusable()
+                .cursor_pointer()
+                .active(|s| s.top(px(1.0)))
+                .focus(|style| {
+                    let style = if self.variant == ButtonVariant::Ghost {
+                        style.bg(theme.background)
+                    } else {
+                        style
+                    };
+                    style.border_color(theme.ring).shadow(vec![gpui::BoxShadow {
+                        color: theme.focus_ring(),
+                        offset: gpui::point(px(0.0), px(0.0)),
+                        blur_radius: px(0.0),
+                        spread_radius: px(3.0),
+                    }])
+                });
             if let Some(handler) = self.on_click {
                 base = base.on_click(move |event, window, cx| handler(event, window, cx));
             }
@@ -190,7 +226,11 @@ impl RenderOnce for Button {
         base.relative()
             .when_some(self.leading_icon, |el, ic| {
                 let color = icon_color(self.variant, &theme);
-                el.child(icon(ic).size(px(size.icon_size())).color(color))
+                el.child(
+                    icon(ic)
+                        .size(px(self.icon_size.unwrap_or_else(|| size.icon_size())))
+                        .color(color),
+                )
             })
             .when_some(self.label, |el, label| el.child(label))
     }
@@ -220,7 +260,13 @@ fn apply_variant(
         ButtonVariant::Outline => {
             let hover_bg = theme.muted;
             let styled = base
-                .bg(if active { hover_bg } else { theme.background })
+                .bg(if active {
+                    hover_bg
+                } else if theme.dark {
+                    theme.input.opacity(0.3)
+                } else {
+                    theme.background
+                })
                 .border_color(if theme.dark {
                     theme.input
                 } else {

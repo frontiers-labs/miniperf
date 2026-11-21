@@ -118,6 +118,7 @@ impl AllocationData {
                 id,
                 friendly_name: symbolize::FunctionName::new(&name).friendly().to_owned(),
                 name,
+                symbol_name: None,
                 module,
                 file: (!file.is_empty()).then_some(file),
                 line: (line > 0).then_some(line as u32),

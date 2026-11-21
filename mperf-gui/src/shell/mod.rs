@@ -6,10 +6,13 @@ mod flame;
 mod flamescope;
 mod memory;
 mod names;
+mod navigation;
 mod regions;
 mod resources;
 mod roofline;
 mod session;
+mod source_view;
+mod structures;
 mod timeline;
 mod tma;
 mod topdown;
@@ -17,32 +20,43 @@ mod topdown;
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
 use gpui::{
-    App, Axis, Context, Entity, FocusHandle, Focusable, FontWeight, IntoElement, KeyBinding,
-    MouseButton, PathPromptOptions, Render, ScrollStrategy, Subscription, UniformListScrollHandle,
-    Window, WindowAppearance, actions, div, prelude::*, px, uniform_list,
+    App, Context, Entity, FocusHandle, Focusable, FontWeight, IntoElement, KeyBinding, MouseButton,
+    PathPromptOptions, Render, ScrollStrategy, Subscription, UniformListScrollHandle, Window,
+    WindowAppearance, actions, div, prelude::*, px, uniform_list,
 };
 
 use crate::charts;
 use crate::profile::TimeRange;
 use crate::profile_analysis::{
-    CallTree, CpuUtilizationHeatmap, FlameScopeHeatmap, FunctionAnalysis, FunctionMetrics,
-    FunctionStat, IcicleLayout, SampleFilter, StackWeight, ThreadBalance,
+    CallTree, CpuUtilizationHeatmap, FlameScopeHeatmap, FunctionAnalysis, FunctionStat,
+    IcicleLayout, SampleFilter, StackWeight, ThreadBalance,
 };
 use crate::recent;
 use crate::regions::RegionNodeId;
 use crate::source::{SourceDocument, SourceLocation};
 use crate::ui::{
-    self, ActiveTheme, ButtonSize, ButtonVariant, Column, DropdownItem, Icon, TabItem, Theme,
-    badge, button, chip, dialog, dropdown_menu, empty_state, icon, kbd, stat_tile, tab_bar,
-    table_cell, table_header_sortable, table_row,
+    self, ActiveTheme, ButtonSize, ButtonVariant, DropdownItem, Icon, Theme, badge, button, chip,
+    dialog, dropdown_menu, empty_state, icon, kbd, stat_tile,
 };
 use derived::Derived;
 use flame::{FlameHover, FlameView};
 use flamescope::{ScopeHover, ScopeView, format_fold_period};
+use navigation::{DocumentId, Workspace};
 use session::{GlobalFilter, ShellSession, format_count, format_duration_seconds};
 use timeline::TimelineView;
 
-actions!(tracks_shell, [FocusSymbolFilter, ClearStage]);
+actions!(
+    tracks_shell,
+    [
+        FocusSymbolFilter,
+        ClearStage,
+        ToggleSidebar,
+        ToggleTheme,
+        NavigateBack,
+        NavigateForward,
+        CloseDocument
+    ]
+);
 
 const KEY_CONTEXT: &str = "TracksShell";
 
@@ -60,7 +74,7 @@ fn tma_category(name: &str) -> ui::TmaCategory {
         ui::TmaCategory::Retiring
     } else if name.contains("spec") {
         ui::TmaCategory::BadSpeculation
-    } else if name.contains("front") {
+    } else if name.contains("front") || name.contains("fe_bound") {
         ui::TmaCategory::FrontendBound
     } else {
         ui::TmaCategory::BackendBound
@@ -98,32 +112,6 @@ fn tma_legend(rows: &[(String, f64, ui::TmaCategory)], cx: &App) -> impl IntoEle
                 )
                 .child(name.clone())
         }))
-}
-
-/// Fixed-width gutter bar whose length and color both track sample share.
-fn heat_cell(samples: u64, max: u64, theme: &Theme) -> impl IntoElement + use<> {
-    let fraction = if max > 0 {
-        samples as f32 / max as f32
-    } else {
-        0.0
-    };
-    div()
-        .w(px(48.0))
-        .h(px(13.0))
-        .flex_none()
-        .rounded(px(2.0))
-        .bg(theme.viz.grid.opacity(0.4))
-        .child(
-            div()
-                .h_full()
-                .w(gpui::relative(if samples > 0 {
-                    fraction.max(0.04)
-                } else {
-                    0.0
-                }))
-                .rounded(px(2.0))
-                .bg(charts::heat(fraction)),
-        )
 }
 
 /// Clock/throttle badge: a TMA or hotspot reading is not interpretable without
@@ -174,11 +162,17 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-f", FocusSymbolFilter, ctx),
         KeyBinding::new("ctrl-f", FocusSymbolFilter, ctx),
         KeyBinding::new("escape", ClearStage, ctx),
+        KeyBinding::new("cmd-b", ToggleSidebar, ctx),
+        KeyBinding::new("ctrl-b", ToggleSidebar, ctx),
+        KeyBinding::new("d", ToggleTheme, Some("TracksShell && !TextInput")),
+        KeyBinding::new("alt-left", NavigateBack, ctx),
+        KeyBinding::new("alt-right", NavigateForward, ctx),
+        KeyBinding::new("cmd-w", CloseDocument, ctx),
+        KeyBinding::new("ctrl-w", CloseDocument, ctx),
     ]);
 }
 
-/// Static views in canonical tab order. Availability is data-presence driven,
-/// so a recording that never collected stacks simply has fewer tabs.
+/// Views retain their production analysis routes when selected from the menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ViewId {
     Summary,
@@ -188,15 +182,16 @@ enum ViewId {
     Timeline,
     Events,
     Cores,
-    TopDown,
     Resources,
+    ResourceUse,
+    Structures,
     Memory,
     Allocations,
     Roofline,
 }
 
 impl ViewId {
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 13] = [
         Self::Summary,
         Self::Hotspots,
         Self::Flame,
@@ -204,8 +199,9 @@ impl ViewId {
         Self::Timeline,
         Self::Events,
         Self::Cores,
-        Self::TopDown,
         Self::Resources,
+        Self::ResourceUse,
+        Self::Structures,
         Self::Memory,
         Self::Allocations,
         Self::Roofline,
@@ -215,13 +211,14 @@ impl ViewId {
         match self {
             Self::Summary => "Summary",
             Self::Hotspots => "Hotspots",
-            Self::Flame => "Flame Graph",
+            Self::Flame => "Flamegraph",
             Self::FlameScope => "Flame Scope",
             Self::Timeline => "Timeline",
             Self::Events => "Events",
             Self::Cores => "Cores",
-            Self::TopDown => "Top-Down",
             Self::Resources => "Resources",
+            Self::ResourceUse => "Resource use",
+            Self::Structures => "Structures",
             Self::Memory => "Memory",
             Self::Allocations => "Allocations",
             Self::Roofline => "Roofline",
@@ -231,23 +228,24 @@ impl ViewId {
     fn icon(self) -> Icon {
         match self {
             Self::Summary => Icon::LayoutDashboard,
-            Self::Hotspots => Icon::Table2,
+            Self::Hotspots => Icon::ChartNoAxesColumnIncreasing,
             Self::Flame => Icon::Flame,
             Self::FlameScope => Icon::Grid3x3,
             Self::Timeline => Icon::LineChart,
             Self::Events => Icon::Layers,
             Self::Cores => Icon::Cpu,
-            Self::TopDown => Icon::Layers,
-            Self::Resources => Icon::Gauge,
+            Self::Resources => Icon::Cpu,
+            Self::ResourceUse => Icon::Gauge,
+            Self::Structures => Icon::Boxes,
             Self::Memory => Icon::MemoryStick,
             Self::Allocations => Icon::MemoryStick,
-            Self::Roofline => Icon::Mountain,
+            Self::Roofline => Icon::ChartLine,
         }
     }
 
     fn is_available(self, session: &ShellSession) -> bool {
         match self {
-            Self::Summary => true,
+            Self::Summary | Self::Resources | Self::Structures => true,
             Self::Hotspots | Self::Flame => session.has_stacks,
             Self::FlameScope => session.full_range.is_some() && session.total_samples > 0,
             Self::Timeline => {
@@ -257,11 +255,7 @@ impl ViewId {
             }
             Self::Events => !session.regions.nodes.is_empty() || session.regions.error.is_some(),
             Self::Cores => !session.profile.cpu_observations.is_empty(),
-            Self::TopDown => session
-                .tma
-                .as_ref()
-                .is_some_and(tma::TmaData::has_hierarchy),
-            Self::Resources => session.snapshot.is_some(),
+            Self::ResourceUse => session.snapshot.is_some(),
             Self::Memory => session.memory.is_some(),
             Self::Allocations => session.allocations.is_some(),
             Self::Roofline => session.roofline.is_some(),
@@ -285,23 +279,26 @@ enum FlameWeight {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SortKey {
+    Function,
     SelfPct,
     TotalPct,
-    CpuTime,
+    Cycles,
+    Instructions,
     Ipc,
-    LlcMpki,
-    BeStall,
-    BrMpki,
+    Tma(usize),
 }
 
 struct SourceTab {
+    id: DocumentId,
     frame_id: usize,
     title: String,
     document: Option<SourceDocument>,
     scroll: UniformListScrollHandle,
-    asm_scroll: UniformListScrollHandle,
+    source_horizontal: gpui::ScrollHandle,
+    assembly_horizontal: gpui::ScrollHandle,
     asm: Option<Arc<asm::AsmListing>>,
     asm_error: Option<String>,
+    function_menu_open: bool,
     /// Source line under the cursor, overridden by `pinned_line` when set.
     hovered_line: Option<usize>,
     pinned_line: Option<usize>,
@@ -313,9 +310,7 @@ impl SourceTab {
     }
 }
 
-/// `--shell`: the Tracks UI on a real recording — title bar with a recents
-/// switcher, one global filter, master timeline with a live brush, hotspots,
-/// selection panel, status bar. Analyses run on the background executor.
+/// Native recording workbench. Analyses run on the background executor.
 pub struct ShellView {
     focus_handle: FocusHandle,
     override_dark: Option<bool>,
@@ -348,11 +343,20 @@ pub struct ShellView {
     collapsed_regions: BTreeSet<RegionNodeId>,
     region_hover: Option<regions::RegionHover>,
     region_timeline: Option<std::rc::Rc<regions::RegionTimeline>>,
-    active_tab: usize,
+    workspace: Workspace,
+    sidebar_open: bool,
+    expanded_folders: BTreeSet<PathBuf>,
+    native_controls_open: bool,
+    native_selection_open: bool,
+    inspector_open: bool,
+    wide_inspector: bool,
+    narrow_inspector_open: bool,
+    resource_timeline: resources::TimelineState,
+    structures: structures::State,
     source_tabs: Vec<SourceTab>,
-    side_panel_open: bool,
-    panel_width: f32,
     selected_frame: Option<usize>,
+    allocation_ui: allocations::ViewState,
+    roofline_ui: roofline::ViewState,
     allocation_stack: Option<u64>,
     allocation_sites: Derived<Vec<(u64, allocations::Site)>>,
     /// Index into the recording's roofline loops, for the Roofline view.
@@ -364,7 +368,9 @@ pub struct ShellView {
     sort_desc: bool,
     pub brush: charts::Brush,
     symbol_input: Entity<ui::TextInput>,
-    splitter: Entity<ui::Splitter>,
+    hotspot_input: Entity<ui::TextInput>,
+    hotspot_horizontal: gpui::ScrollHandle,
+    flame_input: Entity<ui::TextInput>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -374,14 +380,17 @@ impl ShellView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let override_dark = recent::load_theme();
+        if let Some(dark) = override_dark {
+            cx.set_global(if dark { Theme::dark() } else { Theme::light() });
+        }
         let symbol_input = cx.new(|cx| {
-            ui::TextInput::new("symbol-filter", "match symbol…", cx)
+            ui::TextInput::new("symbol-filter", "Search function or module…", cx)
                 .leading_icon(Icon::Search)
                 .clearable()
-                .kbd_hint("⌘F")
-                .height(24.0)
-                .text_size(11.0)
-                .width(176.0)
+                .height(32.0)
+                .text_size(12.0)
+                .width(256.0)
         });
         let input_sub = cx.subscribe_in(
             &symbol_input,
@@ -401,16 +410,22 @@ impl ShellView {
                 }
             },
         );
-        let entity = cx.entity();
-        let splitter = cx.new(|_| {
-            ui::Splitter::new(Axis::Horizontal, move |position, window, cx| {
-                entity.update(cx, |this, cx| {
-                    let total = f32::from(window.viewport_size().width);
-                    this.panel_width = (total - f32::from(position)).clamp(240.0, 420.0);
-                    cx.notify();
-                });
-            })
+        let hotspot_input = cx.new(|cx| {
+            ui::TextInput::new("hotspot-search", "Search function or module…", cx)
+                .leading_icon(Icon::Search)
+                .height(32.0)
+                .text_size(12.0)
+                .width(256.0)
         });
+        let hotspot_sub = cx.subscribe(&hotspot_input, |_, _, _: &ui::InputEvent, cx| cx.notify());
+        let flame_input = cx.new(|cx| {
+            ui::TextInput::new("flame-search", "Search functions or modules…", cx)
+                .leading_icon(Icon::Search)
+                .height(28.0)
+                .text_size(12.0)
+                .width(224.0)
+        });
+        let flame_sub = cx.subscribe(&flame_input, |_, _, _: &ui::InputEvent, cx| cx.notify());
         let appearance_sub = cx.observe_window_appearance(window, |this: &mut Self, window, cx| {
             if this.override_dark.is_none() {
                 cx.set_global(Theme::from_appearance(window.appearance()));
@@ -421,7 +436,7 @@ impl ShellView {
         window.focus(&focus_handle);
         let mut view = Self {
             focus_handle,
-            override_dark: None,
+            override_dark,
             recent_results: recent::load(),
             session: None,
             loading: None,
@@ -448,11 +463,20 @@ impl ShellView {
             collapsed_regions: BTreeSet::new(),
             region_hover: None,
             region_timeline: None,
-            active_tab: 0,
+            workspace: Workspace::default(),
+            sidebar_open: true,
+            expanded_folders: BTreeSet::new(),
+            native_controls_open: false,
+            native_selection_open: false,
+            inspector_open: true,
+            wide_inspector: false,
+            narrow_inspector_open: false,
+            resource_timeline: Default::default(),
+            structures: Default::default(),
             source_tabs: Vec::new(),
-            side_panel_open: true,
-            panel_width: 300.0,
             selected_frame: None,
+            allocation_ui: allocations::ViewState::new(cx),
+            roofline_ui: roofline::ViewState::new(cx),
             allocation_stack: None,
             allocation_sites: Derived::default(),
             roofline_loop: None,
@@ -462,8 +486,10 @@ impl ShellView {
             sort_desc: true,
             brush: charts::Brush::default(),
             symbol_input,
-            splitter,
-            _subscriptions: vec![input_sub, appearance_sub],
+            hotspot_input,
+            hotspot_horizontal: gpui::ScrollHandle::new(),
+            flame_input,
+            _subscriptions: vec![input_sub, appearance_sub, hotspot_sub, flame_sub],
         };
         if let Some(path) = initial_directory {
             view.open_recording(path, cx);
@@ -504,12 +530,21 @@ impl ShellView {
         self.collapsed_regions.clear();
         self.region_hover = None;
         self.symbol_input.update(cx, |input, cx| input.clear(cx));
+        self.hotspot_input.update(cx, |input, cx| input.clear(cx));
+        self.hotspot_horizontal = gpui::ScrollHandle::new();
+        if matches!(self.sort_key, SortKey::Tma(_)) {
+            self.sort_key = SortKey::SelfPct;
+            self.sort_desc = true;
+        }
+        self.flame_input.update(cx, |input, cx| input.clear(cx));
         self.selected_frame = None;
         self.roofline_loop = None;
         self.roofline_view = None;
         self.roofline_drag = None;
         self.source_tabs.clear();
         self.allocation_stack = None;
+        self.allocation_ui.reset(cx);
+        self.roofline_ui.reset(cx);
         self.allocation_sites.reset();
         self.brush.clear();
         self.analysis.reset();
@@ -520,11 +555,10 @@ impl ShellView {
         self.scope_hover = None;
         self.cpu_lanes.reset();
         self.balance.reset();
-        self.active_tab = self
-            .views()
-            .iter()
-            .position(|view| *view == ViewId::Hotspots)
-            .unwrap_or(0);
+        self.workspace = Workspace::default();
+        self.resource_timeline = Default::default();
+        self.structures = Default::default();
+        self.expanded_folders.clear();
         self.refresh_analysis(cx);
     }
 
@@ -628,6 +662,7 @@ impl ShellView {
             |_| {},
         );
         match self.active_view() {
+            Some(ViewId::Structures) => structures::ensure(self, cx),
             Some(ViewId::FlameScope) => self.request(
                 cx,
                 self.filter.spatial_key(),
@@ -690,7 +725,11 @@ impl ShellView {
                 self.analysis_key(),
                 GlobalFilter::clone,
                 |this| &mut this.allocation_sites,
-                |session, filter| Some(allocations::allocation_sites(session, filter)),
+                |session, filter| {
+                    session.allocations.as_ref().map(|data| {
+                        allocations::allocation_sites(data, &session.profile.frames, filter)
+                    })
+                },
                 |_| {},
             ),
             _ => {}
@@ -778,12 +817,33 @@ impl ShellView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.focus(&self.symbol_input.focus_handle(cx));
+        if !self.native_controls_open && self.active_view() != Some(ViewId::Hotspots) {
+            self.select_view(ViewId::Hotspots, cx);
+        }
+        let input = match self.active_view() {
+            Some(ViewId::Hotspots) => &self.hotspot_input,
+            Some(ViewId::Flame) => &self.flame_input,
+            _ => {
+                self.native_controls_open = true;
+                &self.symbol_input
+            }
+        };
+        window.focus(&input.focus_handle(cx));
+        cx.notify();
     }
 
     /// Esc, two-stage: first clears the selection, then the filters.
     fn clear_stage(&mut self, _: &ClearStage, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_frame.is_some() {
+        if let Some(tab) = self
+            .source_tabs
+            .iter_mut()
+            .find(|tab| Some(&tab.id) == self.workspace.active.as_ref())
+            && (tab.pinned_line.is_some() || tab.hovered_line.is_some())
+        {
+            tab.pinned_line = None;
+            tab.hovered_line = None;
+            cx.notify();
+        } else if self.selected_frame.is_some() {
             self.selected_frame = None;
             cx.notify();
         } else if self.filter.is_active() {
@@ -801,6 +861,7 @@ impl ShellView {
             ),
         };
         self.override_dark = Some(dark);
+        let _ = recent::save_theme(dark);
         cx.set_global(if dark { Theme::dark() } else { Theme::light() });
         cx.notify();
     }
@@ -826,11 +887,7 @@ impl ShellView {
     }
 
     fn active_view(&self) -> Option<ViewId> {
-        self.views().get(self.active_tab).copied()
-    }
-
-    fn static_tab_count(&self) -> usize {
-        self.views().len()
+        (self.workspace.active == Some(DocumentId::Profile)).then_some(self.workspace.view)
     }
 
     /// The load failure the window is currently showing, if any.
@@ -855,7 +912,14 @@ impl ShellView {
     pub fn view_names(&self) -> Vec<String> {
         self.views()
             .into_iter()
-            .map(|view| view.title().to_string())
+            .map(|view| {
+                if view == ViewId::Flame {
+                    "Flame Graph"
+                } else {
+                    view.title()
+                }
+                .to_owned()
+            })
             .collect()
     }
 
@@ -865,14 +929,26 @@ impl ShellView {
     }
 
     fn set_active_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
-        self.active_tab = ix;
+        if let Some(view) = self.views().get(ix).copied() {
+            self.select_view(view, cx);
+        }
+    }
+
+    fn select_view(&mut self, view: ViewId, cx: &mut Context<Self>) {
+        if !self
+            .session
+            .as_ref()
+            .is_some_and(|session| view.is_available(session))
+        {
+            return;
+        }
+        self.workspace.view = view;
+        self.workspace.open(DocumentId::Profile);
         self.flame_hover = None;
         self.ensure_derived(cx);
         cx.notify();
     }
 
-    /// Opens (or focuses) the source/asm tab for a function, kicking off the
-    /// disassembly query on the background executor.
     fn open_source_tab(&mut self, frame_id: usize, cx: &mut Context<Self>) {
         let Some(session) = self.session.clone() else {
             return;
@@ -880,50 +956,67 @@ impl ShellView {
         let Some(frame) = session.profile.frames.get(frame_id).cloned() else {
             return;
         };
-        if let Some(existing) = self
-            .source_tabs
-            .iter()
-            .position(|tab| tab.frame_id == frame_id)
-        {
-            self.active_tab = self.static_tab_count() + existing;
-            cx.notify();
-            return;
-        }
-
+        let id = frame
+            .file
+            .as_ref()
+            .map_or(DocumentId::Function(frame_id), |path| {
+                DocumentId::File(PathBuf::from(path))
+            });
+        let existing = self.source_tabs.iter().position(|tab| tab.id == id);
+        let source_ix = existing.unwrap_or(self.source_tabs.len());
         let document = frame.file.clone().map(|file| {
             SourceDocument::load(SourceLocation {
                 path: PathBuf::from(file),
                 line: frame.line.unwrap_or(1) as usize,
             })
         });
-        let scroll = UniformListScrollHandle::new();
-        if let Some(document) = document.as_ref() {
-            scroll.scroll_to_item(document.focus_line.saturating_sub(4), ScrollStrategy::Top);
-        }
-        self.source_tabs.push(SourceTab {
+        let title = frame
+            .file
+            .clone()
+            .unwrap_or_else(|| frame.friendly_name.clone());
+        let tab = SourceTab {
+            id: id.clone(),
             frame_id,
-            title: frame.friendly_name.clone(),
+            title,
             document,
-            scroll,
-            asm_scroll: UniformListScrollHandle::new(),
+            scroll: UniformListScrollHandle::new(),
+            source_horizontal: gpui::ScrollHandle::new(),
+            assembly_horizontal: gpui::ScrollHandle::new(),
             asm: None,
             asm_error: None,
+            function_menu_open: false,
             hovered_line: None,
             pinned_line: None,
-        });
-        self.active_tab = self.static_tab_count() + self.source_tabs.len() - 1;
-
+        };
+        if existing.is_some() {
+            self.source_tabs[source_ix] = tab;
+        } else {
+            self.source_tabs.push(tab);
+        }
+        self.selected_frame = Some(frame_id);
+        self.workspace.open(id);
         if session.has_assembly
             && let Some(module) = frame.module.clone()
         {
             let directory = session.result_directory.clone();
             let function = frame.name.clone();
+            let source_path = frame.file.map(PathBuf::from);
+            let recording_directory = directory.clone();
             cx.spawn(async move |this, cx| {
                 let listing = cx
                     .background_executor()
-                    .spawn(async move { asm::load(&directory, &module, &function) })
+                    .spawn(async move {
+                        asm::load(&directory, &module, &function, source_path.as_deref())
+                    })
                     .await;
                 this.update(cx, |this, cx| {
+                    if this
+                        .session
+                        .as_ref()
+                        .is_none_or(|session| session.result_directory != recording_directory)
+                    {
+                        return;
+                    }
                     let Some(tab) = this
                         .source_tabs
                         .iter_mut()
@@ -932,7 +1025,18 @@ impl ShellView {
                         return;
                     };
                     match listing {
-                        Ok(listing) => tab.asm = Some(Arc::new(listing)),
+                        Ok(listing) => {
+                            if tab.document.is_none()
+                                && let Some(path) = listing.source_file.as_ref()
+                            {
+                                tab.document = Some(SourceDocument::load(SourceLocation {
+                                    path: path.clone(),
+                                    line: 1,
+                                }));
+                            }
+                            tab.asm = Some(Arc::new(listing));
+                            source_view::scroll_to_function(tab);
+                        }
                         Err(error) => tab.asm_error = Some(format!("{error:#}")),
                     }
                     cx.notify();
@@ -940,6 +1044,10 @@ impl ShellView {
                 .ok();
             })
             .detach();
+        } else {
+            self.source_tabs[source_ix].asm_error =
+                Some("No native assembly recorded for this function".to_owned());
+            source_view::scroll_to_function(&self.source_tabs[source_ix]);
         }
         cx.notify();
     }
@@ -953,136 +1061,6 @@ impl ShellView {
                 .get(frame_id)
                 .is_some_and(|frame| frame.file.is_some() || session.has_assembly)
         })
-    }
-
-    fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let theme = cx.theme().clone();
-
-        let mut recording_items: Vec<DropdownItem> = self
-            .recent_results
-            .iter()
-            .map(|path| {
-                let name = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("recording");
-                DropdownItem::new(name.to_owned()).mono().checked(
-                    self.session
-                        .as_ref()
-                        .is_some_and(|session| session.result_directory == *path),
-                )
-            })
-            .collect();
-        recording_items.push(DropdownItem::new("Open recording…").separator_before());
-        let recents_len = self.recent_results.len();
-
-        div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(px(12.0))
-            .h(px(36.0))
-            .pl(px(78.0))
-            .pr(px(10.0))
-            .border_b_1()
-            .border_color(theme.border)
-            .on_mouse_down(MouseButton::Left, |_, window, _| {
-                window.start_window_move();
-            })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .text_size(px(13.0))
-                    .child(div().font_weight(FontWeight::SEMIBOLD).child("miniperf")),
-            )
-            .child(
-                dropdown_menu(
-                    "recording-menu",
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.0))
-                        .h(px(24.0))
-                        .px(px(8.0))
-                        .rounded(theme.radius_md())
-                        .bg(theme.muted)
-                        .hover(|s| s.bg(theme.accent))
-                        .child(
-                            div()
-                                .font_family(theme.font_mono.clone())
-                                .text_size(px(10.5))
-                                .child(match self.session.as_ref() {
-                                    Some(session) => session.name.clone(),
-                                    None => "no recording".to_owned(),
-                                }),
-                        )
-                        .when_some(self.session.as_ref(), |el, session| {
-                            el.child(badge(session.scenario_label()).tint(theme.viz.series[0]))
-                        })
-                        .child(
-                            icon(Icon::ChevronDown)
-                                .size(px(12.0))
-                                .color(theme.muted_foreground),
-                        ),
-                    self.recording_menu_open,
-                )
-                .min_width(288.0)
-                .items(recording_items)
-                .on_toggle(cx.processor(|this, open: bool, _, cx| {
-                    this.recording_menu_open = open;
-                    cx.notify();
-                }))
-                .on_select(cx.processor(move |this, ix: usize, _, cx| {
-                    if ix < recents_len {
-                        let path = this.recent_results[ix].clone();
-                        if this
-                            .session
-                            .as_ref()
-                            .is_none_or(|session| session.result_directory != path)
-                        {
-                            this.open_recording(path, cx);
-                        }
-                    } else {
-                        this.pick_recording(cx);
-                    }
-                    cx.notify();
-                })),
-            )
-            .when_some(self.loading.as_ref(), |el, path| {
-                el.child(
-                    chip(
-                        "loading-chip",
-                        format!(
-                            "loading {}…",
-                            path.file_name()
-                                .and_then(|name| name.to_str())
-                                .unwrap_or("recording")
-                        ),
-                    )
-                    .active(true),
-                )
-            })
-            .child(
-                button("new-profile")
-                    .icon(Icon::CircleDot)
-                    .label("New profile")
-                    .variant(ButtonVariant::Outline)
-                    .size(ButtonSize::Xs)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.new_profile_open = true;
-                        cx.notify();
-                    })),
-            )
-            .child(div().flex_1())
-            .child(
-                button("shell-theme-toggle")
-                    .icon(if theme.dark { Icon::Sun } else { Icon::Moon })
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::IconSm)
-                    .on_click(cx.listener(|this, _, window, cx| this.toggle_theme(window, cx))),
-            )
     }
 
     fn render_filter_bar(
@@ -1378,142 +1356,30 @@ impl ShellView {
             })
     }
 
-    fn render_tab_strip(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let theme = cx.theme().clone();
-        let mut items: Vec<TabItem> = self
-            .views()
-            .into_iter()
-            .map(|view| TabItem::new(view.title()).icon(view.icon()))
-            .collect();
-        for tab in &self.source_tabs {
-            items.push(
-                TabItem::new(tab.title.clone())
-                    .icon(Icon::FileCode2)
-                    .mono()
-                    .closable(),
-            );
-        }
-        let static_tabs = self.static_tab_count();
-
+    fn hotspot_metrics(
+        scroll: &gpui::ScrollHandle,
+        width: gpui::Pixels,
+        columns: gpui::Div,
+    ) -> impl IntoElement + use<> {
         div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(px(4.0))
-            .h(px(32.0))
-            .px(px(6.0))
-            .border_b_1()
-            .border_color(theme.border)
-            .bg(theme.muted.opacity(0.3))
+            .id("hotspot-metrics")
+            .flex_1()
+            .min_w(px(0.0))
+            .h_full()
+            .overflow_x_scroll()
+            .track_scroll(scroll)
+            .map(|mut viewport| {
+                viewport.style().restrict_scroll_to_axis = Some(true);
+                viewport
+            })
             .child(
-                div().flex_1().min_w(px(0.0)).child(
-                    tab_bar("detail-tabs", items, self.active_tab)
-                        .on_select(cx.processor(|this, ix: usize, _, cx| {
-                            this.set_active_tab(ix, cx);
-                        }))
-                        .on_close(cx.processor(move |this, ix: usize, _, cx| {
-                            let source_ix = ix - static_tabs;
-                            if source_ix < this.source_tabs.len() {
-                                this.source_tabs.remove(source_ix);
-                                if this.active_tab == ix {
-                                    this.active_tab = static_tabs.saturating_sub(1);
-                                } else if this.active_tab > ix {
-                                    this.active_tab -= 1;
-                                }
-                                cx.notify();
-                            }
-                        })),
-                ),
+                columns
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .size_full()
+                    .min_w(width),
             )
-            .child(
-                button("panel-toggle")
-                    .icon(if self.side_panel_open {
-                        Icon::PanelRightClose
-                    } else {
-                        Icon::PanelRightOpen
-                    })
-                    .variant(ButtonVariant::Ghost)
-                    .size(ButtonSize::IconSm)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.side_panel_open = !this.side_panel_open;
-                        cx.notify();
-                    })),
-            )
-    }
-
-    fn hotspot_columns(analysis: &FunctionAnalysis) -> Vec<(Column, Option<SortKey>)> {
-        let has = |get: fn(&FunctionMetrics) -> Option<f64>| {
-            analysis
-                .functions
-                .iter()
-                .any(|function| get(&function.metrics).is_some())
-        };
-        let mut columns = vec![
-            (Column::new("Function"), None),
-            (
-                Column::new("Self %").width(70.0).right().sortable(),
-                Some(SortKey::SelfPct),
-            ),
-            (
-                Column::new("Total %").width(70.0).right().sortable(),
-                Some(SortKey::TotalPct),
-            ),
-        ];
-        if has(|metrics| metrics.cpu_time_ns) {
-            columns.push((
-                Column::new("CPU time").width(70.0).right().sortable(),
-                Some(SortKey::CpuTime),
-            ));
-        }
-        if has(|metrics| metrics.ipc) {
-            columns.push((
-                Column::new("IPC").width(50.0).right().sortable(),
-                Some(SortKey::Ipc),
-            ));
-        }
-        if has(|metrics| metrics.llc_mpki) {
-            columns.push((
-                Column::new("LLC MPKI").width(70.0).right().sortable(),
-                Some(SortKey::LlcMpki),
-            ));
-        }
-        if has(|metrics| metrics.backend_stall_fraction) {
-            columns.push((
-                Column::new("BE stall").width(60.0).right().sortable(),
-                Some(SortKey::BeStall),
-            ));
-        }
-        if has(|metrics| metrics.branch_mpki) {
-            columns.push((
-                Column::new("Br MPKI").width(60.0).right().sortable(),
-                Some(SortKey::BrMpki),
-            ));
-        }
-        columns
-    }
-
-    fn sorted_rows(&self, analysis: &FunctionAnalysis) -> Vec<usize> {
-        let key = |stat: &FunctionStat| -> f64 {
-            match self.sort_key {
-                SortKey::SelfPct => stat.self_fraction,
-                SortKey::TotalPct => stat.inclusive_fraction,
-                SortKey::CpuTime => stat.metrics.cpu_time_ns.unwrap_or(-1.0),
-                SortKey::Ipc => stat.metrics.ipc.unwrap_or(-1.0),
-                SortKey::LlcMpki => stat.metrics.llc_mpki.unwrap_or(-1.0),
-                SortKey::BeStall => stat.metrics.backend_stall_fraction.unwrap_or(-1.0),
-                SortKey::BrMpki => stat.metrics.branch_mpki.unwrap_or(-1.0),
-            }
-        };
-        let mut rows: Vec<usize> = (0..analysis.functions.len()).collect();
-        rows.sort_by(|a, b| {
-            let ordering = key(&analysis.functions[*a]).total_cmp(&key(&analysis.functions[*b]));
-            if self.sort_desc {
-                ordering.reverse()
-            } else {
-                ordering
-            }
-        });
-        rows
     }
 
     fn render_hotspots(
@@ -1521,191 +1387,317 @@ impl ShellView {
         session: &Arc<ShellSession>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let Some(analysis) = self.analysis.latest().cloned() else {
-            return empty_state(Icon::Table2, "Analyzing samples…").into_any_element();
-        };
-
-        let columns = Self::hotspot_columns(&analysis);
-        let header_columns: Vec<Column> =
-            columns.iter().map(|(column, _)| column.clone()).collect();
-        let sort_ix = columns
-            .iter()
-            .position(|(_, key)| *key == Some(self.sort_key));
-        let sort_keys: Vec<Option<SortKey>> = columns.iter().map(|(_, key)| *key).collect();
-        let header_entity = cx.entity();
-        let header = table_header_sortable(
-            &header_columns,
-            sort_ix.map(|ix| (ix, self.sort_desc)),
-            move |ix, _, cx| {
-                let sort_keys = sort_keys.clone();
-                header_entity.update(cx, |this, cx| {
-                    if let Some(Some(key)) = sort_keys.get(ix) {
-                        if this.sort_key == *key {
-                            this.sort_desc = !this.sort_desc;
-                        } else {
-                            this.sort_key = *key;
-                            this.sort_desc = true;
-                        }
-                        cx.notify();
-                    }
-                });
-            },
-            cx,
-        );
-
-        let rows = self.sorted_rows(&analysis);
-        if rows.is_empty() {
-            return div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .child(header)
-                .child(empty_state(
-                    Icon::Table2,
-                    format!(
-                        "No samples match the current filter — {} total available.",
-                        format_count(session.total_samples as f64)
-                    ),
-                ))
-                .into_any_element();
+        let theme = cx.theme().clone();
+        let tma = session.tma.as_ref().filter(|tma| tma.has_functions());
+        let show_tma = tma.is_some();
+        let mut columns = vec![
+            ("Function", SortKey::Function, None),
+            ("Self %", SortKey::SelfPct, None),
+            ("Total %", SortKey::TotalPct, None),
+            ("Cycles", SortKey::Cycles, None),
+            (
+                if show_tma { "Instr." } else { "Instructions" },
+                SortKey::Instructions,
+                None,
+            ),
+            ("IPC", SortKey::Ipc, None),
+        ];
+        if let Some(tma) = tma {
+            columns.extend(tma.level1_rows().enumerate().map(|(index, row)| {
+                (
+                    short_tma_label(&row.name),
+                    SortKey::Tma(index),
+                    Some(row.name.replace('_', " ")),
+                )
+            }));
         }
-
-        let entity = cx.entity();
-        let session = session.clone();
-        let selected = self.selected_frame;
-        let symbol_query = self.filter.symbol.trim().to_lowercase();
-
-        div()
+        let metric_count = (columns.len() - 1) as f32;
+        let metric_width = gpui::relative(1.0 / metric_count);
+        let metrics_min_width = px(96.0 * metric_count);
+        let function_width = gpui::relative(if show_tma { 0.36 } else { 0.44 });
+        let metric_padding = if show_tma { 4.0 } else { 12.0 };
+        let mut header_columns =
+            columns
+                .into_iter()
+                .enumerate()
+                .map(|(index, (label, key, metric))| {
+                    let active = self.sort_key == key;
+                    div()
+                        .id(("hotspot-sort", index))
+                        .flex()
+                        .items_center()
+                        .h_full()
+                        .flex_none()
+                        .overflow_hidden()
+                        .when(index == 0, |el| {
+                            el.w(function_width)
+                                .min_w(px(124.0))
+                                .max_w(px(400.0))
+                                .pl(px(16.0))
+                        })
+                        .when(index > 0, |el| {
+                            el.w(metric_width)
+                                .min_w(px(96.0))
+                                .pl(px(metric_padding))
+                                .justify_end()
+                        })
+                        .pr(px(metric_padding))
+                        .gap(px(4.0))
+                        .cursor_pointer()
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(if active {
+                            theme.foreground
+                        } else {
+                            theme.muted_foreground
+                        })
+                        .child(label)
+                        .when_some(metric, |el, metric| {
+                            el.tooltip(ui::tooltip::text_tooltip(format!(
+                                "{metric} (%) · whole recording"
+                            )))
+                        })
+                        .when(active || !show_tma, |el| {
+                            el.child(
+                                icon(if !active {
+                                    Icon::ArrowUpDown
+                                } else if self.sort_desc {
+                                    Icon::ArrowDown
+                                } else {
+                                    Icon::ArrowUp
+                                })
+                                .size(px(12.0)),
+                            )
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.sort_key == key {
+                                this.sort_desc = !this.sort_desc;
+                            } else {
+                                this.sort_key = key;
+                                this.sort_desc = key != SortKey::Function;
+                            }
+                            cx.notify();
+                        }))
+                });
+        let scroll = self.hotspot_horizontal.clone();
+        let function_header = header_columns.next();
+        let header = div()
+            .id("hotspot-columns")
+            .flex()
+            .flex_none()
+            .h(px(37.0))
+            .border_b_1()
+            .border_color(theme.border)
+            .bg(theme.muted.opacity(0.35))
+            .children(function_header)
+            .child(Self::hotspot_metrics(
+                &scroll,
+                metrics_min_width,
+                div().children(header_columns),
+            ));
+        let body = div()
             .size_full()
             .flex()
             .flex_col()
             .when(self.is_computing(), |el| el.opacity(0.7))
-            .child(header)
             .child(
-                uniform_list("hotspots-rows", rows.len(), move |range, _, cx| {
-                    let theme = cx.theme().clone();
-                    range
-                        .map(|list_ix| {
-                            let function = &analysis.functions[rows[list_ix]];
-                            let frame_id = function.frame_id;
-                            let entity = entity.clone();
-                            let module = session.module_label(frame_id);
-                            let dimmed = !symbol_query.is_empty()
-                                && !session.profile.frames[frame_id].matches_symbol(&symbol_query);
-                            let self_pct = function.self_fraction * 100.0;
-                            let bar_width = (self_pct / 100.0 * 240.0).min(66.0) as f32;
-                            let number = |value: String, muted: bool| {
+                div()
+                    .h(px(45.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .px(px(8.0))
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .gap(px(12.0))
+                    .child(self.hotspot_input.clone())
+                    .when(show_tma, |el| {
+                        el.child(ui::section_caption("TMA · whole recording", cx))
+                    }),
+            );
+        let render_table =
+            |rows: gpui::AnyElement| body.child(header).child(rows).into_any_element();
+        let Some(analysis) = self.analysis.latest().cloned() else {
+            return render_table(
+                empty_state(Icon::Table2, "Analyzing samples…").into_any_element(),
+            );
+        };
+        let query = self.hotspot_input.read(cx).text().trim().to_lowercase();
+        let mut rows: Vec<usize> = analysis
+            .functions
+            .iter()
+            .enumerate()
+            .filter(|(_, stat)| {
+                let frame = &session.profile.frames[stat.frame_id];
+                query.is_empty()
+                    || frame.matches_symbol(&query)
+                    || frame
+                        .module
+                        .as_ref()
+                        .is_some_and(|module| module.to_lowercase().contains(&query))
+            })
+            .map(|(index, _)| index)
+            .collect();
+        let key = self.sort_key;
+        let descending = self.sort_desc;
+        let collator = icu_collator::Collator::try_new(Default::default(), Default::default())
+            .expect("compiled Unicode collation data");
+        rows.sort_by(|left, right| {
+            let left = &analysis.functions[*left];
+            let right = &analysis.functions[*right];
+            let value = |stat: &crate::profile_analysis::FunctionStat| match key {
+                SortKey::SelfPct => Some(stat.self_fraction),
+                SortKey::TotalPct => Some(stat.inclusive_fraction),
+                SortKey::Cycles => stat.metrics.cycles,
+                SortKey::Instructions => stat.metrics.instructions,
+                SortKey::Ipc => stat.metrics.ipc,
+                SortKey::Tma(index) => {
+                    let frame = &session.profile.frames[stat.frame_id];
+                    tma?.function_values(frame)?.get(index).copied().flatten()
+                }
+                SortKey::Function => None,
+            };
+            let order = if key == SortKey::Function {
+                let order = collator.compare(&left.label, &right.label);
+                if descending { order.reverse() } else { order }
+            } else {
+                match (value(left), value(right)) {
+                    (Some(left), Some(right)) => {
+                        let order = left.total_cmp(&right);
+                        if descending { order.reverse() } else { order }
+                    }
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                }
+            };
+            order.then_with(|| collator.compare(&left.label, &right.label))
+        });
+        if rows.is_empty() {
+            return render_table(
+                empty_state(
+                    Icon::Search,
+                    if session.total_samples == 0 {
+                        "No stack samples recorded"
+                    } else {
+                        "No matching functions"
+                    },
+                )
+                .into_any_element(),
+            );
+        }
+        let selected = self.selected_frame;
+        let entity = cx.entity();
+        let session = session.clone();
+        render_table(
+            uniform_list("hotspots-rows", rows.len(), move |range, _, cx| {
+                let theme = cx.theme().clone();
+                range
+                    .map(|index| {
+                        let function = &analysis.functions[rows[index]];
+                        let frame_id = function.frame_id;
+                        let mut values = vec![
+                            format!("{:.1}%", function.self_fraction * 100.0),
+                            format!("{:.1}%", function.inclusive_fraction * 100.0),
+                            function
+                                .metrics
+                                .cycles
+                                .map(format_count)
+                                .unwrap_or_else(|| "-".to_owned()),
+                            function
+                                .metrics
+                                .instructions
+                                .map(format_count)
+                                .unwrap_or_else(|| "-".to_owned()),
+                            function
+                                .metrics
+                                .ipc
+                                .map(|ipc| format!("{ipc:.2}"))
+                                .unwrap_or_else(|| "-".to_owned()),
+                        ];
+                        if let Some(tma) = session.tma.as_ref().filter(|_| show_tma) {
+                            let shares = tma.function_values(&session.profile.frames[frame_id]);
+                            values.extend(tma.level1_rows().enumerate().map(|(index, _)| {
+                                shares
+                                    .and_then(|shares| shares.get(index).copied().flatten())
+                                    .map_or_else(
+                                        || "-".to_owned(),
+                                        |share| format!("{:.1}%", share * 100.0),
+                                    )
+                            }));
+                        }
+                        let target = entity.clone();
+                        let frame = &session.profile.frames[frame_id];
+                        div()
+                            .id(frame_id)
+                            .h(px(28.0))
+                            .flex()
+                            .items_center()
+                            .w_full()
+                            .border_b_1()
+                            .border_color(theme.border.opacity(0.6))
+                            .text_size(px(12.0))
+                            .cursor_pointer()
+                            .when(selected == Some(frame_id), |el| {
+                                el.bg(theme.accent.opacity(0.6))
+                            })
+                            .hover(|el| el.bg(theme.muted.opacity(0.4)))
+                            .child(
                                 div()
-                                    .text_size(px(11.0))
-                                    .when(muted, |el| el.text_color(theme.muted_foreground))
-                                    .child(value)
-                            };
-                            let metric_cell =
-                                |column: &Column, value: Option<f64>, format: fn(f64) -> String| {
-                                    table_cell(column).child(match value {
-                                        Some(value) => number(format(value), false),
-                                        None => number("—".to_owned(), true),
+                                    .id("hotspot-function")
+                                    .w(function_width)
+                                    .min_w(px(124.0))
+                                    .max_w(px(400.0))
+                                    .flex_none()
+                                    .px(px(12.0))
+                                    .truncate()
+                                    .font_family(theme.font_mono.clone())
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .when(selected == Some(frame_id), |el| {
+                                        el.text_color(theme.primary)
                                     })
-                                };
-
-                            let mut row = table_row(selected == Some(frame_id), cx)
-                                .child(
-                                    table_cell(&columns[0].0)
-                                        .gap(px(6.0))
-                                        .when_some(module, |el, (label, kind)| {
-                                            el.child(
-                                                badge(label.to_owned())
-                                                    .tint(theme.module_kind_color(kind)),
-                                            )
-                                        })
-                                        .child(
-                                            div()
-                                                .font_family(theme.font_mono.clone())
-                                                .text_size(px(11.0))
-                                                .truncate()
-                                                .when(dimmed, |el| {
-                                                    el.text_color(theme.muted_foreground)
-                                                })
-                                                .child(
-                                                    session.profile.frames[function.frame_id]
-                                                        .friendly_name
-                                                        .clone(),
-                                                ),
-                                        ),
-                                )
-                                .child(
-                                    table_cell(&columns[1].0)
-                                        .relative()
-                                        .child(
-                                            div()
-                                                .absolute()
-                                                .left_0()
-                                                .top(px(4.0))
-                                                .bottom(px(4.0))
-                                                .w(px(bar_width))
-                                                .rounded_r(px(2.0))
-                                                .bg(theme.viz.series[0].opacity(0.18)),
-                                        )
-                                        .child(number(format!("{self_pct:.1}%"), false)),
-                                )
-                                .child(table_cell(&columns[2].0).child(number(
-                                    format!("{:.1}%", function.inclusive_fraction * 100.0),
-                                    true,
-                                )));
-                            for (column, key) in columns.iter().skip(3) {
-                                let metrics = &function.metrics;
-                                row = row.child(match key {
-                                    Some(SortKey::CpuTime) => {
-                                        table_cell(column).child(match metrics.cpu_time_ns {
-                                            Some(ns) => {
-                                                number(format_duration_seconds(ns / 1e9), true)
-                                            }
-                                            None => number("—".to_owned(), true),
-                                        })
+                                    .child(ui::table_label(frame.friendly_name.clone()))
+                                    .tooltip(ui::tooltip::text_tooltip(frame.name.clone())),
+                            )
+                            .child(Self::hotspot_metrics(
+                                &scroll,
+                                metrics_min_width,
+                                div().children(values.into_iter().enumerate().map(
+                                    |(index, value)| {
+                                        div()
+                                            .w(metric_width)
+                                            .min_w(px(96.0))
+                                            .flex_none()
+                                            .px(px(metric_padding))
+                                            .text_right()
+                                            .whitespace_nowrap()
+                                            .when(index == 0, |el| {
+                                                el.font_weight(FontWeight::MEDIUM)
+                                            })
+                                            .child(value)
+                                    },
+                                )),
+                            ))
+                            .on_click(move |event, _, cx| {
+                                target.update(cx, |this, cx| {
+                                    if event.click_count() >= 2 {
+                                        this.open_source_tab(frame_id, cx);
+                                    } else {
+                                        this.select_frame(Some(frame_id), cx);
                                     }
-                                    Some(SortKey::Ipc) => {
-                                        metric_cell(column, metrics.ipc, |v| format!("{v:.2}"))
-                                    }
-                                    Some(SortKey::LlcMpki) => {
-                                        metric_cell(column, metrics.llc_mpki, |v| format!("{v:.1}"))
-                                    }
-                                    Some(SortKey::BeStall) => {
-                                        metric_cell(column, metrics.backend_stall_fraction, |v| {
-                                            format!("{:.0}%", v * 100.0)
-                                        })
-                                    }
-                                    Some(SortKey::BrMpki) => {
-                                        metric_cell(column, metrics.branch_mpki, |v| {
-                                            format!("{v:.1}")
-                                        })
-                                    }
-                                    _ => table_cell(column),
                                 });
-                            }
-
-                            div()
-                                .id(frame_id)
-                                .w_full()
-                                .child(row)
-                                .on_click(move |event, _, cx| {
-                                    entity.update(cx, |this, cx| {
-                                        if event.click_count() >= 2 {
-                                            this.open_source_tab(frame_id, cx);
-                                        } else if this.selected_frame == Some(frame_id) {
-                                            this.selected_frame = None;
-                                        } else {
-                                            this.selected_frame = Some(frame_id);
-                                        }
-                                        cx.notify();
-                                    });
-                                })
-                        })
-                        .collect()
-                })
-                .flex_1()
-                .min_h(px(0.0)),
-            )
-            .into_any_element()
+                            })
+                    })
+                    .collect()
+            })
+            .flex_1()
+            .min_h(px(0.0))
+            .map(|mut list| {
+                list.style().restrict_scroll_to_axis = Some(true);
+                list
+            })
+            .into_any_element(),
+        )
     }
 
     fn render_summary(
@@ -1780,7 +1772,7 @@ impl ShellView {
         if let Some(tma) = topdown::level1(session) {
             blocks.push(block(
                 ui::viz_card("top-down level 1")
-                    .when_some(self.view_link(ViewId::TopDown, cx), |card, link| {
+                    .when_some(self.view_link(ViewId::Resources, cx), |card, link| {
                         card.action(link)
                     })
                     .child(self.render_tma_bar(&tma, cx))
@@ -2236,9 +2228,8 @@ impl ShellView {
         let view = FlameView {
             session: session.clone(),
             layout: layout.clone(),
-            symbol_query: self.filter.symbol.clone(),
+            symbol_query: self.flame_input.read(cx).text().to_owned(),
             selected_frame: self.selected_frame,
-            hovered_node: self.flame_hover.map(|hover| hover.node_id),
         };
         let total = layout.total_samples;
         let tooltip = self.flame_hover.and_then(|hover| {
@@ -2258,6 +2249,7 @@ impl ShellView {
             .flex()
             .flex_col()
             .child(self.render_flame_toolbar(session, cx))
+            .when_some(self.render_flame_path(cx), |el, path| el.child(path))
             .child(
                 div()
                     .id("flame-scroll")
@@ -2265,24 +2257,11 @@ impl ShellView {
                     .flex_1()
                     .min_h(px(0.0))
                     .overflow_y_scroll()
-                    .bg(theme.viz.surface)
+                    .bg(theme.background)
                     .when(self.analysis.stale(self.analysis_key()), |el| {
                         el.opacity(0.7)
                     })
                     .child(flame::flame_canvas(cx.entity(), theme.clone(), view))
-                    .when(self.flame_zoom.is_some(), |el| {
-                        el.child(
-                            div().absolute().top(px(8.0)).right(px(12.0)).child(
-                                button("flame-reset-zoom")
-                                    .label("Reset zoom")
-                                    .variant(ButtonVariant::Secondary)
-                                    .size(ButtonSize::Sm)
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.reset_flame_zoom(cx)),
-                                    ),
-                            ),
-                        )
-                    })
                     .when_some(tooltip, |el, (hover, label, module, value)| {
                         let share = if total > 0 {
                             value as f64 / total as f64
@@ -2532,415 +2511,197 @@ impl ShellView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let theme = cx.theme().clone();
-        let has_instructions = session.instructions_metric.is_some();
-
         div()
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(8.0))
-            .h(px(32.0))
+            .gap(px(12.0))
+            .h(px(37.0))
             .px(px(8.0))
             .border_b_1()
             .border_color(theme.border)
-            .child(ui::section_caption("stacks", cx))
             .child(
-                ui::segmented(
-                    "flame-stacks",
-                    vec!["Top-down".into(), "Bottom-up".into()],
-                    usize::from(self.flame_stacks == StackMode::BottomUp),
-                )
-                .compact()
-                .on_select(cx.processor(|this, ix: usize, _, cx| {
-                    let mode = if ix == 0 {
-                        StackMode::TopDown
-                    } else {
-                        StackMode::BottomUp
-                    };
-                    if this.flame_stacks != mode {
-                        this.flame_stacks = mode;
-                        this.flame_zoom = None;
-                        this.flame_hover = None;
-                        this.ensure_derived(cx);
-                        cx.notify();
-                    }
-                })),
+                div().flex().items_center().gap(px(2.0)).children(
+                    [
+                        (StackMode::TopDown, "Top-down"),
+                        (StackMode::BottomUp, "Bottom-up"),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (mode, label))| {
+                        button(("flame-mode", index))
+                            .label(label)
+                            .size(ButtonSize::Xs)
+                            .variant(if self.flame_stacks == mode {
+                                ButtonVariant::Secondary
+                            } else {
+                                ButtonVariant::Ghost
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if this.flame_stacks != mode {
+                                    this.flame_stacks = mode;
+                                    this.flame_zoom = None;
+                                    this.flame_hover = None;
+                                    this.ensure_derived(cx);
+                                    cx.notify();
+                                }
+                            }))
+                    }),
+                ),
             )
-            .when(has_instructions, |el| {
-                el.child(
-                    div()
-                        .flex_none()
-                        .w(px(1.0))
-                        .h(px(16.0))
-                        .mx(px(4.0))
-                        .bg(theme.border),
-                )
-                .child(ui::section_caption("weight", cx))
-                .child(
-                    ui::segmented(
-                        "flame-weight",
-                        vec!["Cycles".into(), "Instructions".into()],
-                        usize::from(self.flame_weight == FlameWeight::Instructions),
-                    )
-                    .compact()
-                    .on_select(cx.processor(|this, ix: usize, _, cx| {
-                        let weight = if ix == 0 {
-                            FlameWeight::Cycles
-                        } else {
-                            FlameWeight::Instructions
-                        };
-                        if this.flame_weight != weight {
-                            this.flame_weight = weight;
-                            this.flame_zoom = None;
-                            this.flame_hover = None;
-                            this.ensure_derived(cx);
-                            cx.notify();
-                        }
-                    })),
-                )
-            })
             .child(
-                div()
-                    .ml_auto()
-                    .text_size(px(10.5))
-                    .text_color(theme.muted_foreground)
-                    .child("color = module kind · symbol-filter matches stay lit"),
+                div().flex().items_center().gap(px(2.0)).children(
+                    [
+                        (FlameWeight::Cycles, "Cycles"),
+                        (FlameWeight::Instructions, "Instructions"),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (weight, label))| {
+                        button(("flame-weight", index))
+                            .label(label)
+                            .size(ButtonSize::Xs)
+                            .disabled(
+                                weight == FlameWeight::Instructions
+                                    && session.instructions_metric.is_none(),
+                            )
+                            .variant(if self.flame_weight == weight {
+                                ButtonVariant::Secondary
+                            } else {
+                                ButtonVariant::Ghost
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if this.flame_weight != weight {
+                                    this.flame_weight = weight;
+                                    this.flame_zoom = None;
+                                    this.flame_hover = None;
+                                    this.ensure_derived(cx);
+                                    cx.notify();
+                                }
+                            }))
+                    }),
+                ),
             )
+            .child(div().flex_1())
+            .child(self.flame_input.clone())
     }
 
-    /// Source/asm tab: the function's source on the left, its disassembly on
-    /// the right, both gutter-heated by sample share. Hover links the panes,
-    /// click pins the link.
-    fn render_source_tab(&self, source_ix: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_flame_path(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let theme = cx.theme().clone();
-        let Some(tab) = self.source_tabs.get(source_ix) else {
-            return empty_state(Icon::FileCode2, "source tab is gone").into_any_element();
+        let layout = self.flame_layout.as_ref()?;
+        let tree = self.flame.latest()?;
+        let query = self.flame_input.read(cx).text().trim().to_lowercase();
+        if query.is_empty() && self.flame_zoom.is_none() {
+            return None;
+        }
+        let matches = |frame: &crate::profile_analysis::IcicleFrame| {
+            frame
+                .frame_id
+                .and_then(|id| self.session.as_ref()?.profile.frames.get(id))
+                .map_or_else(
+                    || frame.label.to_lowercase().contains(&query),
+                    |frame| {
+                        frame.matches_symbol(&query)
+                            || frame
+                                .module
+                                .as_ref()
+                                .is_some_and(|module| module.to_lowercase().contains(&query))
+                    },
+                )
         };
-        let listing = tab.asm.clone();
-        let active_line = tab.active_line();
-
-        let header_note = match (listing.as_ref(), tab.asm_error.as_ref()) {
-            (_, Some(error)) => format!("disassembly unavailable: {error}"),
-            (Some(listing), None) => format!(
-                "{} samples in function · heat = share of function time · click a line to pin",
-                format_count(listing.total_samples as f64)
-            ),
-            (None, None) => "loading disassembly…".to_owned(),
-        };
-        let path = tab
-            .document
-            .as_ref()
-            .map(|document| document.path.display().to_string())
-            .or_else(|| {
-                listing
-                    .as_ref()
-                    .and_then(|listing| listing.source_file.clone())
+        let matching: BTreeSet<usize> = layout
+            .frames
+            .iter()
+            .filter(|frame| matches(frame))
+            .map(|frame| frame.node_id)
+            .collect();
+        let weight: u64 = layout
+            .frames
+            .iter()
+            .filter(|frame| matching.contains(&frame.node_id))
+            .filter(|frame| {
+                let mut parent = tree.nodes[frame.node_id].parent;
+                while let Some(id) = parent {
+                    if matching.contains(&id) {
+                        return false;
+                    }
+                    parent = tree.nodes[id].parent;
+                }
+                true
             })
-            .unwrap_or_else(|| "no source file recorded".to_owned());
-
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.0))
-                    .h(px(28.0))
-                    .px(px(8.0))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .bg(theme.muted.opacity(0.3))
-                    .child(
+            .map(|frame| frame.inclusive_samples)
+            .sum();
+        Some(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(12.0))
+                .px(px(8.0))
+                .py(px(4.0))
+                .border_b_1()
+                .border_color(theme.border)
+                .text_size(px(12.0))
+                .when(self.flame_zoom.is_some(), |el| {
+                    el.child(
                         div()
-                            .font_family(theme.font_mono.clone())
-                            .text_size(px(11.5))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(tab.title.clone()),
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .children(layout.focus_path.iter().enumerate().map(|(index, id)| {
+                                let node = &tree.nodes[*id];
+                                let target = *id;
+                                let root = tree.root;
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.0))
+                                    .when(index > 0, |el| {
+                                        el.child(
+                                            icon(Icon::ChevronRight)
+                                                .size(px(12.0))
+                                                .color(theme.muted_foreground),
+                                        )
+                                    })
+                                    .child(
+                                        button(("flame-path", index))
+                                            .label(node.label.clone())
+                                            .variant(ButtonVariant::Ghost)
+                                            .size(ButtonSize::Xs)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if target == root {
+                                                    this.reset_flame_zoom(cx);
+                                                } else {
+                                                    this.zoom_flame(target, cx);
+                                                }
+                                            })),
+                                    )
+                            }))
+                            .child(
+                                button("flame-reset-path")
+                                    .icon(Icon::RotateCcw)
+                                    .variant(ButtonVariant::Ghost)
+                                    .size(ButtonSize::IconXs)
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.reset_flame_zoom(cx)),
+                                    ),
+                            ),
                     )
-                    .child(
+                })
+                .when(!query.is_empty(), |el| {
+                    el.child(
                         div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .text_size(px(10.5))
+                            .ml_auto()
                             .text_color(theme.muted_foreground)
-                            .child(path),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_size(px(10.5))
-                            .text_color(theme.muted_foreground)
-                            .child(header_note),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .h_full()
-                            .border_r_1()
-                            .border_color(theme.border)
-                            .child(self.render_source_pane(
-                                source_ix,
-                                listing.clone(),
-                                active_line,
-                                cx,
+                            .child(format!(
+                                "{} matches · {:.1}%",
+                                matching.len(),
+                                weight as f64 / layout.total_samples.max(1) as f64 * 100.0
                             )),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .h_full()
-                            .child(self.render_asm_pane(source_ix, listing, active_line, cx)),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    fn render_source_pane(
-        &self,
-        source_ix: usize,
-        listing: Option<Arc<asm::AsmListing>>,
-        active_line: Option<usize>,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let Some(tab) = self.source_tabs.get(source_ix) else {
-            return div().into_any_element();
-        };
-        let Some(document) = tab.document.as_ref() else {
-            return empty_state(Icon::FileCode2, "No source file recorded for this function")
-                .into_any_element();
-        };
-        if let Some(error) = &document.error {
-            return empty_state(Icon::FileCode2, error.clone()).into_any_element();
-        }
-
-        let lines: Vec<String> = document.lines.clone();
-        let line_count = lines.len();
-        let line_samples = listing
-            .as_ref()
-            .map(|listing| listing.line_samples.clone())
-            .unwrap_or_default();
-        let max_line = listing
-            .as_ref()
-            .map(|listing| listing.max_line_samples)
-            .unwrap_or(0);
-        let total = listing
-            .as_ref()
-            .map(|listing| listing.total_samples)
-            .unwrap_or(0);
-        let entity = cx.entity();
-
-        uniform_list("source-lines", line_count, move |range, _, cx| {
-            let theme = cx.theme().clone();
-            range
-                .map(|ix| {
-                    let line_number = ix + 1;
-                    let samples = line_samples.get(&line_number).copied().unwrap_or(0);
-                    let share = if total > 0 {
-                        samples as f64 / total as f64
-                    } else {
-                        0.0
-                    };
-                    let hover_entity = entity.clone();
-                    let click_entity = entity.clone();
-                    div()
-                        .id(("source-line", line_number))
-                        .flex()
-                        .items_center()
-                        .h(px(18.0))
-                        .px(px(8.0))
-                        .gap(px(8.0))
-                        .cursor_pointer()
-                        .when(active_line == Some(line_number), |el| {
-                            el.bg(theme.viz.series[0].opacity(0.12))
-                        })
-                        .when(active_line != Some(line_number), |el| {
-                            el.hover(|s| s.bg(theme.accent.opacity(0.5)))
-                        })
-                        .on_hover(move |hovered, _, cx| {
-                            let next = hovered.then_some(line_number);
-                            hover_entity
-                                .update(cx, |this, cx| this.hover_source_line(source_ix, next, cx));
-                        })
-                        .on_click(move |_, _, cx| {
-                            click_entity.update(cx, |this, cx| {
-                                this.pin_source_line(source_ix, line_number, cx)
-                            });
-                        })
-                        .child(
-                            div()
-                                .w(px(34.0))
-                                .flex_none()
-                                .text_size(px(10.0))
-                                .font_family(theme.font_mono.clone())
-                                .text_color(theme.muted_foreground)
-                                .text_right()
-                                .child(line_number.to_string()),
-                        )
-                        .child(heat_cell(samples, max_line, &theme))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .whitespace_nowrap()
-                                .overflow_hidden()
-                                .text_size(px(11.5))
-                                .font_family(theme.font_mono.clone())
-                                .child(lines[ix].clone()),
-                        )
-                        .when(share >= 0.1, |el| {
-                            el.child(
-                                div()
-                                    .flex_none()
-                                    .rounded(px(3.0))
-                                    .bg(theme.viz.series[0].opacity(0.12))
-                                    .px(px(4.0))
-                                    .text_size(px(9.5))
-                                    .text_color(theme.viz.series[0])
-                                    .child(format!("{:.0}%", share * 100.0)),
-                            )
-                        })
                 })
-                .collect()
-        })
-        .track_scroll(tab.scroll.clone())
-        .size_full()
-        .into_any_element()
-    }
-
-    fn render_asm_pane(
-        &self,
-        source_ix: usize,
-        listing: Option<Arc<asm::AsmListing>>,
-        active_line: Option<usize>,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let Some(tab) = self.source_tabs.get(source_ix) else {
-            return div().into_any_element();
-        };
-        let Some(listing) = listing else {
-            let message = match tab.asm_error.as_ref() {
-                Some(error) => error.clone(),
-                None => "Loading disassembly…".to_owned(),
-            };
-            return empty_state(Icon::FileCode2, message).into_any_element();
-        };
-        if listing.instructions.is_empty() {
-            return empty_state(Icon::FileCode2, "No disassembly recorded for this function")
-                .into_any_element();
-        }
-
-        let count = listing.instructions.len();
-        let entity = cx.entity();
-        let max_samples = listing.max_instruction_samples;
-        let total_llc = listing.total_llc_misses;
-
-        uniform_list("asm-lines", count, move |range, _, cx| {
-            let theme = cx.theme().clone();
-            range
-                .map(|ix| {
-                    let instruction = &listing.instructions[ix];
-                    let line = instruction.line;
-                    let llc_share = if total_llc > 0 {
-                        instruction.llc_misses as f64 / total_llc as f64
-                    } else {
-                        0.0
-                    };
-                    let hover_entity = entity.clone();
-                    let click_entity = entity.clone();
-                    div()
-                        .id(("asm-line", ix))
-                        .flex()
-                        .items_center()
-                        .h(px(18.0))
-                        .px(px(8.0))
-                        .gap(px(8.0))
-                        .cursor_pointer()
-                        .when(line.is_some() && line == active_line, |el| {
-                            el.bg(theme.viz.series[0].opacity(0.12))
-                        })
-                        .when(line.is_none() || line != active_line, |el| {
-                            el.hover(|s| s.bg(theme.accent.opacity(0.5)))
-                        })
-                        .on_hover(move |hovered, _, cx| {
-                            let next = hovered.then_some(line).flatten();
-                            hover_entity
-                                .update(cx, |this, cx| this.hover_source_line(source_ix, next, cx));
-                        })
-                        .when_some(line, |el, line| {
-                            el.on_click(move |_, _, cx| {
-                                click_entity.update(cx, |this, cx| {
-                                    this.pin_source_line(source_ix, line, cx)
-                                });
-                            })
-                        })
-                        .child(
-                            div()
-                                .w(px(54.0))
-                                .flex_none()
-                                .text_size(px(10.0))
-                                .font_family(theme.font_mono.clone())
-                                .text_color(theme.muted_foreground)
-                                .text_right()
-                                .child(format!("{:x}", instruction.address)),
-                        )
-                        .child(heat_cell(instruction.samples, max_samples, &theme))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .whitespace_nowrap()
-                                .overflow_hidden()
-                                .text_size(px(11.5))
-                                .font_family(theme.font_mono.clone())
-                                .child(instruction.text.clone()),
-                        )
-                        .when(llc_share >= 0.05, |el| {
-                            el.child(
-                                div()
-                                    .flex_none()
-                                    .whitespace_nowrap()
-                                    .rounded(px(3.0))
-                                    .bg(theme.viz.series[1].opacity(0.14))
-                                    .px(px(4.0))
-                                    .text_size(px(9.5))
-                                    .text_color(theme.viz.series[1])
-                                    .child(format!("{:.0}% LLC miss", llc_share * 100.0)),
-                            )
-                        })
-                })
-                .collect()
-        })
-        .track_scroll(tab.asm_scroll.clone())
-        .size_full()
-        .into_any_element()
-    }
-
-    fn hover_source_line(&mut self, source_ix: usize, line: Option<usize>, cx: &mut Context<Self>) {
-        if let Some(tab) = self.source_tabs.get_mut(source_ix)
-            && tab.hovered_line != line
-        {
-            tab.hovered_line = line;
-            cx.notify();
-        }
-    }
-
-    fn pin_source_line(&mut self, source_ix: usize, line: usize, cx: &mut Context<Self>) {
-        if let Some(tab) = self.source_tabs.get_mut(source_ix) {
-            tab.pinned_line = (tab.pinned_line != Some(line)).then_some(line);
-            cx.notify();
-        }
+                .into_any_element(),
+        )
     }
 
     fn render_content(
@@ -2948,9 +2709,12 @@ impl ShellView {
         session: &Arc<ShellSession>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let static_tabs = self.static_tab_count();
-        if self.active_tab >= static_tabs {
-            return self.render_source_tab(self.active_tab - static_tabs, cx);
+        if let Some(id) = self.workspace.active.as_ref() {
+            if let Some(source_ix) = self.source_tabs.iter().position(|tab| &tab.id == id) {
+                return self.render_source_tab(source_ix, cx);
+            }
+        } else {
+            return div().into_any_element();
         }
         match self.active_view() {
             Some(ViewId::Summary) | None => self.render_summary(session, cx),
@@ -2960,8 +2724,9 @@ impl ShellView {
             Some(ViewId::Timeline) => self.render_timeline_view(session, cx),
             Some(ViewId::Events) => self.render_events(session, cx),
             Some(ViewId::Cores) => cores::render(self, session, cx),
-            Some(ViewId::TopDown) => topdown::render(self, session, cx),
-            Some(ViewId::Resources) => resources::render(session, cx),
+            Some(ViewId::Resources) => resources::render(self, session, cx),
+            Some(ViewId::ResourceUse) => resources::render_snapshot(session, cx),
+            Some(ViewId::Structures) => structures::render(self, session, cx),
             Some(ViewId::Memory) => memory::render(session, cx),
             Some(ViewId::Allocations) => allocations::render(self, session, cx),
             Some(ViewId::Roofline) => roofline::render(self, session, cx),
@@ -2979,7 +2744,7 @@ impl ShellView {
             .flex()
             .flex_none()
             .flex_col()
-            .w(px(self.panel_width))
+            .w(px(272.0))
             .h_full()
             .overflow_hidden()
             .child(
@@ -3118,8 +2883,7 @@ impl ShellView {
                         .hover(|s| s.bg(theme.muted.opacity(0.5)))
                         .on_click(move |_, _, cx| {
                             entity.update(cx, |this, cx| {
-                                this.selected_frame = Some(target);
-                                cx.notify();
+                                this.open_source_tab(target, cx);
                             });
                         })
                         .child(
@@ -3510,8 +3274,9 @@ impl ShellView {
 }
 
 impl Render for ShellView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
+        self.wide_inspector = f32::from(window.viewport_size().width) >= 1280.0;
 
         let root = div()
             .size_full()
@@ -3522,6 +3287,11 @@ impl Render for ShellView {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::focus_symbol_filter))
             .on_action(cx.listener(Self::clear_stage))
+            .on_action(cx.listener(Self::toggle_sidebar_action))
+            .on_action(cx.listener(Self::toggle_theme_action))
+            .on_action(cx.listener(Self::navigate_back_action))
+            .on_action(cx.listener(Self::navigate_forward_action))
+            .on_action(cx.listener(Self::close_document_action))
             .bg(theme.background)
             .text_color(theme.foreground)
             .font_family(theme.font_ui.clone())
@@ -3534,32 +3304,69 @@ impl Render for ShellView {
                     }
                 }),
             )
-            .child(self.render_title_bar(cx));
+            .child(self.render_title_bar(window, cx));
 
         let root = match self.session.clone() {
-            Some(session) => root
-                .child(self.render_filter_bar(&session, cx))
-                .child(self.render_timeline(&session, cx))
-                .child(self.render_tab_strip(cx))
-                .child(
-                    div()
-                        .flex()
-                        .flex_1()
-                        .min_h(px(0.0))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .h_full()
-                                .overflow_hidden()
-                                .child(self.render_content(&session, cx)),
-                        )
-                        .when(self.side_panel_open, |el| {
-                            el.child(self.splitter.clone())
-                                .child(self.render_selection_panel(&session, cx))
-                        }),
-                )
-                .child(self.render_status_bar(&session, cx)),
+            Some(session) => root.child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .when(self.sidebar_open, |el| {
+                        el.child(self.render_sidebar(&session, cx))
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .h_full()
+                            .child(self.render_tab_strip(cx))
+                            .when(self.native_controls_open, |el| {
+                                el.child(self.render_filter_bar(&session, cx))
+                                    .child(self.render_timeline(&session, cx))
+                            })
+                            .child(
+                                div().flex_1().min_h(px(0.0)).overflow_hidden().child(
+                                    div()
+                                        .flex()
+                                        .size_full()
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w(px(0.0))
+                                                .h_full()
+                                                .child(self.render_content(&session, cx)),
+                                        )
+                                        .when_some(
+                                            self.selected_frame.filter(|_| {
+                                                self.active_view() == Some(ViewId::Hotspots)
+                                            }),
+                                            |el, frame| {
+                                                el.child(
+                                                    self.render_function_inspector(
+                                                        frame, &session, cx,
+                                                    ),
+                                                )
+                                            },
+                                        )
+                                        .when(
+                                            self.native_selection_open
+                                                && self
+                                                    .active_view()
+                                                    .is_some_and(|view| view != ViewId::Hotspots),
+                                            |el| {
+                                                el.child(self.render_selection_panel(&session, cx))
+                                            },
+                                        ),
+                                ),
+                            )
+                            .when(self.native_controls_open, |el| {
+                                el.child(self.render_status_bar(&session, cx))
+                            }),
+                    ),
+            ),
             None => root.child(div().flex_1().min_h(px(0.0)).child(self.render_welcome(cx))),
         };
 

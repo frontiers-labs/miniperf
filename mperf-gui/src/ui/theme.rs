@@ -1,12 +1,12 @@
 use gpui::{App, Global, Hsla, Pixels, SharedString, WindowAppearance, px, rgb, rgba};
 
-/// Semantic + visualization color tokens ported verbatim from the approved
-/// prototype (`ui-prototype/src/index.css`); oklch sources noted per value.
+/// Semantic colors shared by the workbench and its controls.
 #[derive(Clone)]
 pub struct Theme {
     pub dark: bool,
 
     pub background: Hsla,
+    pub sidebar: Hsla,
     pub foreground: Hsla,
     pub card: Hsla,
     pub card_foreground: Hsla,
@@ -27,6 +27,8 @@ pub struct Theme {
     pub ring: Hsla,
 
     pub viz: VizTheme,
+    pub resource_series: [Hsla; 6],
+    pub chart_series: [Hsla; 5],
 
     pub font_ui: SharedString,
     pub font_mono: SharedString,
@@ -49,10 +51,10 @@ pub struct VizTheme {
 
 pub const RADIUS: f32 = 10.0;
 
-pub const TITLE_BAR_HEIGHT: f32 = 40.0;
+pub const TITLE_BAR_HEIGHT: f32 = 36.0;
 pub const STATUS_BAR_HEIGHT: f32 = 24.0;
 pub const LANE_HEIGHT: f32 = 15.0;
-pub const FLAME_ROW_HEIGHT: f32 = 18.0;
+pub const FLAME_ROW_HEIGHT: f32 = 17.0;
 pub const TIMELINE_GUTTER: f32 = 92.0;
 pub const SELECTION_PANEL_WIDTH: f32 = 300.0;
 
@@ -60,26 +62,31 @@ impl Theme {
     pub fn light() -> Self {
         Self {
             dark: false,
-            background: rgb(0xffffff).into(),         // oklch(1 0 0)
-            foreground: rgb(0x0a0a0a).into(),         // oklch(0.145 0 0)
-            card: rgb(0xffffff).into(),               // oklch(1 0 0)
-            card_foreground: rgb(0x0a0a0a).into(),    // oklch(0.145 0 0)
-            popover: rgb(0xffffff).into(),            // oklch(1 0 0)
+            background: rgb(0xffffff).into(), // oklch(1 0 0)
+            sidebar: rgb(0xfafafa).into(),
+            foreground: rgb(0x0a0a0a).into(), // oklch(0.145 0 0)
+            card: rgb(0xffffff).into(),       // oklch(1 0 0)
+            card_foreground: rgb(0x0a0a0a).into(), // oklch(0.145 0 0)
+            popover: rgb(0xffffff).into(),    // oklch(1 0 0)
             popover_foreground: rgb(0x0a0a0a).into(), // oklch(0.145 0 0)
-            primary: rgb(0x171717).into(),            // oklch(0.205 0 0)
+            primary: rgb(0x171717).into(),    // oklch(0.205 0 0)
             primary_foreground: rgb(0xfafafa).into(), // oklch(0.985 0 0)
-            secondary: rgb(0xf5f5f5).into(),          // oklch(0.97 0 0)
+            secondary: rgb(0xf5f5f5).into(),  // oklch(0.97 0 0)
             secondary_foreground: rgb(0x171717).into(), // oklch(0.205 0 0)
-            muted: rgb(0xf5f5f5).into(),              // oklch(0.97 0 0)
-            muted_foreground: rgb(0x737373).into(),   // oklch(0.556 0 0)
-            accent: rgb(0xf5f5f5).into(),             // oklch(0.97 0 0)
-            accent_foreground: rgb(0x171717).into(),  // oklch(0.205 0 0)
-            destructive: rgb(0xe7000b).into(),        // oklch(0.577 0.245 27.325)
+            muted: rgb(0xf5f5f5).into(),      // oklch(0.97 0 0)
+            muted_foreground: rgb(0x737373).into(), // oklch(0.556 0 0)
+            accent: rgb(0xf5f5f5).into(),     // oklch(0.97 0 0)
+            accent_foreground: rgb(0x171717).into(), // oklch(0.205 0 0)
+            destructive: rgb(0xe7000b).into(), // oklch(0.577 0.245 27.325)
             destructive_foreground: rgb(0xffffff).into(),
             border: rgb(0xe5e5e5).into(), // oklch(0.922 0 0)
             input: rgb(0xe5e5e5).into(),  // oklch(0.922 0 0)
             ring: rgb(0xa1a1a1).into(),   // oklch(0.708 0 0)
             viz: VizTheme::light(),
+            resource_series: [0x2563eb, 0xd97706, 0x059669, 0x7c3aed, 0x0891b2, 0xe11d48]
+                .map(|color| rgb(color).into()),
+            chart_series: [0xd4d4d4, 0x737373, 0x525252, 0x404040, 0x262626]
+                .map(|color| rgb(color).into()),
             font_ui: "Geist".into(),
             font_mono: "Menlo".into(),
         }
@@ -89,6 +96,7 @@ impl Theme {
         Self {
             dark: true,
             background: rgb(0x0a0a0a).into(), // oklch(0.145 0 0)
+            sidebar: rgb(0x171717).into(),
             foreground: rgb(0xfafafa).into(), // oklch(0.985 0 0)
             card: rgb(0x171717).into(),       // oklch(0.205 0 0)
             card_foreground: rgb(0xfafafa).into(), // oklch(0.985 0 0)
@@ -108,6 +116,10 @@ impl Theme {
             input: rgba(0xffffff26).into(),  // oklch(1 0 0 / 15%)
             ring: rgb(0x737373).into(),      // oklch(0.556 0 0)
             viz: VizTheme::dark(),
+            resource_series: [0x60a5fa, 0xfbbf24, 0x34d399, 0xa78bfa, 0x22d3ee, 0xfb7185]
+                .map(|color| rgb(color).into()),
+            chart_series: [0xd4d4d4, 0x737373, 0x525252, 0x404040, 0x262626]
+                .map(|color| rgb(color).into()),
             font_ui: "Geist".into(),
             font_mono: "Menlo".into(),
         }

@@ -5,6 +5,7 @@
 //! and `DEBUGINFOD_URLS` to permit use of an installed `debuginfod-find` client.
 
 mod function_name;
+pub mod type_layout;
 pub use function_name::{
     decode_folded_name, demangle_full, encode_folded_name, FunctionName,
     FOLDED_NAME_ENCODING_HEADER,
@@ -51,6 +52,83 @@ pub struct Frame {
     pub line: Option<u32>,
     /// Mapped object or perf-map path that supplied the frame.
     pub module: Option<PathBuf>,
+}
+
+/// Source attribution from an object's DWARF information.
+pub struct SourceLine<'a> {
+    /// Path recorded in the debug information.
+    pub file: &'a str,
+    /// One-based line number.
+    pub line: u32,
+    /// Whether the instruction came from a function inlined at this location.
+    pub inline_callsite: bool,
+}
+
+/// DWARF source lookup for instruction addresses in a native object.
+pub struct SourceLines(Loader);
+
+impl SourceLines {
+    /// Opens the object or its separate debug file, if available.
+    pub fn open(path: &Path) -> Option<Self> {
+        Loader::new(find_debug_file(path, &BuildIdCache::default()))
+            .ok()
+            .map(Self)
+    }
+
+    /// Finds the source line when the recorded symbol covers this object virtual
+    /// address. If the line is in another file, looks for an inline call site in
+    /// the preferred file before returning the original location.
+    pub fn find(
+        &self,
+        address: u64,
+        symbol: &str,
+        preferred_file: Option<&Path>,
+    ) -> Option<SourceLine<'_>> {
+        let name = self.0.find_symbol(address)?;
+        if demangle_full(name) != symbol {
+            return None;
+        }
+        let direct = self
+            .0
+            .find_location(address)
+            .ok()
+            .flatten()
+            .and_then(|location| {
+                Some(SourceLine {
+                    file: location.file?,
+                    line: location.line.filter(|line| *line > 0)?,
+                    inline_callsite: false,
+                })
+            });
+        let Some(file) = preferred_file.filter(|file| {
+            direct
+                .as_ref()
+                .is_none_or(|line| Path::new(line.file) != *file)
+        }) else {
+            return direct;
+        };
+        let Ok(mut frames) = self.0.find_frames(address) else {
+            return direct;
+        };
+        // The first frame is the instruction location. The rest are call sites.
+        if !matches!(frames.next(), Ok(Some(_))) {
+            return direct;
+        }
+        while let Ok(Some(frame)) = frames.next() {
+            if let Some((path, line)) = frame
+                .location
+                .and_then(|location| location.file.zip(location.line))
+                .filter(|(path, line)| Path::new(path) == file && *line > 0)
+            {
+                return Some(SourceLine {
+                    file: path,
+                    line,
+                    inline_callsite: true,
+                });
+            }
+        }
+        direct
+    }
 }
 
 /// Errors from explicitly mutating the build-id cache.

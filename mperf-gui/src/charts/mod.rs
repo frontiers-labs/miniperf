@@ -8,7 +8,7 @@ mod frame;
 mod ramp;
 mod text;
 
-pub use area::{paint_area_series, paint_stacked_columns};
+pub use area::paint_area_series;
 pub use brush::{Brush, register_time_brush};
 pub use frame::PlotFrame;
 pub use ramp::heat;

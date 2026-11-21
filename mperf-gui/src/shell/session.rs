@@ -16,7 +16,7 @@ use crate::{
     memory::MemoryData,
     model::SummaryStats,
     profile::{ProfileData, TimeRange},
-    profile_analysis::{CounterTracks, SampleFilter, instructions_metric},
+    profile_analysis::{CounterBinning, CounterTracks, SampleFilter, instructions_metric},
     regions::{RegionData, RegionSelection},
     roofline::RooflineData,
     snapshot::SnapshotData,
@@ -57,6 +57,7 @@ pub struct ThreadLanes {
 pub struct ShellSession {
     pub result_directory: PathBuf,
     pub name: String,
+    pub command_name: Option<String>,
     pub scenario: Scenario,
     pub cpu_model: String,
     pub sampling_frequency_hz: Option<u64>,
@@ -84,6 +85,7 @@ pub struct ShellSession {
     pub lanes: Option<ThreadLanes>,
     /// Full-run counter tracks pinned under the thread lanes.
     pub tracks: Option<CounterTracks>,
+    pub resource_tracks: Option<CounterTracks>,
     pub pinned_tracks: Vec<usize>,
 }
 
@@ -255,12 +257,41 @@ impl ShellSession {
         }
         let modules = module_inventory(&profile);
         let lanes = full_range.and_then(|range| thread_lanes(&profile, &threads, range));
-        let tracks = CounterTracks::build(&profile, &SampleFilter::default(), TRACK_BINS);
+        let tracks = CounterTracks::build(
+            &profile,
+            &SampleFilter::default(),
+            CounterBinning::Adaptive(TRACK_BINS),
+        );
+        let sample_range = profile
+            .samples
+            .iter()
+            .map(|sample| sample.timestamp_ns)
+            .min()
+            .zip(
+                profile
+                    .samples
+                    .iter()
+                    .map(|sample| sample.timestamp_ns)
+                    .max(),
+            )
+            .map(|(start_ns, end_ns)| TimeRange {
+                start_ns,
+                end_ns: end_ns.saturating_add(1),
+            });
+        let resource_tracks = CounterTracks::build(
+            &profile,
+            &SampleFilter {
+                range: sample_range,
+                ..Default::default()
+            },
+            CounterBinning::Fixed(64),
+        );
         let pinned_tracks = tracks.as_ref().map(pin_tracks).unwrap_or_default();
 
         Ok(Self {
             result_directory,
             name,
+            command_name,
             scenario: record_info.scenario,
             cpu_model: record_info.cpu_model,
             sampling_frequency_hz: record_info.sampling_frequency_hz,
@@ -281,6 +312,7 @@ impl ShellSession {
             modules,
             lanes,
             tracks,
+            resource_tracks,
             pinned_tracks,
         })
     }
@@ -528,13 +560,16 @@ fn pin_tracks(tracks: &CounterTracks) -> Vec<usize> {
 }
 
 pub fn format_count(value: f64) -> String {
-    if value >= 1_000_000.0 {
-        format!("{:.1}M", value / 1_000_000.0)
-    } else if value >= 1_000.0 {
-        format!("{:.1}K", value / 1_000.0)
-    } else {
-        format!("{value:.0}")
+    for (scale, suffix) in [(1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")] {
+        if value.abs() >= scale {
+            let rounded = format!("{:.2}", value / scale);
+            return format!(
+                "{}{suffix}",
+                rounded.trim_end_matches('0').trim_end_matches('.')
+            );
+        }
     }
+    format!("{value:.0}")
 }
 
 pub fn format_duration_seconds(seconds: f64) -> String {

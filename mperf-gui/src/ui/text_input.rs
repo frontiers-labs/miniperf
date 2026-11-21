@@ -688,16 +688,35 @@ impl Render for TextInput {
             .gap(px(6.0))
             .h(px(self.height))
             .when_some(self.width, |el, w| el.w(px(w)))
-            .px(px(8.0))
+            .px(px(9.0))
             .rounded(theme.radius_md())
             .border_1()
             .border_color(theme.input)
+            .bg(theme.background)
             .when(theme.dark, |el| el.bg(theme.input.opacity(0.3)))
-            .in_focus(|s| s.border_color(theme.ring))
+            .focus(|s| {
+                s.border_color(theme.ring).shadow(vec![gpui::BoxShadow {
+                    color: theme.focus_ring(),
+                    offset: point(px(0.0), px(0.0)),
+                    blur_radius: px(0.0),
+                    spread_radius: px(3.0),
+                }])
+            })
             .text_size(px(self.text_size))
+            .line_height(px(if self.text_size <= 12.0 { 16.0 } else { 20.0 }))
             .text_color(theme.foreground)
             .when_some(self.leading_icon, |el, ic| {
-                el.child(icon(ic).size(px(12.0)).color(theme.muted_foreground))
+                el.child(
+                    icon(ic)
+                        .size(px(if self.height >= 32.0 {
+                            16.0
+                        } else if self.height >= 28.0 {
+                            14.0
+                        } else {
+                            12.0
+                        }))
+                        .color(theme.muted_foreground),
+                )
             })
             .child(
                 div()

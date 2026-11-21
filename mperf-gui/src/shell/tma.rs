@@ -1,19 +1,32 @@
-//! Top-Down datasets: the metric hierarchy, the per-second interval shares and
-//! the per-function level-1 breakdown. All three are recording-wide and load
+//! Top-Down datasets: the metric hierarchy, the per-second values and
+//! the per-function hierarchy values. All three are recording-wide and load
 //! once, with the session's database connection.
 
 use std::collections::{BTreeMap, HashMap};
 
 use mperf_data::ScenarioInfo;
+use store::query::quote_identifier;
 
 use crate::model::{TmaSummaryData, TmaSummaryRow};
-use crate::sql::{Connection, Value, as_f64, as_i64, as_text};
+use crate::profile::ProfileFrame;
+use crate::sql::{Connection, table_columns};
 
-/// One second of pipeline-slot shares, aligned with [`TmaData::level1`].
+const INTERVAL_NS: u64 = 1_000_000_000;
+
+type FunctionValues = HashMap<Option<String>, HashMap<String, FunctionMetrics>>;
+
+#[derive(Clone, Debug)]
+struct FunctionMetrics {
+    hierarchy: Vec<Option<f64>>,
+    level1: Option<Vec<Option<f64>>>,
+}
+
+/// One second of metric values, aligned with [`TmaData::level1`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct TmaInterval {
     pub start_ns: u64,
-    pub values: Vec<f64>,
+    pub end_ns: u64,
+    pub values: Vec<Option<f64>>,
 }
 
 #[derive(Clone, Debug)]
@@ -23,8 +36,7 @@ pub struct TmaData {
     /// Indices into `rows` of the level-1 metrics.
     pub level1: Vec<usize>,
     pub intervals: Vec<TmaInterval>,
-    /// Level-1 shares per function name, aligned with `level1`.
-    pub functions: HashMap<String, Vec<f64>>,
+    functions: FunctionValues,
     pub error: Option<String>,
 }
 
@@ -39,14 +51,14 @@ impl TmaData {
             .filter(|(_, row)| row.level == 1)
             .map(|(index, _)| index)
             .collect();
-        let names: Vec<&str> = level1
+        let level1_names: Vec<&str> = level1
             .iter()
             .map(|index| summary.rows[*index].name.as_str())
             .collect();
 
         Some(Self {
-            intervals: load_intervals(connection, &names),
-            functions: load_functions(connection, &names),
+            intervals: load_intervals(connection, &level1_names),
+            functions: load_functions(connection, &summary.rows, &level1),
             level1,
             rows: summary.rows,
             error: summary.error,
@@ -61,30 +73,50 @@ impl TmaData {
         self.level1.iter().map(|index| &self.rows[*index])
     }
 
+    /// Whether any sampled function has values for the level-1 columns.
+    pub fn has_functions(&self) -> bool {
+        self.functions
+            .values()
+            .any(|module| module.values().any(|function| function.level1.is_some()))
+    }
+
+    /// Recording-wide values for a sampled function, aligned with `level1`.
+    pub fn function_values(&self, frame: &ProfileFrame) -> Option<&[Option<f64>]> {
+        self.function_metrics(frame)?.level1.as_deref()
+    }
+
+    /// Recording-wide values for a sampled function, aligned with `rows`.
+    pub fn function_hierarchy_values(&self, frame: &ProfileFrame) -> Option<&[Option<f64>]> {
+        Some(&self.function_metrics(frame)?.hierarchy)
+    }
+
+    fn function_metrics(&self, frame: &ProfileFrame) -> Option<&FunctionMetrics> {
+        let symbol = frame.symbol_name.as_deref().unwrap_or(&frame.name);
+        self.functions.get(&frame.module)?.get(symbol)
+    }
+
     /// The chain of dominant metrics: the largest level-1 metric, then the
     /// largest of its children, and so on. Vendors expose different depths, so
     /// this walks the dotted names rather than a fixed tree.
-    pub fn dominant_path(&self) -> Vec<usize> {
+    pub fn dominant_path(&self, value: impl Fn(usize) -> Option<f64>) -> Vec<usize> {
         let mut path = Vec::new();
-        let mut prefix: Option<String> = None;
+        let mut parent = None;
         loop {
             let next = self
                 .rows
                 .iter()
                 .enumerate()
-                .filter(|(_, row)| match prefix.as_deref() {
+                .filter(|(_, row)| match parent {
                     None => row.level == 1,
                     Some(parent) => is_child_of(&row.name, parent),
                 })
-                .filter_map(|(index, row)| Some((index, row.value?)))
+                .filter_map(|(index, _)| Some((index, value(index)?)))
                 .max_by(|left, right| left.1.total_cmp(&right.1));
-            match next {
-                Some((index, _)) => {
-                    path.push(index);
-                    prefix = Some(self.rows[index].name.clone());
-                }
-                None => return path,
-            }
+            let Some((index, _)) = next else {
+                return path;
+            };
+            path.push(index);
+            parent = Some(self.rows[index].name.as_str());
         }
     }
 }
@@ -96,89 +128,135 @@ pub fn is_child_of(name: &str, parent: &str) -> bool {
 }
 
 fn load_intervals(connection: &Connection, names: &[&str]) -> Vec<TmaInterval> {
-    let Ok(mut statement) =
-        connection.prepare("SELECT start_ns, metric, value FROM tma_intervals ORDER BY start_ns;")
-    else {
+    let Ok(mut statement) = connection.prepare(
+        "SELECT TRY_CAST(start_ns AS UBIGINT), metric, TRY_CAST(value AS DOUBLE)
+         FROM tma_intervals",
+    ) else {
         return Vec::new();
     };
     let Ok(mut rows) = statement.query([]) else {
         return Vec::new();
     };
-    let mut by_start = BTreeMap::<u64, Vec<f64>>::new();
-    loop {
-        let row = match rows.next() {
-            Ok(Some(row)) => row,
-            _ => break,
-        };
-        let Ok(metric) = row.get::<_, Value>(1) else {
-            continue;
-        };
-        let Some(metric) = as_text(&metric) else {
+    let mut by_start = BTreeMap::<u64, Vec<Option<f64>>>::new();
+    while let Ok(Some(row)) = rows.next() {
+        let Ok(metric) = row.get::<_, String>(1) else {
             continue;
         };
         let Some(column) = names.iter().position(|name| *name == metric) else {
             continue;
         };
-        let Ok(value) = row.get::<_, Value>(2) else {
+        let Some(value) = row
+            .get::<_, Option<f64>>(2)
+            .ok()
+            .flatten()
+            .filter(|value| value.is_finite())
+        else {
             continue;
         };
-        let Some(value) = as_f64(&value).filter(|value| value.is_finite()) else {
+        let Ok(Some(start_ns)) = row.get::<_, Option<u64>>(0) else {
             continue;
         };
-        let Ok(start_ns) = row.get::<_, Value>(0) else {
-            continue;
-        };
-        let start_ns = as_i64(&start_ns).unwrap_or_default().max(0) as u64;
         by_start
             .entry(start_ns)
-            .or_insert_with(|| vec![0.0; names.len()])[column] = value.clamp(0.0, 1.0);
+            .or_insert_with(|| vec![None; names.len()])[column] = Some(value);
     }
     by_start
         .into_iter()
-        .map(|(start_ns, values)| TmaInterval { start_ns, values })
+        .map(|(start_ns, values)| TmaInterval {
+            start_ns,
+            end_ns: start_ns.saturating_add(INTERVAL_NS),
+            values,
+        })
         .collect()
 }
 
-/// Level-1 shares per function from `VIEW tma`, whose columns spell the metric
-/// names with underscores.
-fn load_functions(connection: &Connection, names: &[&str]) -> HashMap<String, Vec<f64>> {
-    let Ok(mut statement) = connection.prepare("SELECT * FROM tma;") else {
+fn load_functions(
+    connection: &Connection,
+    hierarchy: &[TmaSummaryRow],
+    level1: &[usize],
+) -> FunctionValues {
+    let columns = table_columns(connection, "tma");
+    if hierarchy.is_empty() || columns.is_empty() {
+        return HashMap::new();
+    }
+    let has_column = |name: &str| columns.iter().any(|column| column.name == name);
+    let metrics = hierarchy
+        .iter()
+        .map(|metric| {
+            let column = metric.name.replace('.', "_");
+            if has_column(&column) {
+                format!("TRY_CAST(tma.{} AS DOUBLE)", quote_identifier(&column))
+            } else {
+                "NULL::DOUBLE".to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = if has_column("symbol_name") && has_column("module_path") {
+        format!("SELECT symbol_name, module_path, {metrics} FROM tma")
+    } else {
+        legacy_functions_query(connection, &metrics)
+    };
+    let Ok(mut statement) = connection.prepare(&sql) else {
         return HashMap::new();
     };
     let Ok(mut rows) = statement.query([]) else {
         return HashMap::new();
     };
-    let columns: Vec<String> = names
-        .iter()
-        .map(|name| name.replace('.', "_"))
-        .collect::<Vec<_>>();
-    let mut functions = HashMap::new();
-    loop {
-        let row = match rows.next() {
-            Ok(Some(row)) => row,
-            _ => break,
-        };
-        let Ok(function) = row.get::<_, Value>("func_name") else {
+    let mut functions = FunctionValues::new();
+    while let Ok(Some(row)) = rows.next() {
+        let (Ok(symbol), Ok(module)) = (row.get::<_, String>(0), row.get::<_, Option<String>>(1))
+        else {
             continue;
         };
-        let Some(function) = as_text(&function) else {
-            continue;
-        };
-        let values: Vec<f64> = columns
-            .iter()
+        let values: Vec<_> = (2..2 + hierarchy.len())
             .map(|column| {
-                row.get::<_, Value>(column.as_str())
+                row.get::<_, Option<f64>>(column)
                     .ok()
-                    .as_ref()
-                    .and_then(as_f64)
+                    .flatten()
                     .filter(|value| value.is_finite())
-                    .unwrap_or(0.0)
-                    .clamp(0.0, 1.0)
             })
             .collect();
-        if values.iter().sum::<f64>() > 0.0 {
-            functions.insert(function.to_owned(), values);
+        if values.iter().any(Option::is_some) {
+            let roots: Vec<_> = level1.iter().map(|&index| values[index]).collect();
+            functions.entry(module).or_default().insert(
+                symbol,
+                FunctionMetrics {
+                    hierarchy: values,
+                    level1: roots.iter().any(Option::is_some).then_some(roots),
+                },
+            );
         }
     }
     functions
+}
+
+fn legacy_functions_query(connection: &Connection, metrics: &str) -> String {
+    let columns = table_columns(connection, "proc_map");
+    let has_column = |name: &str| columns.iter().any(|column| column.name == name);
+    let symbol_column = if has_column("symbol_name") {
+        "symbol_name"
+    } else {
+        "NULL"
+    };
+    let module_column = if has_column("module_path") {
+        "module_path"
+    } else {
+        "NULL"
+    };
+    // Older captures grouped metrics by display name. Only resolve rows whose
+    // sampled name and function identity still have a one-to-one mapping.
+    format!(
+        "WITH identities AS (
+             SELECT DISTINCT func_name,
+                    COALESCE({symbol_column}, CASE WHEN func_name = '[unknown]'
+                             THEN printf('0x%x', ip) ELSE func_name END) AS symbol,
+                    {module_column} AS module
+             FROM proc_map WHERE ip IN (SELECT ip FROM pmu_counters)
+         )
+         SELECT identities.symbol, identities.module, {metrics}
+         FROM tma JOIN identities USING (func_name)
+         QUALIFY COUNT(*) OVER (PARTITION BY func_name) = 1
+             AND COUNT(*) OVER (PARTITION BY identities.symbol, identities.module) = 1"
+    )
 }

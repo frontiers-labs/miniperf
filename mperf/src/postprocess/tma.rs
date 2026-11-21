@@ -20,12 +20,14 @@ pub(crate) fn process(tables: &Tables, info: &ScenarioInfo) -> Result<()> {
         })
         .collect::<Result<Vec<_>>>()?
         .join(",\n");
+    let symbol = "COALESCE(proc_map.symbol_name, CASE WHEN proc_map.func_name = '[unknown]'
+                   THEN printf('0x%x', proc_map.ip) ELSE proc_map.func_name END)";
 
     tables.write_query(
         "tma",
         &format!(
             "SELECT
-                 proc_map.func_name AS func_name,
+                 FIRST(proc_map.func_name ORDER BY pmu_counters.timestamp) AS func_name,
                  COUNT(pmu_counters.pmu_cycles) AS num_samples,
                  SUM(pmu_counters.pmu_cycles) * 1.0 /
                      NULLIF((SELECT SUM(pmu_cycles) FROM pmu_counters), 0) AS total,
@@ -33,10 +35,12 @@ pub(crate) fn process(tables: &Tables, info: &ScenarioInfo) -> Result<()> {
                  CAST(SUM(pmu_counters.pmu_instructions) AS BIGINT) AS instructions,
                  SUM(pmu_counters.pmu_instructions) * 1.0 /
                      NULLIF(SUM(pmu_counters.pmu_cycles), 0) AS ipc,
-                 {columns}
+                 {columns},
+                 {symbol} AS symbol_name,
+                 proc_map.module_path
              FROM pmu_counters
              INNER JOIN proc_map ON pmu_counters.ip = proc_map.ip
-             GROUP BY proc_map.func_name"
+             GROUP BY {symbol}, proc_map.module_path"
         ),
     )?;
 
