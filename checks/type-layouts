@@ -11,7 +11,8 @@ cc "${object}" -o "${binary}" || fail "could not link type layout reference"
 "${binary}" >"${CHECK_WORK}/type-layout-abi.json" || fail "could not inspect compiler ABI"
 "${mperf_gui}" --inspect-types "${object}" >"${CHECK_WORK}/type-layouts.json" \
     || fail "the viewer could not read real DWARF type layouts"
-python3 - "${CHECK_WORK}/type-layout-abi.json" "${CHECK_WORK}/type-layouts.json" <<'PY'
+python3 - "${CHECK_WORK}/type-layout-abi.json" "${CHECK_WORK}/type-layouts.json" <<'PY' \
+    || fail "the viewer type layout disagrees with the compiler ABI"
 import json
 import sys
 
@@ -28,4 +29,3 @@ assert actual["items"]["type"].endswith("[3]"), actual["items"]
 assert sum(size for _, size in layout["padding"]) == expected["size"] - sum(field["size"] for field in expected["fields"]), layout
 print("  native type sizes, field offsets, arrays, pointers, and padding agree with the compiler")
 PY
-[[ "$?" -eq 0 ]] || fail "the viewer type layout disagrees with the compiler ABI"

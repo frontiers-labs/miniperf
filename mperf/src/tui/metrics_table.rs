@@ -980,14 +980,12 @@ fn read_value(row: &SqlRow<'_>, column: &ColumnConfig) -> MetricValue {
 fn build_header(layout: &RuntimeLayout, sticky_len: usize, column_offset: usize) -> Row<'static> {
     let mut cells = Vec::new();
 
-    for idx in 0..sticky_len.min(layout.columns.len()) {
-        let column = &layout.columns[idx];
-        let text = Text::from(column.label.clone()).alignment(column.alignment);
-        cells.push(Cell::from(text));
-    }
-
-    for idx in (sticky_len + column_offset).min(layout.columns.len())..layout.columns.len() {
-        let column = &layout.columns[idx];
+    for column in layout
+        .columns
+        .iter()
+        .take(sticky_len)
+        .chain(layout.columns.iter().skip(sticky_len + column_offset))
+    {
         let text = Text::from(column.label.clone()).alignment(column.alignment);
         cells.push(Cell::from(text));
     }
@@ -1000,17 +998,13 @@ fn build_constraints(
     sticky_len: usize,
     column_offset: usize,
 ) -> Vec<Constraint> {
-    let mut constraints = Vec::new();
-
-    for idx in 0..sticky_len.min(layout.columns.len()) {
-        constraints.push(column_constraint(&layout.columns[idx]));
-    }
-
-    for idx in (sticky_len + column_offset).min(layout.columns.len())..layout.columns.len() {
-        constraints.push(column_constraint(&layout.columns[idx]));
-    }
-
-    constraints
+    layout
+        .columns
+        .iter()
+        .take(sticky_len)
+        .chain(layout.columns.iter().skip(sticky_len + column_offset))
+        .map(column_constraint)
+        .collect()
 }
 
 fn column_constraint(column: &ColumnConfig) -> Constraint {
