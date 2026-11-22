@@ -7,8 +7,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use gimli::{AttributeValue, DwTag, Dwarf, EndianSlice, RunTimeEndian, Unit, UnitOffset};
-use object::{Object, ObjectSection};
+use gimli::{
+    AttributeValue, DwTag, Dwarf, EndianSlice, Reader, ReaderOffset, Relocate, RelocateReader,
+    RunTimeEndian, Unit, UnitOffset,
+};
+use object::{Object, ObjectSection, RelocationMap};
 
 /// One object and the DWARF layouts it actually contains.
 #[derive(Clone, Debug)]
@@ -94,7 +97,7 @@ pub enum LayoutError {
     /// Local object could not be read.
     #[error("could not read object: {0}")]
     Io(#[from] std::io::Error),
-    /// Object or a compressed section was invalid.
+    /// Object, compressed section, or section relocation could not be read.
     #[error("could not read object sections: {0}")]
     Object(#[from] object::Error),
     /// DWARF was invalid.
@@ -102,7 +105,20 @@ pub enum LayoutError {
     Dwarf(#[from] gimli::Error),
 }
 
-type DwarfReader<'a> = EndianSlice<'a, RunTimeEndian>;
+#[derive(Clone, Copy, Debug)]
+struct DwarfRelocations<'a>(&'a RelocationMap);
+
+impl Relocate for DwarfRelocations<'_> {
+    fn relocate_address(&self, offset: usize, value: u64) -> gimli::Result<u64> {
+        Ok(self.0.relocate(offset.into_u64(), value))
+    }
+
+    fn relocate_offset(&self, offset: usize, value: usize) -> gimli::Result<usize> {
+        usize::from_u64(self.0.relocate(offset.into_u64(), value.into_u64()))
+    }
+}
+
+type DwarfReader<'a> = RelocateReader<EndianSlice<'a, RunTimeEndian>, DwarfRelocations<'a>>;
 
 struct Node {
     tag: DwTag,
@@ -127,14 +143,16 @@ pub fn load(path: &Path) -> Result<ObjectLayouts, LayoutError> {
     } else {
         RunTimeEndian::Big
     };
-    let sections = gimli::DwarfSections::load(|id| {
-        object
-            .section_by_name(id.name())
-            .map_or(Ok(Cow::Borrowed(&[][..])), |section| {
-                section.uncompressed_data()
-            })
+    let sections = gimli::DwarfSections::load(|id| match object.section_by_name(id.name()) {
+        Some(section) => Ok((section.uncompressed_data()?, section.relocation_map()?)),
+        None => Ok::<_, object::Error>((Cow::Borrowed(&[][..]), RelocationMap::default())),
     })?;
-    let dwarf = sections.borrow(|section| EndianSlice::new(section, endian));
+    let dwarf = sections.borrow(|(data, relocations)| {
+        RelocateReader::new(
+            EndianSlice::new(data, endian),
+            DwarfRelocations(relocations),
+        )
+    });
     let mut layouts = ObjectLayouts {
         path: path.to_owned(),
         architecture: format!("{:?}", object.architecture()),
@@ -167,6 +185,7 @@ fn string(
             .attr_string(unit, value)
             .ok()?
             .to_string_lossy()
+            .ok()?
             .into_owned(),
     )
 }
@@ -180,8 +199,12 @@ fn source_path(
     let file = header.file(index)?;
     let name = string(dwarf, unit, file.path_name())?;
     let mut path = PathBuf::new();
-    if let Some(directory) = unit.comp_dir.as_ref() {
-        path.push(directory.to_string_lossy().as_ref());
+    if let Some(directory) = unit
+        .comp_dir
+        .as_ref()
+        .and_then(|directory| directory.to_string_lossy().ok())
+    {
+        path.push(directory.as_ref());
     }
     if let Some(directory) = file
         .directory(header)

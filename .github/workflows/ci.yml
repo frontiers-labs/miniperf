@@ -125,6 +125,11 @@ jobs:
       - name: Allow perf
         if: matrix.os == 'linux'
         run: sudo sysctl -w kernel.perf_event_paranoid=-1
+      - name: Install viewer runtime libraries
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-x11-0 libxkbcommon0 libxcb1
       - name: Run checks
         id: checks
         env:
