@@ -1,4 +1,4 @@
-use gpui::{Bounds, Hsla, PathBuilder, Pixels, Point, Window, fill, point, px, size};
+use gpui::{Hsla, PathBuilder, Pixels, Point, Window, point, px};
 
 /// Line-with-fill series painter. `points` are `(x in pixels, value)` in
 /// ascending x; a `None` value breaks the line so gaps in the recording stay
@@ -66,31 +66,5 @@ fn flush(
         && let Ok(path) = path.build()
     {
         window.paint_path(path, color);
-    }
-}
-
-/// Stacked bands as one column per interval: `columns` holds `(x, width,
-/// shares)` where the shares of a column are stacked bottom-up in `colors`
-/// order. Shares are fractions of the band height.
-pub fn paint_stacked_columns(
-    top: f32,
-    height: f32,
-    columns: &[(f32, f32, Vec<f64>)],
-    colors: &[Hsla],
-    window: &mut Window,
-) {
-    for (x, width, shares) in columns {
-        let mut y = top + height;
-        for (share, color) in shares.iter().zip(colors) {
-            let band = (share.clamp(0.0, 1.0) as f32 * height).min(y - top);
-            if band <= 0.0 {
-                continue;
-            }
-            y -= band;
-            window.paint_quad(fill(
-                Bounds::new(point(px(*x), px(y)), size(px(width.max(1.0)), px(band))),
-                *color,
-            ));
-        }
     }
 }

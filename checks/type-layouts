@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Compare the shipped viewer's DWARF reader with the compiler's physical ABI.
+# shellcheck source=checks/lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+object="${CHECK_WORK}/bin/type-layouts.o"
+binary="${CHECK_WORK}/bin/type-layouts"
+cc -g -O0 -c "${checks_root}/fixtures/type-layouts.c" -o "${object}" \
+    || fail "could not compile type layout object"
+cc "${object}" -o "${binary}" || fail "could not link type layout reference"
+"${binary}" >"${CHECK_WORK}/type-layout-abi.json" || fail "could not inspect compiler ABI"
+"${mperf_gui}" --inspect-types "${object}" >"${CHECK_WORK}/type-layouts.json" \
+    || fail "the viewer could not read real DWARF type layouts"
+python3 - "${CHECK_WORK}/type-layout-abi.json" "${CHECK_WORK}/type-layouts.json" <<'PY' \
+    || fail "the viewer type layout disagrees with the compiler ABI"
+import json
+import sys
+
+expected = json.load(open(sys.argv[1]))
+catalog = json.load(open(sys.argv[2]))
+layout = next(value for value in catalog["types"] if value["name"] == "Layout")
+assert layout["size"] == expected["size"], (layout, expected)
+assert layout["alignment"] in (None, expected["alignment"]), layout
+actual = {field["name"]: field for field in layout["fields"]}
+for field in expected["fields"]:
+    observed = actual[field["name"]]
+    assert (observed["offset"], observed["size"]) == (field["offset"], field["size"]), (observed, field)
+assert actual["items"]["type"].endswith("[3]"), actual["items"]
+assert sum(size for _, size in layout["padding"]) == expected["size"] - sum(field["size"] for field in expected["fields"]), layout
+print("  native type sizes, field offsets, arrays, pointers, and padding agree with the compiler")
+PY

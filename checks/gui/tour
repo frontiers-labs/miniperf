@@ -18,7 +18,7 @@ required_for() {
                 printf 'Hotspots\nFlame Graph\n'
             fi
             ;;
-        tma)      printf 'Summary\nHotspots\nTop-Down\n' ;;
+        tma)      printf 'Summary\nHotspots\nResources\n' ;;
         *)        printf 'Summary\n' ;;
     esac
 }
@@ -64,6 +64,9 @@ print("yes" if reference["has_samples"] else "no")
     launch "${mperf_gui}" --tour "${dir}" >"${log}" 2>&1 \
         || { cat "${log}" >&2; fail "the viewer could not display the ${scenario} recording"; }
     grep -qiE '^thread .* panicked at ' "${log}" && { cat "${log}" >&2; fail "the viewer panicked on ${scenario}"; }
+    if grep -qxF 'tour: rendered Top-Down' "${log}"; then
+        fail "${scenario} still offers a standalone Top-Down tab"
+    fi
     while IFS= read -r tab; do
         [[ -z "${tab}" ]] && continue
         grep -qF "tour: rendered ${tab}" "${log}" \

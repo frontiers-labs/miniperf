@@ -21,7 +21,13 @@ impl LineFootprint {
         }
         let first_word = (start / 64) as usize;
         let last_word = ((end - 1) / 64) as usize;
-        for word in first_word..=last_word {
+        for (word, bits) in self
+            .bytes
+            .iter_mut()
+            .enumerate()
+            .take(last_word + 1)
+            .skip(first_word)
+        {
             let word_start = (word as u64).saturating_mul(64);
             let first_bit = start.saturating_sub(word_start).min(64) as u32;
             let last_bit = end.saturating_sub(word_start).min(64) as u32;
@@ -35,7 +41,7 @@ impl LineFootprint {
             } else {
                 (1_u64 << first_bit) - 1
             };
-            self.bytes[word] |= below_last & !below_first;
+            *bits |= below_last & !below_first;
         }
     }
 

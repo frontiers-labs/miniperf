@@ -23,6 +23,27 @@ pub fn load() -> Vec<PathBuf> {
         .collect()
 }
 
+pub fn load_theme() -> Option<bool> {
+    match env::var("MPERF_GUI_APPEARANCE").as_deref() {
+        Ok("light") => return Some(false),
+        Ok("dark") => return Some(true),
+        _ => {}
+    }
+    let path = state_file()?.with_file_name("theme.json");
+    serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
+pub fn save_theme(dark: bool) -> Result<()> {
+    let Some(path) = state_file().map(|path| path.with_file_name("theme.json")) else {
+        return Ok(());
+    };
+    fs::create_dir_all(path.parent().context("theme file has no parent")?)?;
+    let temporary = path.with_extension("json.tmp");
+    fs::write(&temporary, serde_json::to_vec(&dark)?)?;
+    fs::rename(temporary, path)?;
+    Ok(())
+}
+
 pub fn remember(recent_results: &mut Vec<PathBuf>, result_directory: &Path) -> Result<()> {
     let result_directory =
         fs::canonicalize(result_directory).unwrap_or_else(|_| result_directory.to_path_buf());

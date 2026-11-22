@@ -24,6 +24,7 @@ pub(crate) struct ProfileFrame {
     pub(crate) id: usize,
     pub(crate) name: String,
     pub(crate) friendly_name: String,
+    pub(crate) symbol_name: Option<String>,
     pub(crate) module: Option<String>,
     pub(crate) file: Option<String>,
     pub(crate) line: Option<u32>,
@@ -511,6 +512,7 @@ fn intern_frame(
             .friendly()
             .to_owned(),
         name: candidate.name,
+        symbol_name: candidate.symbol_name,
         module: candidate.module,
         file: candidate.file,
         line: candidate.line,
