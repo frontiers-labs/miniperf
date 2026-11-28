@@ -7,8 +7,22 @@ pub(super) enum DocumentId {
     Function(usize),
 }
 
+pub(super) enum Document {
+    Profile,
+    Source(Box<SourceTab>),
+}
+
+impl Document {
+    fn id(&self) -> &DocumentId {
+        match self {
+            Self::Profile => &DocumentId::Profile,
+            Self::Source(tab) => &tab.id,
+        }
+    }
+}
+
 pub(super) struct Workspace {
-    pub documents: Vec<DocumentId>,
+    documents: Vec<Document>,
     pub active: Option<DocumentId>,
     pub view: ViewId,
     back: Vec<DocumentId>,
@@ -18,7 +32,7 @@ pub(super) struct Workspace {
 impl Default for Workspace {
     fn default() -> Self {
         Self {
-            documents: vec![DocumentId::Profile],
+            documents: vec![Document::Profile],
             active: Some(DocumentId::Profile),
             view: ViewId::Resources,
             back: Vec::new(),
@@ -28,11 +42,36 @@ impl Default for Workspace {
 }
 
 impl Workspace {
-    pub fn open(&mut self, id: DocumentId) {
-        if !self.documents.contains(&id) {
-            self.documents.push(id.clone());
+    pub fn open(&mut self, document: Document) {
+        let id = document.id().clone();
+        if let Some(index) = self.position(&id) {
+            self.documents[index] = document;
+        } else {
+            self.documents.push(document);
         }
         self.activate(id);
+    }
+
+    fn position(&self, id: &DocumentId) -> Option<usize> {
+        self.documents.iter().position(|doc| doc.id() == id)
+    }
+
+    fn active_position(&self) -> Option<usize> {
+        self.position(self.active.as_ref()?)
+    }
+
+    pub(super) fn sources(&self) -> impl Iterator<Item = &SourceTab> {
+        self.documents.iter().filter_map(|doc| match doc {
+            Document::Source(tab) => Some(tab.as_ref()),
+            Document::Profile => None,
+        })
+    }
+
+    pub(super) fn sources_mut(&mut self) -> impl Iterator<Item = &mut SourceTab> {
+        self.documents.iter_mut().filter_map(|doc| match doc {
+            Document::Source(tab) => Some(tab.as_mut()),
+            Document::Profile => None,
+        })
     }
 
     fn activate(&mut self, id: DocumentId) {
@@ -59,7 +98,7 @@ impl Workspace {
     }
 
     fn close(&mut self, id: &DocumentId) {
-        let Some(index) = self.documents.iter().position(|entry| entry == id) else {
+        let Some(index) = self.position(id) else {
             return;
         };
         self.documents.remove(index);
@@ -67,17 +106,14 @@ impl Workspace {
             self.active = self
                 .documents
                 .get(index.min(self.documents.len().saturating_sub(1)))
-                .cloned();
+                .map(|doc| doc.id().clone());
         }
-        self.back.retain(|entry| entry != id);
-        self.forward.retain(|entry| entry != id);
-        self.back.dedup();
-        self.forward.dedup();
-        while self.back.last() == self.active.as_ref() && !self.back.is_empty() {
-            self.back.pop();
-        }
-        while self.forward.last() == self.active.as_ref() && !self.forward.is_empty() {
-            self.forward.pop();
+        for history in [&mut self.back, &mut self.forward] {
+            history.retain(|entry| entry != id);
+            history.dedup();
+            if history.last() == self.active.as_ref() {
+                history.pop();
+            }
         }
     }
 }
@@ -119,9 +155,7 @@ impl ShellView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.workspace.navigate(false);
-        self.ensure_derived(cx);
-        cx.notify();
+        self.navigate_document(false, cx);
     }
 
     pub(super) fn navigate_forward_action(
@@ -130,7 +164,11 @@ impl ShellView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.workspace.navigate(true);
+        self.navigate_document(true, cx);
+    }
+
+    fn navigate_document(&mut self, forward: bool, cx: &mut Context<Self>) {
+        self.workspace.navigate(forward);
         self.ensure_derived(cx);
         cx.notify();
     }
@@ -142,18 +180,21 @@ impl ShellView {
         cx: &mut Context<Self>,
     ) {
         if let Some(id) = self.workspace.active.clone() {
-            self.workspace.close(&id);
-            self.source_tabs.retain(|tab| tab.id != id);
-            self.ensure_derived(cx);
-            cx.notify();
+            self.close_document(&id, cx);
         }
     }
 
+    fn close_document(&mut self, id: &DocumentId, cx: &mut Context<Self>) {
+        self.workspace.close(id);
+        self.ensure_derived(cx);
+        cx.notify();
+    }
+
     fn activate_document(&mut self, id: DocumentId, cx: &mut Context<Self>) {
-        self.workspace.activate(id.clone());
-        if let Some(tab) = self.source_tabs.iter().find(|tab| tab.id == id) {
+        if let Some(tab) = self.workspace.sources().find(|tab| tab.id == id) {
             self.selected_frame = Some(tab.frame_id);
         }
+        self.workspace.activate(id);
         self.ensure_derived(cx);
         cx.notify();
     }
@@ -356,15 +397,10 @@ impl ShellView {
     }
 
     fn active_document_title(&self) -> Option<String> {
-        self.workspace.active.as_ref().and_then(|id| {
-            if *id == DocumentId::Profile {
-                Some(self.workspace.view.title().to_owned())
-            } else {
-                self.source_tabs
-                    .iter()
-                    .find(|tab| &tab.id == id)
-                    .map(|tab| tab.title.clone())
-            }
+        let index = self.workspace.active_position()?;
+        Some(match &self.workspace.documents[index] {
+            Document::Profile => self.workspace.view.title().to_owned(),
+            Document::Source(tab) => tab.title.clone(),
         })
     }
 
@@ -406,11 +442,9 @@ impl ShellView {
                             .size(ButtonSize::IconXs)
                             .variant(ButtonVariant::Ghost)
                             .disabled(self.workspace.back.is_empty())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.workspace.navigate(false);
-                                this.ensure_derived(cx);
-                                cx.notify();
-                            })),
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.navigate_document(false, cx)),
+                            ),
                     )
                     .child(
                         button("document-forward")
@@ -419,11 +453,9 @@ impl ShellView {
                             .size(ButtonSize::IconXs)
                             .variant(ButtonVariant::Ghost)
                             .disabled(self.workspace.forward.is_empty())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.workspace.navigate(true);
-                                this.ensure_derived(cx);
-                                cx.notify();
-                            })),
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.navigate_document(true, cx)),
+                            ),
                     ),
             )
             .child(
@@ -433,28 +465,27 @@ impl ShellView {
                     .flex_1()
                     .min_w(px(0.0))
                     .overflow_x_scroll()
-                    .children(
+                    .children({
+                        let active = self.workspace.active.as_ref();
                         self.workspace
                             .documents
                             .iter()
                             .enumerate()
-                            .map(|(index, id)| {
-                                let selected = self.workspace.active.as_ref() == Some(id);
-                                let (title, glyph) = if *id == DocumentId::Profile {
-                                    (
-                                        self.workspace.view.title().to_owned(),
-                                        self.workspace.view.icon(),
-                                    )
-                                } else {
-                                    (
-                                        self.source_tabs
-                                            .iter()
-                                            .find(|tab| &tab.id == id)
-                                            .map(|tab| tab.title.clone())
-                                            .unwrap_or_default(),
-                                        Icon::FileCode,
-                                    )
+                            .map(move |(index, document)| {
+                                let id = document.id();
+                                let selected = active == Some(id);
+                                let (title, glyph) = match document {
+                                    Document::Profile => {
+                                        (self.workspace.view.title(), self.workspace.view.icon())
+                                    }
+                                    Document::Source(tab) => (tab.title.as_str(), Icon::FileCode),
                                 };
+                                let title = if matches!(id, DocumentId::File(_)) {
+                                    title.rsplit('/').next().unwrap_or(title)
+                                } else {
+                                    title
+                                }
+                                .to_owned();
                                 let target = id.clone();
                                 let close = id.clone();
                                 div()
@@ -464,14 +495,8 @@ impl ShellView {
                                     .on_key_down(cx.listener(
                                         |this, event: &gpui::KeyDownEvent, _, cx| {
                                             let count = this.workspace.documents.len();
-                                            let current = this
-                                                .workspace
-                                                .documents
-                                                .iter()
-                                                .position(|id| {
-                                                    Some(id) == this.workspace.active.as_ref()
-                                                })
-                                                .unwrap_or(0);
+                                            let current =
+                                                this.workspace.active_position().unwrap_or(0);
                                             let next = match event.keystroke.key.as_str() {
                                                 "left" => (current + count - 1) % count,
                                                 "right" => (current + 1) % count,
@@ -480,7 +505,7 @@ impl ShellView {
                                                 _ => return,
                                             };
                                             this.activate_document(
-                                                this.workspace.documents[next].clone(),
+                                                this.workspace.documents[next].id().clone(),
                                                 cx,
                                             );
                                             cx.stop_propagation();
@@ -525,17 +550,7 @@ impl ShellView {
                                                     .size(px(14.0))
                                                     .color(theme.muted_foreground),
                                             )
-                                            .child(div().max_w(px(192.0)).truncate().child(
-                                                if matches!(id, DocumentId::File(_)) {
-                                                    title
-                                                        .rsplit('/')
-                                                        .next()
-                                                        .unwrap_or(&title)
-                                                        .to_owned()
-                                                } else {
-                                                    title
-                                                },
-                                            ))
+                                            .child(div().max_w(px(192.0)).truncate().child(title))
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.activate_document(target.clone(), cx)
                                             })),
@@ -547,14 +562,11 @@ impl ShellView {
                                             .size(ButtonSize::IconXxs)
                                             .variant(ButtonVariant::Ghost)
                                             .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.workspace.close(&close);
-                                                this.source_tabs.retain(|tab| tab.id != close);
-                                                this.ensure_derived(cx);
-                                                cx.notify();
+                                                this.close_document(&close, cx);
                                             })),
                                     )
-                            }),
-                    ),
+                            })
+                    }),
             )
     }
 
@@ -728,7 +740,7 @@ impl ShellView {
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     if is_file {
                                         let id = DocumentId::File(path.clone());
-                                        if this.workspace.documents.contains(&id) {
+                                        if this.workspace.position(&id).is_some() {
                                             this.activate_document(id, cx);
                                         } else if let Some(frame_id) =
                                             this.session.as_ref().and_then(|session| {

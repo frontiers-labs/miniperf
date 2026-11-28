@@ -1,4 +1,4 @@
-use gpui::{App, Div, FontWeight, SharedString, Stateful, Window, div, prelude::*, px};
+use gpui::{App, Div, FontWeight, SharedString, div, prelude::*, px};
 
 use super::theme::ActiveTheme;
 
@@ -83,60 +83,6 @@ pub fn table_header(columns: &[Column], sort: Option<(usize, bool)>, cx: &App) -
                 .whitespace_nowrap()
                 .when(column.right, |el| el.justify_end())
                 .when(column.sortable, |el| el.cursor_pointer())
-                .child(column.label.clone())
-                .when_some(sorted, |el, (_, descending)| {
-                    el.child(
-                        div()
-                            .text_size(px(9.0))
-                            .child(if descending { "▼" } else { "▲" }),
-                    )
-                });
-            match column.width {
-                Some(width) => cell.w(px(width)).flex_none(),
-                None => cell.flex_1().min_w(px(0.0)),
-            }
-        }))
-}
-
-/// `table_header` with per-column sort clicks: clicking a sortable column
-/// invokes `on_sort` with its index.
-pub fn table_header_sortable(
-    columns: &[Column],
-    sort: Option<(usize, bool)>,
-    on_sort: impl Fn(usize, &mut Window, &mut App) + Clone + 'static,
-    cx: &App,
-) -> Stateful<Div> {
-    let theme = cx.theme().clone();
-    div()
-        .id("table-header")
-        .flex()
-        .flex_none()
-        .items_center()
-        .h(px(36.0))
-        .w_full()
-        .border_b_1()
-        .border_color(theme.border)
-        .bg(theme.muted.opacity(0.35))
-        .text_size(px(12.0))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(theme.muted_foreground)
-        .children(columns.iter().enumerate().map(|(ix, column)| {
-            let sorted = sort.filter(|(sort_ix, _)| *sort_ix == ix);
-            let cell = div()
-                .id(ix)
-                .flex()
-                .items_center()
-                .gap(px(2.0))
-                .px(px(8.0))
-                .h_full()
-                .whitespace_nowrap()
-                .when(column.right, |el| el.justify_end())
-                .when(column.sortable, |el| {
-                    let on_sort = on_sort.clone();
-                    el.cursor_pointer()
-                        .hover(|s| s.text_color(theme.foreground))
-                        .on_click(move |_, window, cx| on_sort(ix, window, cx))
-                })
                 .child(column.label.clone())
                 .when_some(sorted, |el, (_, descending)| {
                     el.child(

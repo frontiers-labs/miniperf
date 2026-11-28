@@ -1,7 +1,6 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::LazyLock};
 
-use lazy_static::lazy_static;
-use pmu_data::{EventDesc, Metric, TmaScenario};
+use pmu_data::{EventDesc, Metric, PlatformDesc, TmaScenario};
 
 #[allow(dead_code)]
 pub struct CPUFamily {
@@ -16,7 +15,51 @@ pub struct CPUFamily {
     pub scenarios: HashMap<String, TmaScenario>,
 }
 
-include!(concat!(env!("OUT_DIR"), "/events.rs"));
+static CPU_FAMILIES: LazyLock<HashMap<String, CPUFamily>> = LazyLock::new(|| {
+    let families: Vec<PlatformDesc> =
+        serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/pmu-catalog.json")))
+            .expect("the build script validates the embedded PMU catalog");
+    families
+        .into_iter()
+        .map(|data| {
+            let scenarios = data
+                .scenarios
+                .unwrap_or_default()
+                .into_iter()
+                .map(|mut scenario| {
+                    // Host topology assigns CPU masks when composing cluster scenarios.
+                    for group in &mut scenario.groups {
+                        group.cpus = None;
+                    }
+                    for metric in &mut scenario.metrics {
+                        metric.cpus = None;
+                    }
+                    (scenario.name.clone(), scenario)
+                });
+            let family = CPUFamily {
+                name: data.name,
+                vendor: data.vendor,
+                id: data.family_id.clone(),
+                max_counters: data.max_counters,
+                leader_event: data.leader_event,
+                events: data
+                    .events
+                    .into_iter()
+                    .map(|event| (event.name.clone(), event))
+                    .collect(),
+                aliases: data
+                    .aliases
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|alias| (alias.target, alias.origin))
+                    .collect(),
+                metrics: data.metrics,
+                scenarios: scenarios.collect(),
+            };
+            (data.family_id, family)
+        })
+        .collect()
+});
 
 /// Every event table shipped with the profiler, for invariants that must hold
 /// across all of them rather than only the host's.

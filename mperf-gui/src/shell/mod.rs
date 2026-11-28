@@ -41,7 +41,7 @@ use crate::ui::{
 use derived::Derived;
 use flame::{FlameHover, FlameView};
 use flamescope::{ScopeHover, ScopeView, format_fold_period};
-use navigation::{DocumentId, Workspace};
+use navigation::{Document, DocumentId, Workspace};
 use session::{GlobalFilter, ShellSession, format_count, format_duration_seconds};
 use timeline::TimelineView;
 
@@ -353,7 +353,6 @@ pub struct ShellView {
     narrow_inspector_open: bool,
     resource_timeline: resources::TimelineState,
     structures: structures::State,
-    source_tabs: Vec<SourceTab>,
     selected_frame: Option<usize>,
     allocation_ui: allocations::ViewState,
     roofline_ui: roofline::ViewState,
@@ -473,7 +472,6 @@ impl ShellView {
             narrow_inspector_open: false,
             resource_timeline: Default::default(),
             structures: Default::default(),
-            source_tabs: Vec::new(),
             selected_frame: None,
             allocation_ui: allocations::ViewState::new(cx),
             roofline_ui: roofline::ViewState::new(cx),
@@ -541,7 +539,6 @@ impl ShellView {
         self.roofline_loop = None;
         self.roofline_view = None;
         self.roofline_drag = None;
-        self.source_tabs.clear();
         self.allocation_stack = None;
         self.allocation_ui.reset(cx);
         self.roofline_ui.reset(cx);
@@ -834,11 +831,12 @@ impl ShellView {
 
     /// Esc, two-stage: first clears the selection, then the filters.
     fn clear_stage(&mut self, _: &ClearStage, window: &mut Window, cx: &mut Context<Self>) {
+        let active = self.workspace.active.clone();
         if let Some(tab) = self
-            .source_tabs
-            .iter_mut()
-            .find(|tab| Some(&tab.id) == self.workspace.active.as_ref())
-            && (tab.pinned_line.is_some() || tab.hovered_line.is_some())
+            .workspace
+            .sources_mut()
+            .find(|tab| Some(&tab.id) == active.as_ref())
+            && tab.active_line().is_some()
         {
             tab.pinned_line = None;
             tab.hovered_line = None;
@@ -943,7 +941,7 @@ impl ShellView {
             return;
         }
         self.workspace.view = view;
-        self.workspace.open(DocumentId::Profile);
+        self.workspace.open(Document::Profile);
         self.flame_hover = None;
         self.ensure_derived(cx);
         cx.notify();
@@ -953,29 +951,25 @@ impl ShellView {
         let Some(session) = self.session.clone() else {
             return;
         };
-        let Some(frame) = session.profile.frames.get(frame_id).cloned() else {
+        let Some(frame) = session.profile.frames.get(frame_id) else {
             return;
         };
-        let id = frame
-            .file
-            .as_ref()
-            .map_or(DocumentId::Function(frame_id), |path| {
-                DocumentId::File(PathBuf::from(path))
-            });
-        let existing = self.source_tabs.iter().position(|tab| tab.id == id);
-        let source_ix = existing.unwrap_or(self.source_tabs.len());
-        let document = frame.file.clone().map(|file| {
-            SourceDocument::load(SourceLocation {
-                path: PathBuf::from(file),
+        let (id, title, document) = if let Some(file) = &frame.file {
+            let path = PathBuf::from(file);
+            let document = SourceDocument::load(SourceLocation {
+                path: path.clone(),
                 line: frame.line.unwrap_or(1) as usize,
-            })
-        });
-        let title = frame
-            .file
-            .clone()
-            .unwrap_or_else(|| frame.friendly_name.clone());
-        let tab = SourceTab {
-            id: id.clone(),
+            });
+            (DocumentId::File(path), file.clone(), Some(document))
+        } else {
+            (
+                DocumentId::Function(frame_id),
+                frame.friendly_name.clone(),
+                None,
+            )
+        };
+        let mut tab = SourceTab {
+            id,
             frame_id,
             title,
             document,
@@ -988,19 +982,12 @@ impl ShellView {
             hovered_line: None,
             pinned_line: None,
         };
-        if existing.is_some() {
-            self.source_tabs[source_ix] = tab;
-        } else {
-            self.source_tabs.push(tab);
-        }
-        self.selected_frame = Some(frame_id);
-        self.workspace.open(id);
         if session.has_assembly
             && let Some(module) = frame.module.clone()
         {
             let directory = session.result_directory.clone();
             let function = frame.name.clone();
-            let source_path = frame.file.map(PathBuf::from);
+            let source_path = frame.file.as_ref().map(PathBuf::from);
             let recording_directory = directory.clone();
             cx.spawn(async move |this, cx| {
                 let listing = cx
@@ -1018,8 +1005,8 @@ impl ShellView {
                         return;
                     }
                     let Some(tab) = this
-                        .source_tabs
-                        .iter_mut()
+                        .workspace
+                        .sources_mut()
                         .find(|tab| tab.frame_id == frame_id)
                     else {
                         return;
@@ -1045,10 +1032,11 @@ impl ShellView {
             })
             .detach();
         } else {
-            self.source_tabs[source_ix].asm_error =
-                Some("No native assembly recorded for this function".to_owned());
-            source_view::scroll_to_function(&self.source_tabs[source_ix]);
+            tab.asm_error = Some("No native assembly recorded for this function".to_owned());
+            source_view::scroll_to_function(&tab);
         }
+        self.workspace.open(Document::Source(Box::new(tab)));
+        self.selected_frame = Some(frame_id);
         cx.notify();
     }
 
@@ -2709,12 +2697,12 @@ impl ShellView {
         session: &Arc<ShellSession>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        if let Some(id) = self.workspace.active.as_ref() {
-            if let Some(source_ix) = self.source_tabs.iter().position(|tab| &tab.id == id) {
-                return self.render_source_tab(source_ix, cx);
-            }
-        } else {
+        let Some(id) = self.workspace.active.as_ref() else {
             return div().into_any_element();
+        };
+        let mut sources = self.workspace.sources().enumerate();
+        if let Some((source_ix, tab)) = sources.find(|(_, tab)| &tab.id == id) {
+            return self.render_source_tab(tab, source_ix, session, cx);
         }
         match self.active_view() {
             Some(ViewId::Summary) | None => self.render_summary(session, cx),

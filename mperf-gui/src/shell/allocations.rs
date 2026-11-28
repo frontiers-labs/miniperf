@@ -848,8 +848,8 @@ impl ShellView {
             self.allocation_stack = Some(stack);
             self.open_source_tab(id, cx);
             let document = self
-                .source_tabs
-                .iter()
+                .workspace
+                .sources()
                 .find(|tab| tab.frame_id == id)
                 .and_then(|tab| tab.document.as_ref())
                 .ok_or_else(|| anyhow::anyhow!("allocation source tab has no document"))?;
