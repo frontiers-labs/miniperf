@@ -278,16 +278,12 @@ fn syntax(text: String, assembly: bool, dark: bool, block_comment: &mut bool) ->
 impl ShellView {
     pub(super) fn render_source_tab(
         &self,
+        tab: &SourceTab,
         source_ix: usize,
+        session: &Arc<ShellSession>,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = cx.theme().clone();
-        let Some(tab) = self.source_tabs.get(source_ix) else {
-            return div().into_any_element();
-        };
-        let Some(session) = self.session.clone() else {
-            return div().into_any_element();
-        };
         let frame = &session.profile.frames[tab.frame_id];
         let functions: Vec<_> = session
             .profile
@@ -362,7 +358,7 @@ impl ShellView {
                                 .collect(),
                         )
                         .on_toggle(cx.processor(move |this, open: bool, _, cx| {
-                            if let Some(tab) = this.source_tabs.get_mut(source_ix) {
+                            if let Some(tab) = this.workspace.sources_mut().nth(source_ix) {
                                 tab.function_menu_open = open;
                             }
                             cx.notify();
@@ -644,7 +640,7 @@ impl ShellView {
                             })
                             .on_hover(move |hovered, _, cx| {
                                 hover.update(cx, |this, cx| {
-                                    if let Some(tab) = this.source_tabs.get_mut(source_ix) {
+                                    if let Some(tab) = this.workspace.sources_mut().nth(source_ix) {
                                         let next = if *hovered { line } else { None };
                                         if tab.hovered_line != next {
                                             tab.hovered_line = next;
@@ -656,7 +652,9 @@ impl ShellView {
                             .when_some(line, |el, line| {
                                 el.on_click(move |_, _, cx| {
                                     click.update(cx, |this, cx| {
-                                        if let Some(tab) = this.source_tabs.get_mut(source_ix) {
+                                        if let Some(tab) =
+                                            this.workspace.sources_mut().nth(source_ix)
+                                        {
                                             tab.pinned_line = if selected == Some(line) {
                                                 None
                                             } else {
@@ -727,7 +725,7 @@ impl ShellView {
                     .child(list),
             )
             .when(inspector_visible, |el| {
-                let inspector = self.render_function_inspector(tab.frame_id, &session, cx);
+                let inspector = self.render_function_inspector(tab.frame_id, session, cx);
                 if self.wide_inspector {
                     el.child(inspector)
                 } else {

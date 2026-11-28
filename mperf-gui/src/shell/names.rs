@@ -90,8 +90,8 @@ impl ShellView {
             .as_ref()
             .expect("tour requires a loaded session");
         let tab = self
-            .source_tabs
-            .iter()
+            .workspace
+            .sources()
             .find(|tab| tab.frame_id == frame_id)
             .expect("tour opened source tab");
         let document = tab
